@@ -1,0 +1,249 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-11",
+  "host": {
+    "os": "Windows",
+    "primary_rust_target": "x86_64-pc-windows-msvc",
+    "abi_probe_compiler": "MSVC 19.51 (Visual Studio 18.7.3)",
+    "abi_probe_flags": "/std:c++17 /DWIN32 /Gd /W4 /WX"
+  },
+  "versions": {
+    "client_release": "3.1.3",
+    "client_file_version": "3.1.3.0",
+    "lpsdk_release": "1.3.3",
+    "runtime_api": "1.3.3.3",
+    "runtime_file_version": "1.3.3.3",
+    "mv3d_runtime": "4.3.2.2",
+    "c_development_guide": "1.3.2"
+  },
+  "roots": {
+    "client": "C:\\Program Files (x86)\\3DMVS",
+    "development": "C:\\Program Files (x86)\\3DMVS\\Development",
+    "lpsdk": "C:\\Program Files (x86)\\Common Files\\Mv3dLpSDK",
+    "runtime_x86": "C:\\Program Files (x86)\\Common Files\\Mv3dLpSDK\\Runtime\\Win32_i86",
+    "runtime_x64": "C:\\Program Files (x86)\\Common Files\\Mv3dLpSDK\\Runtime\\Win64_x64",
+    "mv3d_runtime_x86": "C:\\Program Files (x86)\\Common Files\\MV3D\\Runtime\\Win32_i86",
+    "mv3d_runtime_x64": "C:\\Program Files (x86)\\Common Files\\MV3D\\Runtime\\Win64_x64"
+  },
+  "environment": {
+    "development_variable": "MV3DLP_DEV_ENV",
+    "development_variable_value": "C:\\Program Files (x86)\\3DMVS\\Development",
+    "gentl32_variable": "GENICAM_GENTL32_PATH",
+    "gentl32_variable_value": "C:\\Program Files (x86)\\Common Files\\MV3D\\Runtime\\Win32_i86",
+    "gentl64_variable": "GENICAM_GENTL64_PATH",
+    "gentl64_variable_value": "C:\\Program Files (x86)\\Common Files\\MV3D\\Runtime\\Win64_x64",
+    "runtime_is_added_to_machine_path": true
+  },
+  "artifacts": [
+    {
+      "name": "release_notes",
+      "root": "client",
+      "path": "ReleaseNote.txt",
+      "length": 19936,
+      "sha256": "2BCE9FC31367C91ABAB063885D17BC2490A3B7CF735C8DA0271735C0A60A7273"
+    },
+    {
+      "name": "c_development_guide",
+      "root": "development",
+      "path": "Documentations\\3D激光轮廓传感器SDK开发指南V1.3.2（C）.chm",
+      "length": 828230,
+      "sha256": "0CB0C6F7414EAB91A84D8E420BE51F5C857673BC798DFF79F2E03165D54A2E3D"
+    },
+    {
+      "name": "header_api",
+      "root": "development",
+      "path": "Includes\\Mv3dLpApi.h",
+      "length": 23560,
+      "sha256": "220735D6CEFFF770C65D42E01D46E5C38E20E5ECBBEAEE0DFD0CCFB20103EF5B"
+    },
+    {
+      "name": "header_define",
+      "root": "development",
+      "path": "Includes\\Mv3dLpDefine.h",
+      "length": 32441,
+      "sha256": "5318609670FD84D2AB57F26B39E056028B353E80F5260C3D714407C84F7EE81A"
+    },
+    {
+      "name": "header_imgproc",
+      "root": "development",
+      "path": "Includes\\Mv3dLpImgProc.h",
+      "length": 8777,
+      "sha256": "8F76E498F8783413601A46B4549A87D8977DDD659BC4650FE6A853B5679FED50"
+    },
+    {
+      "name": "import_library_x86",
+      "root": "development",
+      "path": "Libraries\\win32\\Mv3dLp.lib",
+      "length": 17950,
+      "sha256": "FE94C196FB19E7BF86E57BAF7C0E795D639520DC708B5EFF969A80AAFF36497C"
+    },
+    {
+      "name": "import_library_x64",
+      "root": "development",
+      "path": "Libraries\\win64\\Mv3dLp.lib",
+      "length": 17178,
+      "sha256": "0B54F88A165DC7F01E8A43A7271968691DAF71A528311C498F8341423D256E78"
+    },
+    {
+      "name": "runtime_dll_x86",
+      "root": "runtime_x86",
+      "path": "Mv3dLp.dll",
+      "length": 8542336,
+      "sha256": "5D0F99EEEDE67F27609C21C6D95DB5AD3EE4A63FB609AA1B23218E7818FF0196"
+    },
+    {
+      "name": "runtime_dll_x64",
+      "root": "runtime_x64",
+      "path": "Mv3dLp.dll",
+      "length": 10299008,
+      "sha256": "09BAA7136F9C4B936C66338A4801EDAD6A9063D10D3024C1A78F0D2D593ED33C"
+    },
+    {
+      "name": "mv3d_runtime_dll_x86",
+      "root": "mv3d_runtime_x86",
+      "path": "MvCameraControl3D.dll",
+      "length": 902656,
+      "sha256": "DA0E7EA076101A34A79A6F501B96FD9EAAB5CB86463E0F79ED2FCFC0AA82EB79"
+    },
+    {
+      "name": "mv3d_runtime_dll_x64",
+      "root": "mv3d_runtime_x64",
+      "path": "MvCameraControl3D.dll",
+      "length": 1110016,
+      "sha256": "405024B3B7FD8B006E4D69F9A27D5E3E42FDE5C448A6B37616B0D97E55FD7267"
+    },
+    {
+      "name": "lpsdk_config_x86",
+      "root": "runtime_x86",
+      "path": "Mv3dLpCfg.ini",
+      "length": 9557,
+      "sha256": "D13DE48FEBB72A56550A778BECCBFE9E0FE04C603F765E6EB0633D0C35675E6E"
+    },
+    {
+      "name": "lpsdk_config_x64",
+      "root": "runtime_x64",
+      "path": "Mv3dLpCfg.ini",
+      "length": 9557,
+      "sha256": "D13DE48FEBB72A56550A778BECCBFE9E0FE04C603F765E6EB0633D0C35675E6E"
+    },
+    {
+      "name": "sample_fetch_frame",
+      "root": "development",
+      "path": "Samples\\C\\SimpleView_FetchFrame\\main.cpp",
+      "length": 1987,
+      "sha256": "88C1FD61AE812C57A976368ED26217109F60370D7447F7F96B308A324B348FC0"
+    },
+    {
+      "name": "sample_depth_to_point_cloud",
+      "root": "development",
+      "path": "Samples\\C\\SimpleView_DepthToPointCloud\\main.cpp",
+      "length": 2658,
+      "sha256": "D024F05C3D950A19E49CF8BA2251FAA5D6EC42290B355D5FF748E49FC4B1DBC3"
+    },
+    {
+      "name": "sample_depth_mosaic_single",
+      "root": "development",
+      "path": "Samples\\VC\\BasicDemo_DepthMosaicSingle\\BasicDemoDlg.cpp",
+      "length": 25986,
+      "sha256": "C5575A05FAFAEEF0A3487BCAB9E256CCFB23DFF0755657881DB442533DB8A350"
+    },
+    {
+      "name": "sample_depth_mosaic",
+      "root": "development",
+      "path": "Samples\\VC\\BasicDemo_DepthMosaic\\BasicDemoDlg.cpp",
+      "length": 26667,
+      "sha256": "E8141CE6DE090DCF67C4124EEB7FF709E954D062D7EF8DF249B0105A97285A6E"
+    },
+    {
+      "name": "sample_depth_to_point_cloud_round",
+      "root": "development",
+      "path": "Samples\\VC\\BasicDemo_DepthToPointCloudRound\\BasicDemoDlg.cpp",
+      "length": 27299,
+      "sha256": "604FE20EFB50D9C737DD846FC5B73CC88995DC5B0EC4F3D2210B972625F30E07"
+    },
+    {
+      "name": "sample_callback_mfc",
+      "root": "development",
+      "path": "Samples\\VC\\BasicDemo_Callback\\BasicDemoDlg.cpp",
+      "length": 24166,
+      "sha256": "16B9B43573105F7C728E8685DE6A0488FA9CD6B37E0FF857A8141F26E461C54A"
+    },
+    {
+      "name": "sample_callback_c",
+      "root": "development",
+      "path": "Samples\\C\\SimpleView_CallBack\\main.cpp",
+      "length": 2037,
+      "sha256": "21522AD591E2285FEE8A26A6097A73B5029C0F7C668FF5BCE88483B0EAE83166"
+    },
+    {
+      "name": "sample_multiple_camera",
+      "root": "development",
+      "path": "Samples\\VC\\MultipleCamera\\MyCamera.cpp",
+      "length": 6309,
+      "sha256": "9E29A2AEEF90F7EAF7A6C5B361FDCE64FC7100E2CDCFE134E212D0E27170A9F0"
+    },
+    {
+      "name": "python_binding",
+      "root": "development",
+      "path": "Samples\\Python\\Mv3dLpImport\\Mv3dLpApi.py",
+      "length": 36751,
+      "sha256": "E2B33F9EB7142A104449670E852DB18CC23E6071005F2946609D7DA44407581A"
+    },
+    {
+      "name": "dotnet_api_reference",
+      "root": "development",
+      "path": "DotNet\\win64\\Mv3dLpNet.XML",
+      "length": 19442,
+      "sha256": "69EE39427EA5537BCA15C29AB7C43D9C2045AD3F362D565C998DAA178644C1B6"
+    },
+    {
+      "name": "lpsdk_oss_notices",
+      "root": "lpsdk",
+      "path": "Licenses\\Mv3dLpSDK_OpenSourceSoftware_Licenses.txt",
+      "length": 108310,
+      "sha256": "CEBB991161AD87CDA3A82E45CF01BA5BE0D3E4BCAE718C4A37DC65E2DAD1F011"
+    }
+  ],
+  "header_copy_check": {
+    "desktop_root": "C:\\Users\\Mason\\Desktop\\Includes",
+    "matches_installed_headers": true
+  },
+  "api_surface": {
+    "public_header_functions": 35,
+    "pe_exports_x86": 66,
+    "pe_exports_x64": 66,
+    "mv3d_lp_exports_x86": 65,
+    "mv3d_lp_exports_x64": 65,
+    "all_public_header_functions_exported": true,
+    "undocumented_mv3d_lp_exports": 30,
+    "other_pe_exports": 1,
+    "binding_policy": "Only declarations present in the installed public headers are in scope."
+  },
+  "calling_conventions": {
+    "exported_functions": "C",
+    "callbacks": "system (__stdcall on x86 Windows)"
+  },
+  "lifecycle_smoke": {
+    "verified_architectures": [
+      "x86",
+      "x64"
+    ],
+    "runtime_version": "1.3.3.3",
+    "initialize_status": "0x00000000",
+    "get_device_number_status": "0x00000000",
+    "finalize_status": "0x00000000",
+    "observed_device_count_x64_on_capture": 0,
+    "note": "The probes validate statuses on both architectures. Device count is observational and is not compared."
+  },
+  "distribution": {
+    "vendor_redistribution_rights_found": false,
+    "policy": "Do not redistribute vendor headers, import libraries, DLLs, or runtime installers without separate permission."
+  },
+  "abi": {
+    "x86": "abi/x86.json",
+    "x64": "abi/x64.json"
+  },
+  "contracts": {
+    "api": "api-contracts.json"
+  }
+}
