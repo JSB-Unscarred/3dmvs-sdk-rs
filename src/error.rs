@@ -21,6 +21,7 @@ pub enum Operation {
     StopMeasure,
     SoftTrigger,
     ClearDataBuffer,
+    GetImage,
     GetParam,
     SetParam,
     Execute,
@@ -43,6 +44,7 @@ impl Operation {
             Self::StopMeasure => "MV3D_LP_StopMeasure",
             Self::SoftTrigger => "MV3D_LP_SoftTrigger",
             Self::ClearDataBuffer => "MV3D_LP_ClearDataBuffer",
+            Self::GetImage => "MV3D_LP_GetImage",
             Self::GetParam => "MV3D_LP_GetParam",
             Self::SetParam => "MV3D_LP_SetParam",
             Self::Execute => "MV3D_LP_Execute",
@@ -191,7 +193,14 @@ pub enum InputViolation {
     Empty,
     NonAscii,
     InteriorNul,
-    TooLong { max: usize, actual: usize },
+    TooLong {
+        max: usize,
+        actual: usize,
+    },
+    TimeoutTooLong {
+        maximum_millis: u32,
+        actual_millis: u128,
+    },
 }
 
 impl fmt::Display for InputViolation {
@@ -206,6 +215,13 @@ impl fmt::Display for InputViolation {
                     "the value has {actual} bytes; at most {max} are allowed"
                 )
             }
+            Self::TimeoutTooLong {
+                maximum_millis,
+                actual_millis,
+            } => write!(
+                formatter,
+                "the timeout is {actual_millis} milliseconds; at most {maximum_millis} milliseconds are allowed"
+            ),
         }
     }
 }
@@ -235,6 +251,11 @@ pub enum ContractViolation {
     },
     LengthOverflow {
         field: &'static str,
+    },
+    LengthMismatch {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
     },
     OutputTooLarge {
         field: &'static str,
@@ -271,6 +292,14 @@ impl fmt::Display for ContractViolation {
             Self::LengthOverflow { field } => {
                 write!(formatter, "the computed length for {field} overflowed")
             }
+            Self::LengthMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "{field} has length {actual}; the SDK image metadata requires at least {expected}"
+            ),
             Self::OutputTooLarge {
                 field,
                 limit,
@@ -449,7 +478,9 @@ impl From<mv3d_lp_internal::Error> for Error {
                 let operation = operation_from_sdk_name(operation);
                 let expected = match operation {
                     Operation::StartMeasure => "open",
-                    Operation::StopMeasure | Operation::SoftTrigger => "measuring",
+                    Operation::StopMeasure | Operation::SoftTrigger | Operation::GetImage => {
+                        "measuring"
+                    }
                     _ => "open or measuring",
                 };
                 Self::InvalidState {
@@ -470,6 +501,13 @@ impl From<mv3d_lp_internal::Error> for Error {
                             actual,
                         }
                     }
+                    mv3d_lp_internal::InvalidInput::TimeoutTooLong {
+                        maximum_millis,
+                        actual_millis,
+                    } => InputViolation::TimeoutTooLong {
+                        maximum_millis,
+                        actual_millis,
+                    },
                 },
             },
             InternalError::ContractViolation { operation, kind } => {
@@ -524,6 +562,33 @@ impl From<mv3d_lp_internal::Error> for Error {
                     InternalContract::HandleCountOverflow => ContractViolation::LengthOverflow {
                         field: "live device handle count",
                     },
+                    InternalContract::NullPointerWithLength { field, length } => {
+                        ContractViolation::NullPointerWithLength { field, length }
+                    }
+                    InternalContract::LengthMismatch {
+                        field,
+                        expected,
+                        actual,
+                    } => ContractViolation::LengthMismatch {
+                        field,
+                        expected,
+                        actual,
+                    },
+                    InternalContract::LengthOverflow { field } => {
+                        ContractViolation::LengthOverflow { field }
+                    }
+                    InternalContract::OutputTooLarge {
+                        field,
+                        limit,
+                        actual,
+                    } => ContractViolation::OutputTooLarge {
+                        field,
+                        limit,
+                        actual,
+                    },
+                    InternalContract::InvalidImageValue { field } => {
+                        ContractViolation::InvalidValue { field }
+                    }
                 };
                 Self::ContractViolation {
                     operation,
@@ -537,8 +602,8 @@ impl From<mv3d_lp_internal::Error> for Error {
                 }
             }
             InternalError::DiscoveryChanged { attempts } => Self::DiscoveryChanged { attempts },
-            InternalError::AllocationFailed { .. } => Self::AllocationFailed {
-                operation: Operation::GetDeviceList,
+            InternalError::AllocationFailed { operation, .. } => Self::AllocationFailed {
+                operation: operation_from_sdk_name(operation),
             },
             InternalError::UnclosedDevices {
                 live_handles,
@@ -566,6 +631,7 @@ pub(crate) fn operation_from_sdk_name(name: &'static str) -> Operation {
         "MV3D_LP_StopMeasure" => Operation::StopMeasure,
         "MV3D_LP_SoftTrigger" => Operation::SoftTrigger,
         "MV3D_LP_ClearDataBuffer" => Operation::ClearDataBuffer,
+        "MV3D_LP_GetImage" => Operation::GetImage,
         "MV3D_LP_GetParam" => Operation::GetParam,
         "MV3D_LP_SetParam" => Operation::SetParam,
         "MV3D_LP_Execute" => Operation::Execute,

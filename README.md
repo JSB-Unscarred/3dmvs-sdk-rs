@@ -28,6 +28,7 @@ C:\Program Files (x86)\Common Files\MV3D\Runtime\Win64_x64
 
 ```rust,no_run
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 use mv3d_lp::{ParamKey, ParameterValue, Result, Sdk};
 
@@ -40,12 +41,20 @@ fn main() -> Result<()> {
     }
 
     let mut camera = sdk.open_by_ip(Ipv4Addr::new(192, 168, 1, 100))?;
-    camera.start()?;
     camera.set_parameter(
         &ParamKey::new("ExposureTime")?,
         ParameterValue::Float(1000.0),
     )?;
-    camera.stop()?;
+    let mut measurement = camera.start()?;
+    let frame = measurement.get_image(Duration::from_millis(100))?;
+    println!(
+        "frame {}: {}x{}, {} bytes",
+        frame.frame_number,
+        frame.width,
+        frame.height,
+        frame.data.len()
+    );
+    measurement.stop()?;
     camera.close()?;
 
     sdk.shutdown()
@@ -56,7 +65,7 @@ fn main() -> Result<()> {
 
 `Sdk` 和 `Camera` 都不是 `Send` 或 `Sync`。每个进程只允许一次初始化尝试，`Finalize` 后不能重新初始化。`Camera` 借用 `Sdk`，因此相机存活时无法安全地关闭 SDK。
 
-## M1 已提供
+## 已提供
 
 - 版本检查、初始化和结束
 - 设备计数、带有限重试的设备枚举
@@ -65,8 +74,10 @@ fn main() -> Result<()> {
 - Start、Stop、软触发、清空数据缓冲区和关闭
 - Bool、Integer、Float、Enumeration、String 参数的读取与设置
 - 命令节点执行
+- `Measurement<'_>` 测量会话和 pull 模式图像获取
+- `OwnedFrame` 主数据、可选亮度数据和可选逐行曝光时间戳的立即复制
 
-M1 不提供图像获取、回调、文件传输、ImgProc、废弃 API、原始句柄或 DLL 中未公开的导出。图像所有权和回调排空等接口留待后续里程碑。
+当前不提供借用帧、零拷贝、图像回调、文件传输、ImgProc、废弃 API、原始句柄或 DLL 中未公开的导出。回调注册、排空和注销契约留待后续里程碑。
 
 ## 安全边界
 
@@ -78,6 +89,11 @@ M1 不提供图像获取、回调、文件传输、ImgProc、废弃 API、原始
 - 打开成功必须同时返回非空句柄；关闭调用后句柄无条件失效。
 - Open 返回错误时附带的非空值不会被当作有效句柄再次传给 SDK。
 - Start/Stop 失败后相机进入 `Faulted`，只允许清理。
+- `Camera::start` 返回独占借用相机的 `Measurement`；显式 `stop` 可取得错误，`Drop` 最佳努力停止采集。
+- GetImage 成功后会在私有 FFI 边界内校验描述符并立即复制所有可用载荷；SDK 裸指针不会跨越 Driver 边界。
+- pull 采集只接受有限超时；`0xFFFF_FFFF` 无限等待哨兵不会传给 SDK。
+- 单帧采用聚合内存上限和 fallible allocation，尺寸与长度运算全部使用 checked arithmetic。
+- GetImage 依赖的 SDK 缓冲区稳定窗口和待补证据记录在 [`m2/image-ownership-contract.md`](m2/image-ownership-contract.md)。
 - `Drop` 最佳努力执行清理且不 panic；显式 `close`/`shutdown` 可取得错误。
 - 只有活句柄计数归零且每次关闭结果都确定成功时才调用 `Finalize`；相机被遗忘或 Close 失败时会跳过 Finalize，安全地泄漏原生会话直到进程退出。
 - 所有 SDK 调用通过同一把进程级互斥锁串行化。

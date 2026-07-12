@@ -7,7 +7,7 @@
     target_env = "msvc"
 ))]
 use std::ffi::CStr;
-use std::mem::MaybeUninit;
+use std::mem::{MaybeUninit, size_of};
 #[cfg(all(
     feature = "native",
     target_os = "windows",
@@ -33,9 +33,31 @@ use crate::device::{DeviceInfoRaw, DeviceListAttempt, IpConfigRaw};
 use crate::driver::{Driver, Handle, status_result};
 use crate::driver::{DriverError, DriverResult};
 use crate::error::ContractViolation;
+use crate::frame::{FrameRecord, ImageTypeRecord};
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 
 const VERSION_SCAN_LIMIT: usize = 64;
+const DEFAULT_MAX_FRAME_BYTES: usize = 512 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FrameLimits {
+    max_frame_bytes: usize,
+}
+
+impl FrameLimits {
+    #[cfg(test)]
+    pub(crate) const fn with_max_frame_bytes(max_frame_bytes: usize) -> Self {
+        Self { max_frame_bytes }
+    }
+}
+
+impl Default for FrameLimits {
+    fn default() -> Self {
+        Self {
+            max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
+        }
+    }
+}
 
 #[cfg(all(
     feature = "native",
@@ -179,8 +201,23 @@ impl Driver for NativeDriver {
     }
 
     fn clear_buffer(&self, handle: Handle) -> DriverResult<()> {
-        // SAFETY: Camera owns the handle and M1 exposes no borrowed SDK image buffers.
+        // SAFETY: Camera owns the handle and M2 exposes only copies, never borrowed SDK buffers.
         status_result(unsafe { bindings::MV3D_LP_ClearDataBuffer(handle.as_ptr()) })
+    }
+
+    fn get_image(&self, handle: Handle, timeout_ms: u32) -> DriverResult<FrameRecord> {
+        let mut image = zeroed_image();
+        // SAFETY: image is a fully zeroed writable SDK output, Camera owns the live handle, and
+        // Runtime keeps the process-wide SDK gate locked until this method and its copies finish.
+        let status = unsafe { bindings::MV3D_LP_GetImage(handle.as_ptr(), &mut image, timeout_ms) };
+        // A failed SDK call does not initialize a trustworthy output descriptor. In particular,
+        // never inspect or dereference pointer fields before checking the status.
+        status_result(status)?;
+        // SAFETY: On success the audited SDK contract guarantees that every non-null output
+        // pointer remains readable for its reported extent until the immediate copy completes.
+        // validate_image_layout checks lengths, null pairs, arithmetic, and the aggregate limit
+        // before copy_image_from_native dereferences any pointer.
+        unsafe { image_from_native(&image, FrameLimits::default()) }
     }
 
     fn get_parameter(&self, handle: Handle, key: &CStr) -> DriverResult<ParameterRecord> {
@@ -223,6 +260,277 @@ fn zeroed_device_info() -> bindings::MV3D_LP_DEVICE_INFO {
     // SAFETY: The C structure consists only of integer scalars and byte arrays; all-zero is a
     // valid initialization pattern and is required by the SDK output contract.
     unsafe { MaybeUninit::zeroed().assume_init() }
+}
+
+pub(crate) fn zeroed_image() -> bindings::MV3D_LP_IMAGE_DATA {
+    // SAFETY: The C structure consists of integer/float scalars, raw pointers, and a byte array;
+    // all-zero is a valid initialization pattern and is required for this SDK output structure.
+    unsafe { MaybeUninit::zeroed().assume_init() }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ValidatedImageLayout {
+    data_len: usize,
+    intensity_len: Option<usize>,
+    exposure_count: Option<usize>,
+    exposure_bytes: usize,
+}
+
+fn validate_image_layout(
+    image: &bindings::MV3D_LP_IMAGE_DATA,
+    limits: FrameLimits,
+) -> DriverResult<ValidatedImageLayout> {
+    if image.nWidth == 0 {
+        return Err(invalid_image_value("width"));
+    }
+    if image.nHeight == 0 {
+        return Err(invalid_image_value("height"));
+    }
+
+    let width = usize_from_u32(image.nWidth, "dimensions")?;
+    let height = usize_from_u32(image.nHeight, "dimensions")?;
+    let pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| length_overflow("dimensions"))?;
+    let data_len = usize_from_u32(image.nDataLen, "data")?;
+
+    // Pointer/length pairs are checked before format-specific arithmetic so a null pointer with
+    // a claimed readable extent is always reported without trying to access it.
+    if data_len != 0 && image.pData.is_null() {
+        return Err(null_pointer_with_length("data", data_len));
+    }
+    if data_len == 0 {
+        return Err(invalid_image_value("data length"));
+    }
+
+    if let Some(bytes_per_pixel) = known_bytes_per_pixel(image.enImageType) {
+        let expected = pixels
+            .checked_mul(bytes_per_pixel)
+            .ok_or_else(|| length_overflow("data"))?;
+        if data_len < expected {
+            return Err(length_mismatch("data", expected, data_len));
+        }
+    }
+
+    let intensity_len = usize_from_u32(image.nIntensityDataLen, "intensity data")?;
+    let intensity_len = match intensity_len {
+        0 => None,
+        length if image.pIntensityData.is_null() => {
+            return Err(null_pointer_with_length("intensity data", length));
+        }
+        length => {
+            if length < pixels {
+                return Err(length_mismatch("intensity data", pixels, length));
+            }
+            Some(length)
+        }
+    };
+
+    let exposure_count = if image.pExposureTimeStamp.is_null() {
+        None
+    } else {
+        Some(height)
+    };
+    let exposure_bytes = match exposure_count {
+        Some(count) => count
+            .checked_mul(size_of::<i64>())
+            .ok_or_else(|| length_overflow("exposure timestamps"))?,
+        None => 0,
+    };
+
+    let total = data_len
+        .checked_add(intensity_len.unwrap_or(0))
+        .and_then(|bytes| bytes.checked_add(exposure_bytes))
+        .ok_or_else(|| length_overflow("frame payloads"))?;
+    if total > limits.max_frame_bytes {
+        return Err(DriverError::Contract(ContractViolation::OutputTooLarge {
+            field: "frame payloads",
+            limit: limits.max_frame_bytes,
+            actual: total,
+        }));
+    }
+
+    Ok(ValidatedImageLayout {
+        data_len,
+        intensity_len,
+        exposure_count,
+        exposure_bytes,
+    })
+}
+
+unsafe fn image_from_native(
+    image: &bindings::MV3D_LP_IMAGE_DATA,
+    limits: FrameLimits,
+) -> DriverResult<FrameRecord> {
+    let layout = validate_image_layout(image, limits)?;
+
+    // Reserve every destination before reading SDK memory. If any allocation fails, no vendor
+    // pointer has been dereferenced and the call returns an ordinary allocation error.
+    let mut data = allocated_bytes(layout.data_len)?;
+    let mut intensity_data = match layout.intensity_len {
+        Some(length) => Some(allocated_bytes(length)?),
+        None => None,
+    };
+    let mut exposure_timestamps = match layout.exposure_count {
+        Some(count) => Some(allocated_i64s(count, layout.exposure_bytes)?),
+        None => None,
+    };
+
+    // SAFETY: validate_image_layout established a non-null data pointer and bounded length. The
+    // caller of image_from_native guarantees that the SDK allocation is readable for that extent
+    // until this immediate copy finishes.
+    let source = unsafe { std::slice::from_raw_parts(image.pData.cast_const(), layout.data_len) };
+    data.extend_from_slice(source);
+
+    if let (Some(destination), Some(length)) = (&mut intensity_data, layout.intensity_len) {
+        // SAFETY: The same conditions as for data apply to the optional intensity pointer, and
+        // validate_image_layout additionally checked its exact pixel count.
+        let source =
+            unsafe { std::slice::from_raw_parts(image.pIntensityData.cast_const(), length) };
+        destination.extend_from_slice(source);
+    }
+
+    if let (Some(destination), Some(count)) = (&mut exposure_timestamps, layout.exposure_count) {
+        // Read exposure timestamps as bytes. This intentionally does not require the vendor's
+        // pointer to satisfy Rust's i64 alignment even though its C type is int64_t*.
+        // SAFETY: The caller guarantees `height * sizeof(i64)` readable bytes and validation
+        // bounded that byte count before this slice is constructed.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                image.pExposureTimeStamp.cast::<u8>().cast_const(),
+                layout.exposure_bytes,
+            )
+        };
+        for chunk in bytes.chunks_exact(size_of::<i64>()).take(count) {
+            let encoded: [u8; size_of::<i64>()] = chunk
+                .try_into()
+                .expect("chunks_exact yields one native i64 at a time");
+            destination.push(i64::from_ne_bytes(encoded));
+        }
+    }
+
+    Ok(FrameRecord {
+        image_type: ImageTypeRecord::from_raw(image.enImageType),
+        width: image.nWidth,
+        height: image.nHeight,
+        data,
+        intensity_data,
+        exposure_timestamps,
+        frame_number: image.nFrameNum,
+        device_timestamp: image.nTimeStamp,
+        valid: image.bValid != 0,
+        x_scale: image.fXScale,
+        y_scale: image.fYScale,
+        z_scale: image.fZScale,
+        x_offset: image.nXOffset,
+        y_offset: image.nYOffset,
+        z_offset: image.nZOffset,
+    })
+}
+
+fn known_bytes_per_pixel(image_type: bindings::Mv3dLpImageType) -> Option<usize> {
+    match image_type {
+        bindings::ImageType_Mono8 => Some(1),
+        bindings::ImageType_Depth => Some(2),
+        bindings::ImageType_Profile => Some(6),
+        bindings::ImageType_PointCloud | bindings::ImageType_Profile_ABC32 => Some(12),
+        bindings::ImageType_RGB24_Packed => Some(3),
+        bindings::ImageType_Jpeg | bindings::ImageType_Undefined => None,
+        _ => None,
+    }
+}
+
+fn allocated_bytes(length: usize) -> DriverResult<Vec<u8>> {
+    let mut destination = Vec::new();
+    destination
+        .try_reserve_exact(length)
+        .map_err(|_| DriverError::Allocation { requested: length })?;
+    Ok(destination)
+}
+
+fn allocated_i64s(count: usize, requested_bytes: usize) -> DriverResult<Vec<i64>> {
+    let mut destination = Vec::new();
+    destination
+        .try_reserve_exact(count)
+        .map_err(|_| DriverError::Allocation {
+            requested: requested_bytes,
+        })?;
+    Ok(destination)
+}
+
+fn usize_from_u32(value: u32, field: &'static str) -> DriverResult<usize> {
+    usize::try_from(value).map_err(|_| length_overflow(field))
+}
+
+fn invalid_image_value(field: &'static str) -> DriverError {
+    DriverError::Contract(ContractViolation::InvalidImageValue { field })
+}
+
+fn null_pointer_with_length(field: &'static str, length: usize) -> DriverError {
+    DriverError::Contract(ContractViolation::NullPointerWithLength { field, length })
+}
+
+fn length_mismatch(field: &'static str, expected: usize, actual: usize) -> DriverError {
+    DriverError::Contract(ContractViolation::LengthMismatch {
+        field,
+        expected,
+        actual,
+    })
+}
+
+fn length_overflow(field: &'static str) -> DriverError {
+    DriverError::Contract(ContractViolation::LengthOverflow { field })
+}
+
+#[cfg(test)]
+pub(crate) fn image_from_test_buffers(
+    status: i32,
+    mut image: bindings::MV3D_LP_IMAGE_DATA,
+    data: Option<&[u8]>,
+    intensity_data: Option<&[u8]>,
+    exposure_timestamps: Option<&[i64]>,
+    limits: FrameLimits,
+) -> DriverResult<FrameRecord> {
+    // Mirror NativeDriver: a failing status makes every output byte untrusted and must win over
+    // malformed metadata or pointers.
+    crate::driver::status_result(status)?;
+
+    image.pData = data.map_or(std::ptr::null_mut(), |bytes| bytes.as_ptr().cast_mut());
+    image.pIntensityData =
+        intensity_data.map_or(std::ptr::null_mut(), |bytes| bytes.as_ptr().cast_mut());
+    image.pExposureTimeStamp =
+        exposure_timestamps.map_or(std::ptr::null_mut(), |values| values.as_ptr().cast_mut());
+
+    let layout = validate_image_layout(&image, limits)?;
+    if data.is_none_or(|bytes| bytes.len() < layout.data_len) {
+        return Err(length_mismatch(
+            "test data backing",
+            layout.data_len,
+            data.map_or(0, <[u8]>::len),
+        ));
+    }
+    if let Some(expected) = layout.intensity_len
+        && intensity_data.is_none_or(|bytes| bytes.len() < expected)
+    {
+        return Err(length_mismatch(
+            "test intensity backing",
+            expected,
+            intensity_data.map_or(0, <[u8]>::len),
+        ));
+    }
+    if let Some(expected) = layout.exposure_count
+        && exposure_timestamps.is_none_or(|values| values.len() < expected)
+    {
+        return Err(length_mismatch(
+            "test exposure backing",
+            expected,
+            exposure_timestamps.map_or(0, <[i64]>::len),
+        ));
+    }
+
+    // SAFETY: Each pointer was derived from a live borrowed slice above, and the backing checks
+    // guarantee the validated extents fit inside those slices for this synchronous call.
+    unsafe { image_from_native(&image, limits) }
 }
 
 pub(crate) fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {

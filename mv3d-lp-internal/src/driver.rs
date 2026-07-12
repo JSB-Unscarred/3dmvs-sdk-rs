@@ -5,6 +5,7 @@ use std::ptr::NonNull;
 
 use crate::device::{DeviceInfoRaw, DeviceListAttempt, IpConfigRaw};
 use crate::error::ContractViolation;
+use crate::frame::FrameRecord;
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub(crate) trait Driver {
     fn stop(&self, handle: Handle) -> DriverResult<()>;
     fn soft_trigger(&self, handle: Handle) -> DriverResult<()>;
     fn clear_buffer(&self, handle: Handle) -> DriverResult<()>;
+    fn get_image(&self, handle: Handle, timeout_ms: u32) -> DriverResult<FrameRecord>;
 
     fn get_parameter(&self, handle: Handle, key: &CStr) -> DriverResult<ParameterRecord>;
     fn set_parameter(
@@ -58,7 +60,6 @@ pub(crate) trait Driver {
     fn execute(&self, handle: Handle, key: &CStr) -> DriverResult<()>;
 }
 
-#[cfg(feature = "native")]
 pub(crate) fn status_result(status: i32) -> DriverResult<()> {
     if status == 0 {
         Ok(())

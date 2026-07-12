@@ -1,4 +1,4 @@
-use mv3d_lp::{Operation, SdkError, StatusCode};
+use mv3d_lp::{ContractViolation, Error, InputViolation, Operation, SdkError, StatusCode};
 
 #[test]
 fn known_high_bit_status_preserves_its_exact_bits() {
@@ -19,4 +19,144 @@ fn unknown_status_is_retained_with_its_operation() {
     assert_eq!(error.operation(), Operation::GetParam);
     assert_eq!(error.status().bits(), 0xDEAD_BEEF);
     assert!(error.to_string().contains("0xDEADBEEF"));
+}
+
+#[test]
+fn get_image_operation_uses_the_vendor_symbol() {
+    assert_eq!(Operation::GetImage.sdk_name(), "MV3D_LP_GetImage");
+
+    let error: Error = mv3d_lp_internal::Error::Sdk {
+        operation: "MV3D_LP_GetImage",
+        status: 0x8006_0006_u32 as i32,
+    }
+    .into();
+
+    assert_eq!(
+        error,
+        Error::Sdk(SdkError::new(Operation::GetImage, StatusCode::NO_DATA))
+    );
+}
+
+#[test]
+fn image_contract_violations_retain_lengths_and_operation() {
+    let error: Error = mv3d_lp_internal::Error::ContractViolation {
+        operation: "MV3D_LP_GetImage",
+        kind: mv3d_lp_internal::ContractViolation::LengthMismatch {
+            field: "image data",
+            expected: 24,
+            actual: 12,
+        },
+    }
+    .into();
+
+    assert_eq!(
+        error,
+        Error::ContractViolation {
+            operation: Operation::GetImage,
+            violation: ContractViolation::LengthMismatch {
+                field: "image data",
+                expected: 24,
+                actual: 12,
+            },
+        }
+    );
+}
+
+#[test]
+fn remaining_image_contract_violations_map_without_losing_context() {
+    let cases = [
+        (
+            mv3d_lp_internal::ContractViolation::NullPointerWithLength {
+                field: "image data",
+                length: 8,
+            },
+            ContractViolation::NullPointerWithLength {
+                field: "image data",
+                length: 8,
+            },
+        ),
+        (
+            mv3d_lp_internal::ContractViolation::LengthOverflow {
+                field: "frame payload",
+            },
+            ContractViolation::LengthOverflow {
+                field: "frame payload",
+            },
+        ),
+        (
+            mv3d_lp_internal::ContractViolation::OutputTooLarge {
+                field: "frame payload",
+                limit: 512,
+                actual: 513,
+            },
+            ContractViolation::OutputTooLarge {
+                field: "frame payload",
+                limit: 512,
+                actual: 513,
+            },
+        ),
+        (
+            mv3d_lp_internal::ContractViolation::InvalidImageValue {
+                field: "valid flag",
+            },
+            ContractViolation::InvalidValue {
+                field: "valid flag",
+            },
+        ),
+    ];
+
+    for (kind, violation) in cases {
+        let error: Error = mv3d_lp_internal::Error::ContractViolation {
+            operation: "MV3D_LP_GetImage",
+            kind,
+        }
+        .into();
+
+        assert_eq!(
+            error,
+            Error::ContractViolation {
+                operation: Operation::GetImage,
+                violation,
+            }
+        );
+    }
+}
+
+#[test]
+fn excessive_timeout_retains_the_exact_duration() {
+    let error: Error = mv3d_lp_internal::Error::InvalidInput {
+        operation: "timeout",
+        kind: mv3d_lp_internal::InvalidInput::TimeoutTooLong {
+            maximum_millis: u32::MAX - 1,
+            actual_millis: u128::from(u32::MAX),
+        },
+    }
+    .into();
+
+    assert_eq!(
+        error,
+        Error::InvalidInput {
+            field: "timeout",
+            violation: InputViolation::TimeoutTooLong {
+                maximum_millis: u32::MAX - 1,
+                actual_millis: u128::from(u32::MAX),
+            },
+        }
+    );
+}
+
+#[test]
+fn allocation_failure_retains_its_operation() {
+    let error: Error = mv3d_lp_internal::Error::AllocationFailed {
+        operation: "MV3D_LP_GetImage",
+        requested: 1024,
+    }
+    .into();
+
+    assert_eq!(
+        error,
+        Error::AllocationFailed {
+            operation: Operation::GetImage,
+        }
+    );
 }

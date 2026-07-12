@@ -177,6 +177,7 @@ impl Runtime {
             records
                 .try_reserve_exact(reported)
                 .map_err(|_| Error::AllocationFailed {
+                    operation: "MV3D_LP_GetDeviceList",
                     requested: reported,
                 })?;
             records.extend(list.records.into_iter().map(DeviceRecord::from));
@@ -343,7 +344,10 @@ fn map_driver_error(operation: &'static str, error: DriverError) -> Error {
     match error {
         DriverError::Status(status) => Error::Sdk { operation, status },
         DriverError::Contract(kind) => Error::ContractViolation { operation, kind },
-        DriverError::Allocation { requested } => Error::AllocationFailed { requested },
+        DriverError::Allocation { requested } => Error::AllocationFailed {
+            operation,
+            requested,
+        },
         DriverError::OrphanedHandle(source) => Error::OpenFailedWithHandle {
             operation,
             source: Box::new(map_driver_error(operation, *source)),

@@ -11,7 +11,8 @@ fn drop_stops_before_closing_a_measuring_camera() {
     let (runtime, _) = active_runtime(&mock);
     {
         let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-        camera.start().unwrap();
+        let measurement = camera.start().unwrap();
+        drop(measurement);
     }
 
     let log = mock.logs();
@@ -26,7 +27,8 @@ fn close_is_attempted_even_when_cleanup_stop_fails() {
     mock.push_close(Err(DriverError::Status(0x8006_0000_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
     let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    camera.start().unwrap();
+    let measurement = camera.start().unwrap();
+    std::mem::forget(measurement);
 
     let error = camera.close().unwrap_err();
     assert!(error.stop.is_some());

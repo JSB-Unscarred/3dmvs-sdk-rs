@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::device::{DeviceListAttempt, IpConfigRaw};
 use crate::driver::{Driver, DriverResult, Handle};
+use crate::frame::FrameRecord;
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 use crate::runtime::{Gate, Runtime};
 
@@ -29,6 +30,8 @@ struct MockState {
     stop: VecDeque<DriverResult<()>>,
     soft_trigger: VecDeque<DriverResult<()>>,
     clear_buffer: VecDeque<DriverResult<()>>,
+    get_image: VecDeque<DriverResult<FrameRecord>>,
+    image_timeouts: Vec<u32>,
     get_parameter: VecDeque<DriverResult<ParameterRecord>>,
     set_parameter: VecDeque<DriverResult<()>>,
     execute: VecDeque<DriverResult<()>>,
@@ -52,6 +55,8 @@ impl MockDriver {
                 stop: VecDeque::new(),
                 soft_trigger: VecDeque::new(),
                 clear_buffer: VecDeque::new(),
+                get_image: VecDeque::new(),
+                image_timeouts: Vec::new(),
                 get_parameter: VecDeque::new(),
                 set_parameter: VecDeque::new(),
                 execute: VecDeque::new(),
@@ -97,6 +102,18 @@ impl MockDriver {
         self.state().stop.push_back(result);
     }
 
+    pub(crate) fn push_soft_trigger(&self, result: DriverResult<()>) {
+        self.state().soft_trigger.push_back(result);
+    }
+
+    pub(crate) fn push_clear_buffer(&self, result: DriverResult<()>) {
+        self.state().clear_buffer.push_back(result);
+    }
+
+    pub(crate) fn push_get_image(&self, result: DriverResult<FrameRecord>) {
+        self.state().get_image.push_back(result);
+    }
+
     pub(crate) fn push_get_parameter(&self, result: DriverResult<ParameterRecord>) {
         self.state().get_parameter.push_back(result);
     }
@@ -107,6 +124,10 @@ impl MockDriver {
 
     pub(crate) fn capacities(&self) -> Vec<usize> {
         self.state().capacities.clone()
+    }
+
+    pub(crate) fn image_timeouts(&self) -> Vec<u32> {
+        self.state().image_timeouts.clone()
     }
 
     fn state(&self) -> RefMut<'_, MockState> {
@@ -200,6 +221,16 @@ impl Driver for MockDriver {
         let mut state = self.state();
         state.log.push("clear_buffer");
         pop_or(&mut state.clear_buffer, Ok(()))
+    }
+
+    fn get_image(&self, _: Handle, timeout_ms: u32) -> DriverResult<FrameRecord> {
+        let mut state = self.state();
+        state.log.push("get_image");
+        state.image_timeouts.push(timeout_ms);
+        pop_or(
+            &mut state.get_image,
+            Err(crate::driver::DriverError::Status(0x8006_0006_u32 as i32)),
+        )
     }
 
     fn get_parameter(&self, _: Handle, _: &CStr) -> DriverResult<ParameterRecord> {

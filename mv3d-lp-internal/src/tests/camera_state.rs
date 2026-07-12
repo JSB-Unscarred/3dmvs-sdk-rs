@@ -13,10 +13,9 @@ fn start_and_stop_update_state_only_after_success() {
     let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
     assert_eq!(camera.state(), CameraState::Open);
-    assert!(matches!(camera.stop(), Err(Error::InvalidState { .. })));
-    camera.start().unwrap();
-    assert_eq!(camera.state(), CameraState::Measuring);
-    camera.stop().unwrap();
+    let measurement = camera.start().unwrap();
+    assert_eq!(measurement.state(), CameraState::Measuring);
+    measurement.stop().unwrap();
     assert_eq!(camera.state(), CameraState::Open);
     camera.close().unwrap();
     assert_eq!(

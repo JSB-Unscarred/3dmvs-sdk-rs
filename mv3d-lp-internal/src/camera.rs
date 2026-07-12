@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use crate::driver::Handle;
 use crate::error::{Error, InvalidInput};
+use crate::frame::FrameRecord;
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 use crate::runtime::Runtime;
 
@@ -25,8 +26,8 @@ impl CameraState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CleanupError {
-    pub stop: Option<Error>,
-    pub close: Option<Error>,
+    pub stop: Option<Box<Error>>,
+    pub close: Option<Box<Error>>,
 }
 
 pub struct Camera<'runtime> {
@@ -50,7 +51,7 @@ impl<'runtime> Camera<'runtime> {
         self.state
     }
 
-    pub fn start(&mut self) -> Result<(), Error> {
+    pub fn start(&mut self) -> Result<Measurement<'_>, Error> {
         self.require_state("MV3D_LP_StartMeasure", &[CameraState::Open])?;
         let result = self
             .runtime
@@ -58,37 +59,20 @@ impl<'runtime> Camera<'runtime> {
         match result {
             Ok(()) => {
                 self.state = CameraState::Measuring;
-                Ok(())
+                let handle = self.handle();
+                Ok(Measurement {
+                    runtime: self.runtime,
+                    handle,
+                    state: &mut self.state,
+                    active: true,
+                    _not_send_or_sync: PhantomData,
+                })
             }
             Err(error) => {
                 self.state = CameraState::Faulted;
                 Err(error)
             }
         }
-    }
-
-    pub fn stop(&mut self) -> Result<(), Error> {
-        self.require_state("MV3D_LP_StopMeasure", &[CameraState::Measuring])?;
-        let result = self
-            .runtime
-            .call("MV3D_LP_StopMeasure", |driver| driver.stop(self.handle()));
-        match result {
-            Ok(()) => {
-                self.state = CameraState::Open;
-                Ok(())
-            }
-            Err(error) => {
-                self.state = CameraState::Faulted;
-                Err(error)
-            }
-        }
-    }
-
-    pub fn soft_trigger(&mut self) -> Result<(), Error> {
-        self.require_state("MV3D_LP_SoftTrigger", &[CameraState::Measuring])?;
-        self.runtime.call("MV3D_LP_SoftTrigger", |driver| {
-            driver.soft_trigger(self.handle())
-        })
     }
 
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
@@ -155,13 +139,15 @@ impl<'runtime> Camera<'runtime> {
             self.runtime
                 .cleanup_call("MV3D_LP_StopMeasure", |driver| driver.stop(handle))
                 .err()
+                .map(Box::new)
         } else {
             None
         };
         let close = self
             .runtime
             .cleanup_call("MV3D_LP_CloseDevice", |driver| driver.close(handle))
-            .err();
+            .err()
+            .map(Box::new);
         self.runtime.record_close_result(close.is_none());
 
         if stop.is_none() && close.is_none() {
@@ -189,6 +175,149 @@ impl<'runtime> Camera<'runtime> {
             })
         }
     }
+}
+
+/// A measuring session that exclusively borrows its camera state.
+///
+/// Dropping the value makes a best-effort call to `MV3D_LP_StopMeasure`.
+pub struct Measurement<'camera> {
+    runtime: &'camera Runtime,
+    handle: Handle,
+    state: &'camera mut CameraState,
+    active: bool,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl Measurement<'_> {
+    pub fn state(&self) -> CameraState {
+        *self.state
+    }
+
+    pub fn soft_trigger(&mut self) -> Result<(), Error> {
+        self.require_measuring("MV3D_LP_SoftTrigger")?;
+        self.runtime.call("MV3D_LP_SoftTrigger", |driver| {
+            driver.soft_trigger(self.handle)
+        })
+    }
+
+    pub fn clear_buffer(&mut self) -> Result<(), Error> {
+        self.require_measuring("MV3D_LP_ClearDataBuffer")?;
+        self.runtime.call("MV3D_LP_ClearDataBuffer", |driver| {
+            driver.clear_buffer(self.handle)
+        })
+    }
+
+    pub fn get_image(&mut self, timeout_ms: u32) -> Result<FrameRecord, Error> {
+        self.require_measuring("MV3D_LP_GetImage")?;
+        if timeout_ms == u32::MAX {
+            return Err(Error::InvalidInput {
+                operation: "MV3D_LP_GetImage",
+                kind: InvalidInput::TimeoutTooLong {
+                    maximum_millis: u32::MAX - 1,
+                    actual_millis: u128::from(timeout_ms),
+                },
+            });
+        }
+        self.runtime.call("MV3D_LP_GetImage", |driver| {
+            driver.get_image(self.handle, timeout_ms)
+        })
+    }
+
+    pub fn get_parameter(&mut self, key: &[u8]) -> Result<ParameterRecord, Error> {
+        self.require_measuring("MV3D_LP_GetParam")?;
+        let key = Runtime::parameter_key("MV3D_LP_GetParam", key)?;
+        self.runtime.call("MV3D_LP_GetParam", |driver| {
+            driver.get_parameter(self.handle, &key)
+        })
+    }
+
+    pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValueRecord) -> Result<(), Error> {
+        self.require_measuring("MV3D_LP_SetParam")?;
+        validate_parameter_value("MV3D_LP_SetParam", value)?;
+        let key = Runtime::parameter_key("MV3D_LP_SetParam", key)?;
+        self.runtime.call("MV3D_LP_SetParam", |driver| {
+            driver.set_parameter(self.handle, &key, value)
+        })
+    }
+
+    pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
+        self.require_measuring("MV3D_LP_Execute")?;
+        let key = Runtime::parameter_key("MV3D_LP_Execute", key)?;
+        self.runtime.call("MV3D_LP_Execute", |driver| {
+            driver.execute(self.handle, &key)
+        })
+    }
+
+    pub fn stop(mut self) -> Result<(), Error> {
+        let result = self.stop_with(false);
+        self.active = false;
+        result
+    }
+
+    fn stop_with(&mut self, cleanup: bool) -> Result<(), Error> {
+        self.require_measuring("MV3D_LP_StopMeasure")?;
+        let result = if cleanup {
+            self.runtime
+                .cleanup_call("MV3D_LP_StopMeasure", |driver| driver.stop(self.handle))
+        } else {
+            self.runtime
+                .call("MV3D_LP_StopMeasure", |driver| driver.stop(self.handle))
+        };
+        match result {
+            Ok(()) => {
+                *self.state = CameraState::Open;
+                Ok(())
+            }
+            Err(error) => {
+                *self.state = CameraState::Faulted;
+                Err(error)
+            }
+        }
+    }
+
+    fn require_measuring(&self, operation: &'static str) -> Result<(), Error> {
+        if *self.state == CameraState::Measuring {
+            Ok(())
+        } else {
+            Err(Error::InvalidState {
+                operation,
+                state: self.state.as_str(),
+            })
+        }
+    }
+}
+
+impl Drop for Measurement<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.stop_with(true);
+            self.active = false;
+        }
+    }
+}
+
+fn validate_parameter_value(
+    operation: &'static str,
+    value: &ParameterValueRecord,
+) -> Result<(), Error> {
+    if let ParameterValueRecord::String(value) = value {
+        if value.len() > 255 {
+            return Err(Error::InvalidInput {
+                operation,
+                kind: InvalidInput::TooLong {
+                    actual: value.len(),
+                    maximum: 255,
+                },
+            });
+        }
+        if value.contains(&0) {
+            return Err(Error::InvalidInput {
+                operation,
+                kind: InvalidInput::InteriorNul,
+            });
+        }
+    }
+    Ok(())
 }
 
 impl Drop for Camera<'_> {

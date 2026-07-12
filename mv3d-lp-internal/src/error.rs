@@ -3,14 +3,48 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContractViolation {
     NullVersionPointer,
-    UnterminatedVersion { limit: usize },
+    UnterminatedVersion {
+        limit: usize,
+    },
     NullHandleOnSuccess,
-    DeviceCountExceedsLimit { reported: u32, limit: usize },
-    DeviceListCountMismatch { reported: u32, returned: usize },
+    DeviceCountExceedsLimit {
+        reported: u32,
+        limit: usize,
+    },
+    DeviceListCountMismatch {
+        reported: u32,
+        returned: usize,
+    },
     UnknownParameterType(i32),
-    EnumCountExceedsLimit { reported: u32, limit: usize },
-    StringMaxLengthExceedsLimit { reported: u32, limit: usize },
+    EnumCountExceedsLimit {
+        reported: u32,
+        limit: usize,
+    },
+    StringMaxLengthExceedsLimit {
+        reported: u32,
+        limit: usize,
+    },
     HandleCountOverflow,
+    NullPointerWithLength {
+        field: &'static str,
+        length: usize,
+    },
+    LengthMismatch {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    LengthOverflow {
+        field: &'static str,
+    },
+    OutputTooLarge {
+        field: &'static str,
+        limit: usize,
+        actual: usize,
+    },
+    InvalidImageValue {
+        field: &'static str,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,7 +52,14 @@ pub enum InvalidInput {
     Empty,
     InteriorNul,
     NonAscii,
-    TooLong { actual: usize, maximum: usize },
+    TooLong {
+        actual: usize,
+        maximum: usize,
+    },
+    TimeoutTooLong {
+        maximum_millis: u32,
+        actual_millis: u128,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +95,7 @@ pub enum Error {
         attempts: usize,
     },
     AllocationFailed {
+        operation: &'static str,
         requested: usize,
     },
     UnclosedDevices {
@@ -102,8 +144,14 @@ impl fmt::Display for Error {
                 f,
                 "the device list kept changing across {attempts} discovery attempts"
             ),
-            Self::AllocationFailed { requested } => {
-                write!(f, "could not allocate space for {requested} SDK records")
+            Self::AllocationFailed {
+                operation,
+                requested,
+            } => {
+                write!(
+                    f,
+                    "could not allocate {requested} bytes or records for {operation}"
+                )
             }
             Self::UnclosedDevices {
                 live_handles,
