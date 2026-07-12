@@ -1,4 +1,9 @@
-use mv3d_lp::{Camera, FileTransfer, ImageProcessor, Measurement, OwnedFrame, OwnedImage, Sdk};
+use std::sync::mpsc::Receiver;
+
+use mv3d_lp::{
+    CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Camera, DeviceException,
+    DeviceExceptionType, FileTransfer, ImageProcessor, Measurement, OwnedFrame, OwnedImage, Sdk,
+};
 
 macro_rules! assert_not_impl {
     ($type:ty: $bound:path) => {
@@ -23,12 +28,15 @@ assert_not_impl!(Camera<'static>: Send);
 assert_not_impl!(Camera<'static>: Sync);
 assert_not_impl!(Measurement<'static>: Send);
 assert_not_impl!(Measurement<'static>: Sync);
+assert_not_impl!(CallbackMeasurement<'static>: Send);
+assert_not_impl!(CallbackMeasurement<'static>: Sync);
 assert_not_impl!(FileTransfer<'static, 'static>: Send);
 assert_not_impl!(FileTransfer<'static, 'static>: Sync);
 assert_not_impl!(ImageProcessor<'static>: Send);
 assert_not_impl!(ImageProcessor<'static>: Sync);
 assert_not_impl!(OwnedFrame: Clone);
 assert_not_impl!(OwnedImage: Clone);
+assert_not_impl!(Receiver<OwnedFrame>: Sync);
 
 #[test]
 fn sdk_and_camera_thread_traits_are_locked_at_compile_time() {}
@@ -36,6 +44,13 @@ fn sdk_and_camera_thread_traits_are_locked_at_compile_time() {}
 #[test]
 fn owned_frames_can_move_and_be_shared_between_threads() {
     fn assert_send_sync<T: Send + Sync>() {}
+    fn assert_send<T: Send>() {}
 
     assert_send_sync::<OwnedFrame>();
+    assert_send_sync::<DeviceException>();
+    assert_send_sync::<DeviceExceptionType>();
+    assert_send_sync::<CallbackOptions>();
+    assert_send_sync::<CallbackStats>();
+    assert_send::<CallbackWorker>();
+    assert_send::<Receiver<OwnedFrame>>();
 }

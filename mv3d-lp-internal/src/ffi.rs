@@ -30,6 +30,13 @@ use crate::bindings;
     target_arch = "x86_64",
     target_env = "msvc"
 ))]
+use crate::callback::{CallbackCookie, exception_trampoline, image_trampoline};
+#[cfg(all(
+    feature = "native",
+    target_os = "windows",
+    target_arch = "x86_64",
+    target_env = "msvc"
+))]
 use crate::device::{DeviceInfoRaw, DeviceListAttempt, IpConfigRaw};
 #[cfg(all(
     feature = "display-windows",
@@ -233,6 +240,34 @@ impl Driver for NativeDriver {
         // validate_image_layout checks lengths, null pairs, arithmetic, and the aggregate limit
         // before copy_image_from_native dereferences any pointer.
         unsafe { image_from_native(&image, FrameLimits::default()) }
+    }
+
+    fn register_image_callback(&self, handle: Handle, cookie: CallbackCookie) -> DriverResult<()> {
+        // SAFETY: the callback function has the SDK's system calling convention and static
+        // lifetime. The opaque cookie is never dereferenced and is not reused by the registry.
+        status_result(unsafe {
+            bindings::MV3D_LP_RegisterImageDataCallBack(
+                handle.as_ptr(),
+                Some(image_trampoline),
+                cookie.as_user_pointer(),
+            )
+        })
+    }
+
+    fn register_exception_callback(
+        &self,
+        handle: Handle,
+        cookie: CallbackCookie,
+    ) -> DriverResult<()> {
+        // SAFETY: the same static-trampoline and opaque-cookie guarantees as the image callback
+        // apply. Camera owns the live handle for this serialized registration call.
+        status_result(unsafe {
+            bindings::MV3D_LP_RegisterExceptionCallBack(
+                handle.as_ptr(),
+                Some(exception_trampoline),
+                cookie.as_user_pointer(),
+            )
+        })
     }
 
     fn get_parameter(&self, handle: Handle, key: &CStr) -> DriverResult<ParameterRecord> {
@@ -1067,6 +1102,15 @@ unsafe fn image_from_native(
         y_offset: image.nYOffset,
         z_offset: image.nZOffset,
     })
+}
+
+pub(crate) unsafe fn callback_image_from_native(
+    image: &bindings::MV3D_LP_IMAGE_DATA,
+) -> DriverResult<FrameRecord> {
+    // SAFETY: the native callback trampoline guarantees that `image` and its SDK-owned payloads
+    // remain readable for this immediate conversion. The shared converter validates every
+    // pointer/length pair and aggregate bound before dereferencing a payload.
+    unsafe { image_from_native(image, FrameLimits::default()) }
 }
 
 fn known_bytes_per_pixel(image_type: bindings::Mv3dLpImageType) -> Option<usize> {

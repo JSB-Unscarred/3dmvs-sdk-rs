@@ -8,7 +8,7 @@
     "planned_owned_output": "May be exposed later only with immediate owned output copies.",
     "implemented_m3": "Exposed through the audited M3 owned-output or retained-input safe facade.",
     "deferred_contract": "Raw binding only until missing ownership, blocking, encoding, or thread contract is resolved.",
-    "deferred_callback": "Raw binding only until callback concurrency and quiescence are resolved.",
+    "implemented_m4": "Exposed through the audited M4 registry/cookie callback facade with owned event delivery.",
     "hidden_deprecated": "Vendor-deprecated declaration retained only for raw ABI completeness."
   },
   "apis": [
@@ -98,7 +98,7 @@
       "header": "Mv3dLpApi.h",
       "line": 153,
       "signature": "MV3D_LP_STATUS __cdecl(HANDLE, MV3D_LP_ExceptionCallBack, void*)",
-      "safe_surface": "deferred_callback",
+      "safe_surface": "implemented_m4",
       "ownership": "SDK retains callback and user pointer for an undocumented lifetime.",
       "constraints": ["Callback uses __stdcall on x86.", "No native unregister or quiescence guarantee is documented."]
     },
@@ -143,7 +143,7 @@
       "header": "Mv3dLpApi.h",
       "line": 226,
       "signature": "MV3D_LP_STATUS __cdecl(HANDLE, MV3D_LP_ImageDataCallBack, void*)",
-      "safe_surface": "deferred_callback",
+      "safe_surface": "implemented_m4",
       "ownership": "SDK retains callback and user pointer; callback payload is SDK-owned.",
       "constraints": ["Callback uses __stdcall on x86.", "Do not call SDK APIs inside the callback.", "Concurrency and quiescence are undocumented."]
     },

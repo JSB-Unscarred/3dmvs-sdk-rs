@@ -5,7 +5,9 @@ use std::ffi::CStr;
 use std::num::NonZeroIsize;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::callback::CallbackCookie;
 use crate::device::{DeviceListAttempt, IpConfigRaw};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
@@ -47,12 +49,18 @@ struct MockState {
     open_handle: Option<Handle>,
     open: VecDeque<DriverResult<()>>,
     close: VecDeque<DriverResult<()>>,
+    close_entered: Option<Arc<AtomicBool>>,
     start: VecDeque<DriverResult<()>>,
     stop: VecDeque<DriverResult<()>>,
+    stop_entered: Option<Arc<AtomicBool>>,
     soft_trigger: VecDeque<DriverResult<()>>,
     clear_buffer: VecDeque<DriverResult<()>>,
     get_image: VecDeque<DriverResult<FrameRecord>>,
     image_timeouts: Vec<u32>,
+    register_image_callback: VecDeque<DriverResult<()>>,
+    register_exception_callback: VecDeque<DriverResult<()>>,
+    image_callback_cookies: Vec<CallbackCookie>,
+    exception_callback_cookies: Vec<CallbackCookie>,
     get_parameter: VecDeque<DriverResult<ParameterRecord>>,
     set_parameter: VecDeque<DriverResult<()>>,
     execute: VecDeque<DriverResult<()>>,
@@ -85,12 +93,18 @@ impl MockDriver {
                 open_handle: Some(mock_handle(1)),
                 open: VecDeque::new(),
                 close: VecDeque::new(),
+                close_entered: None,
                 start: VecDeque::new(),
                 stop: VecDeque::new(),
+                stop_entered: None,
                 soft_trigger: VecDeque::new(),
                 clear_buffer: VecDeque::new(),
                 get_image: VecDeque::new(),
                 image_timeouts: Vec::new(),
+                register_image_callback: VecDeque::new(),
+                register_exception_callback: VecDeque::new(),
+                image_callback_cookies: Vec::new(),
+                exception_callback_cookies: Vec::new(),
                 get_parameter: VecDeque::new(),
                 set_parameter: VecDeque::new(),
                 execute: VecDeque::new(),
@@ -141,12 +155,20 @@ impl MockDriver {
         self.state().close.push_back(result);
     }
 
+    pub(crate) fn set_close_entered(&self, entered: Arc<AtomicBool>) {
+        self.state().close_entered = Some(entered);
+    }
+
     pub(crate) fn push_start(&self, result: DriverResult<()>) {
         self.state().start.push_back(result);
     }
 
     pub(crate) fn push_stop(&self, result: DriverResult<()>) {
         self.state().stop.push_back(result);
+    }
+
+    pub(crate) fn set_stop_entered(&self, entered: Arc<AtomicBool>) {
+        self.state().stop_entered = Some(entered);
     }
 
     pub(crate) fn push_soft_trigger(&self, result: DriverResult<()>) {
@@ -159,6 +181,14 @@ impl MockDriver {
 
     pub(crate) fn push_get_image(&self, result: DriverResult<FrameRecord>) {
         self.state().get_image.push_back(result);
+    }
+
+    pub(crate) fn push_register_image_callback(&self, result: DriverResult<()>) {
+        self.state().register_image_callback.push_back(result);
+    }
+
+    pub(crate) fn push_register_exception_callback(&self, result: DriverResult<()>) {
+        self.state().register_exception_callback.push_back(result);
     }
 
     pub(crate) fn push_get_parameter(&self, result: DriverResult<ParameterRecord>) {
@@ -214,6 +244,14 @@ impl MockDriver {
 
     pub(crate) fn image_timeouts(&self) -> Vec<u32> {
         self.state().image_timeouts.clone()
+    }
+
+    pub(crate) fn image_callback_cookies(&self) -> Vec<CallbackCookie> {
+        self.state().image_callback_cookies.clone()
+    }
+
+    pub(crate) fn exception_callback_cookies(&self) -> Vec<CallbackCookie> {
+        self.state().exception_callback_cookies.clone()
     }
 
     pub(crate) fn file_access_calls(&self) -> Vec<FileAccessCall> {
@@ -291,6 +329,9 @@ impl Driver for MockDriver {
     fn close(&self, _: Handle) -> DriverResult<()> {
         let mut state = self.state();
         state.log.push("close");
+        if let Some(entered) = &state.close_entered {
+            entered.store(true, Ordering::SeqCst);
+        }
         pop_or(&mut state.close, Ok(()))
     }
 
@@ -303,6 +344,9 @@ impl Driver for MockDriver {
     fn stop(&self, _: Handle) -> DriverResult<()> {
         let mut state = self.state();
         state.log.push("stop");
+        if let Some(entered) = &state.stop_entered {
+            entered.store(true, Ordering::SeqCst);
+        }
         pop_or(&mut state.stop, Ok(()))
     }
 
@@ -326,6 +370,20 @@ impl Driver for MockDriver {
             &mut state.get_image,
             Err(crate::driver::DriverError::Status(0x8006_0006_u32 as i32)),
         )
+    }
+
+    fn register_image_callback(&self, _: Handle, cookie: CallbackCookie) -> DriverResult<()> {
+        let mut state = self.state();
+        state.log.push("register_image_callback");
+        state.image_callback_cookies.push(cookie);
+        pop_or(&mut state.register_image_callback, Ok(()))
+    }
+
+    fn register_exception_callback(&self, _: Handle, cookie: CallbackCookie) -> DriverResult<()> {
+        let mut state = self.state();
+        state.log.push("register_exception_callback");
+        state.exception_callback_cookies.push(cookie);
+        pop_or(&mut state.register_exception_callback, Ok(()))
     }
 
     fn get_parameter(&self, _: Handle, _: &CStr) -> DriverResult<ParameterRecord> {

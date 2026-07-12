@@ -5,6 +5,7 @@ use std::ffi::CStr;
 use std::num::NonZeroIsize;
 use std::ptr::NonNull;
 
+use crate::callback::CallbackCookie;
 use crate::device::{DeviceInfoRaw, DeviceListAttempt, IpConfigRaw};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
@@ -54,6 +55,12 @@ pub(crate) trait Driver {
     fn soft_trigger(&self, handle: Handle) -> DriverResult<()>;
     fn clear_buffer(&self, handle: Handle) -> DriverResult<()>;
     fn get_image(&self, handle: Handle, timeout_ms: u32) -> DriverResult<FrameRecord>;
+    fn register_image_callback(&self, handle: Handle, cookie: CallbackCookie) -> DriverResult<()>;
+    fn register_exception_callback(
+        &self,
+        handle: Handle,
+        cookie: CallbackCookie,
+    ) -> DriverResult<()>;
 
     fn get_parameter(&self, handle: Handle, key: &CStr) -> DriverResult<ParameterRecord>;
     fn set_parameter(

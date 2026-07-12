@@ -1,9 +1,12 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, TrySendError, sync_channel};
 use std::time::Duration;
 
 use crate::{
-    CommandKey, Error, FileTransfer, InputViolation, OwnedFrame, ParamKey, Parameter,
+    CallbackOptions, CallbackStats, CallbackWorker, CommandKey, DeviceException,
+    DeviceExceptionType, Error, FileTransfer, InputViolation, OwnedFrame, ParamKey, Parameter,
     ParameterValue, Result, SdkText,
 };
 
@@ -11,8 +14,10 @@ use crate::{
 pub enum CameraState {
     Open,
     Measuring,
+    CallbackMeasuring,
     Faulted,
     Transferring,
+    CallbackRetired,
 }
 
 /// A borrowed device session. The camera cannot outlive its owning [`crate::Sdk`].
@@ -37,8 +42,10 @@ impl<'sdk> Camera<'sdk> {
         match self.inner.state() {
             mv3d_lp_internal::CameraState::Open => CameraState::Open,
             mv3d_lp_internal::CameraState::Measuring => CameraState::Measuring,
+            mv3d_lp_internal::CameraState::CallbackMeasuring => CameraState::CallbackMeasuring,
             mv3d_lp_internal::CameraState::Faulted => CameraState::Faulted,
             mv3d_lp_internal::CameraState::Transferring => CameraState::Transferring,
+            mv3d_lp_internal::CameraState::CallbackRetired => CameraState::CallbackRetired,
         }
     }
 
@@ -50,6 +57,85 @@ impl<'sdk> Camera<'sdk> {
             .start()
             .map(Measurement::from_internal)
             .map_err(Error::from)
+    }
+
+    /// Registers native image delivery, starts measurement, and returns a bounded receiver.
+    ///
+    /// This is a one-shot mode for the current device handle. After the returned callback
+    /// measurement stops, close and reopen the camera before starting another acquisition.
+    pub fn start_receiving(
+        &mut self,
+        options: CallbackOptions,
+    ) -> Result<(CallbackMeasurement<'_>, Receiver<OwnedFrame>)> {
+        let (sink, receiver) = frame_callback_channel(options)?;
+        self.inner
+            .start_callback(sink)
+            .map(|inner| (CallbackMeasurement::from_internal(inner), receiver))
+            .map_err(Error::from)
+    }
+
+    /// Starts callback acquisition and invokes `handler` serially on a Rust worker thread.
+    ///
+    /// Like [`Camera::start_receiving`], this is a one-shot image registration for the current
+    /// device handle.
+    pub fn start_with_callback<F>(
+        &mut self,
+        options: CallbackOptions,
+        handler: F,
+    ) -> Result<(CallbackMeasurement<'_>, CallbackWorker)>
+    where
+        F: FnMut(OwnedFrame) + Send + 'static,
+    {
+        let (sink, receiver) = frame_callback_channel(options)?;
+        let worker =
+            CallbackWorker::spawn(receiver, handler).map_err(|_| Error::CallbackWorkerSpawn)?;
+        self.inner
+            .start_callback(sink)
+            .map(|inner| (CallbackMeasurement::from_internal(inner), worker))
+            .map_err(Error::from)
+    }
+
+    /// Registers an owned exception-event receiver for the lifetime of this camera handle.
+    ///
+    /// Exception registration is one-shot. This method and [`Camera::on_exception`] are mutually
+    /// exclusive for a device handle, even if the receiver or worker is later dropped.
+    pub fn exception_receiver(
+        &mut self,
+        options: CallbackOptions,
+    ) -> Result<Receiver<DeviceException>> {
+        let (sink, receiver) = exception_callback_channel(options)?;
+        self.inner
+            .register_exception_callback(sink)
+            .map(|()| receiver)
+            .map_err(Error::from)
+    }
+
+    /// Invokes an exception handler serially on a Rust worker thread.
+    ///
+    /// This consumes the same one-shot exception registration as
+    /// [`Camera::exception_receiver`].
+    pub fn on_exception<F>(
+        &mut self,
+        options: CallbackOptions,
+        handler: F,
+    ) -> Result<CallbackWorker>
+    where
+        F: FnMut(DeviceException) + Send + 'static,
+    {
+        let (sink, receiver) = exception_callback_channel(options)?;
+        let worker =
+            CallbackWorker::spawn(receiver, handler).map_err(|_| Error::CallbackWorkerSpawn)?;
+        self.inner
+            .register_exception_callback(sink)
+            .map(|()| worker)
+            .map_err(Error::from)
+    }
+
+    #[must_use]
+    pub fn exception_callback_stats(&self) -> Option<CallbackStats> {
+        self.inner
+            .exception_callback_stats()
+            .map(CallbackStats::from_internal)
     }
 
     pub fn clear_buffer(&mut self) -> Result<()> {
@@ -120,6 +206,103 @@ impl<'sdk> Camera<'sdk> {
             stop: error.stop.map(|error| Box::new(Error::from(*error))),
             close: error.close.map(|error| Box::new(Error::from(*error))),
         })
+    }
+}
+
+/// An active native-callback acquisition session borrowing its camera exclusively.
+///
+/// The guard revokes and drains Rust callback dispatch before stopping the SDK. It intentionally
+/// exposes neither pull acquisition nor `clear_buffer`.
+#[must_use = "dropping CallbackMeasurement stops callback acquisition"]
+pub struct CallbackMeasurement<'camera> {
+    inner: mv3d_lp_internal::CallbackMeasurement<'camera>,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl<'camera> CallbackMeasurement<'camera> {
+    fn from_internal(inner: mv3d_lp_internal::CallbackMeasurement<'camera>) -> Self {
+        Self {
+            inner,
+            _not_send_or_sync: PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn state(&self) -> CameraState {
+        match self.inner.state() {
+            mv3d_lp_internal::CameraState::Open => CameraState::Open,
+            mv3d_lp_internal::CameraState::Measuring => CameraState::Measuring,
+            mv3d_lp_internal::CameraState::CallbackMeasuring => CameraState::CallbackMeasuring,
+            mv3d_lp_internal::CameraState::Faulted => CameraState::Faulted,
+            mv3d_lp_internal::CameraState::Transferring => CameraState::Transferring,
+            mv3d_lp_internal::CameraState::CallbackRetired => CameraState::CallbackRetired,
+        }
+    }
+
+    pub fn soft_trigger(&mut self) -> Result<()> {
+        self.inner.soft_trigger().map_err(Error::from)
+    }
+
+    #[must_use]
+    pub fn callback_stats(&self) -> CallbackStats {
+        CallbackStats::from_internal(self.inner.callback_stats())
+    }
+
+    pub fn stop(self) -> Result<()> {
+        self.inner.stop().map_err(Error::from)
+    }
+}
+
+fn frame_callback_channel(
+    options: CallbackOptions,
+) -> Result<(mv3d_lp_internal::FrameCallbackSink, Receiver<OwnedFrame>)> {
+    let capacity = callback_queue_capacity(options)?;
+    let (sender, receiver) = sync_channel(capacity);
+    let sink = Arc::new(move |record| {
+        delivery_from_try_send(sender.try_send(OwnedFrame::from_internal(record)))
+    });
+    Ok((sink, receiver))
+}
+
+fn exception_callback_channel(
+    options: CallbackOptions,
+) -> Result<(
+    mv3d_lp_internal::ExceptionCallbackSink,
+    Receiver<DeviceException>,
+)> {
+    let capacity = callback_queue_capacity(options)?;
+    let (sender, receiver) = sync_channel(capacity);
+    let sink = Arc::new(move |record: mv3d_lp_internal::ExceptionRecord| {
+        let Ok(description) = SdkText::try_from(record.description) else {
+            return mv3d_lp_internal::CallbackDelivery::Disconnected;
+        };
+        let event = DeviceException::new(DeviceExceptionType::from_raw(record.kind), description);
+        delivery_from_try_send(sender.try_send(event))
+    });
+    Ok((sink, receiver))
+}
+
+fn callback_queue_capacity(options: CallbackOptions) -> Result<usize> {
+    let capacity = options.queue_capacity.get();
+    if capacity > CallbackOptions::MAX_QUEUE_CAPACITY {
+        return Err(Error::InvalidInput {
+            field: "callback queue capacity",
+            violation: InputViolation::CallbackQueueCapacity {
+                maximum: CallbackOptions::MAX_QUEUE_CAPACITY,
+                actual: capacity,
+            },
+        });
+    }
+    Ok(capacity)
+}
+
+fn delivery_from_try_send<T>(
+    result: std::result::Result<(), TrySendError<T>>,
+) -> mv3d_lp_internal::CallbackDelivery {
+    match result {
+        Ok(()) => mv3d_lp_internal::CallbackDelivery::Delivered,
+        Err(TrySendError::Full(_)) => mv3d_lp_internal::CallbackDelivery::Full,
+        Err(TrySendError::Disconnected(_)) => mv3d_lp_internal::CallbackDelivery::Disconnected,
     }
 }
 
@@ -255,11 +438,12 @@ fn parameter_from_internal(record: mv3d_lp_internal::ParameterRecord) -> Result<
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::time::Duration;
 
-    use crate::{Error, InputViolation};
+    use crate::{CallbackOptions, Error, InputViolation};
 
-    use super::timeout_millis;
+    use super::{callback_queue_capacity, frame_callback_channel, timeout_millis};
 
     #[test]
     fn timeout_conversion_is_finite_checked_and_rounds_up() {
@@ -286,5 +470,60 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn excessive_callback_queue_capacity_is_rejected_before_allocation() {
+        let options = CallbackOptions::new(
+            NonZeroUsize::new(CallbackOptions::MAX_QUEUE_CAPACITY + 1).unwrap(),
+        );
+        assert!(matches!(
+            callback_queue_capacity(options),
+            Err(Error::InvalidInput {
+                field: "callback queue capacity",
+                violation: InputViolation::CallbackQueueCapacity { .. },
+            })
+        ));
+    }
+
+    #[test]
+    fn production_callback_channel_drops_newest_when_full() {
+        let options = CallbackOptions::new(NonZeroUsize::new(1).unwrap());
+        let (sink, receiver) = frame_callback_channel(options).unwrap();
+
+        assert_eq!(
+            sink(callback_frame(1)),
+            mv3d_lp_internal::CallbackDelivery::Delivered
+        );
+        assert_eq!(
+            sink(callback_frame(2)),
+            mv3d_lp_internal::CallbackDelivery::Full
+        );
+        assert_eq!(receiver.recv().unwrap().frame_number, 1);
+        drop(receiver);
+        assert_eq!(
+            sink(callback_frame(3)),
+            mv3d_lp_internal::CallbackDelivery::Disconnected
+        );
+    }
+
+    fn callback_frame(frame_number: u32) -> mv3d_lp_internal::FrameRecord {
+        mv3d_lp_internal::FrameRecord {
+            image_type: mv3d_lp_internal::ImageTypeRecord::from_bits(0x0108_0001),
+            width: 1,
+            height: 1,
+            data: vec![frame_number as u8],
+            intensity_data: None,
+            exposure_timestamps: None,
+            frame_number,
+            device_timestamp: 0,
+            valid: true,
+            x_scale: 0.0,
+            y_scale: 0.0,
+            z_scale: 0.0,
+            x_offset: 0,
+            y_offset: 0,
+            z_offset: 0,
+        }
     }
 }

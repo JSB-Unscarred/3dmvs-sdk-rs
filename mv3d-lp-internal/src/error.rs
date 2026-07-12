@@ -25,6 +25,7 @@ pub enum ContractViolation {
         limit: usize,
     },
     HandleCountOverflow,
+    CallbackCookieExhausted,
     NullPointerWithLength {
         field: &'static str,
         length: usize,

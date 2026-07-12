@@ -2,6 +2,9 @@ use std::ffi::CString;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
+use crate::callback::{
+    CallbackRegistration, CallbackStatsRecord, ExceptionCallbackSink, FrameCallbackSink,
+};
 use crate::driver::Handle;
 use crate::error::{Error, InvalidInput};
 use crate::file_transfer::{FileProgress, FileTransferDirection, FileTransferStatus};
@@ -13,8 +16,10 @@ use crate::runtime::Runtime;
 pub enum CameraState {
     Open,
     Measuring,
+    CallbackMeasuring,
     Faulted,
     Transferring,
+    CallbackRetired,
 }
 
 impl CameraState {
@@ -22,8 +27,10 @@ impl CameraState {
         match self {
             Self::Open => "open",
             Self::Measuring => "measuring",
+            Self::CallbackMeasuring => "callback measuring",
             Self::Faulted => "faulted",
             Self::Transferring => "transferring",
+            Self::CallbackRetired => "callback retired",
         }
     }
 }
@@ -39,6 +46,10 @@ pub struct Camera<'runtime> {
     handle: Option<Handle>,
     state: CameraState,
     pending_transfer: Option<ActiveFileTransfer>,
+    image_registration: Option<CallbackRegistration>,
+    exception_registration: Option<CallbackRegistration>,
+    image_callback_attempted: bool,
+    exception_callback_attempted: bool,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -49,6 +60,10 @@ impl<'runtime> Camera<'runtime> {
             handle: Some(handle),
             state: CameraState::Open,
             pending_transfer: None,
+            image_registration: None,
+            exception_registration: None,
+            image_callback_attempted: false,
+            exception_callback_attempted: false,
             _not_send_or_sync: PhantomData,
         }
     }
@@ -79,6 +94,92 @@ impl<'runtime> Camera<'runtime> {
                 Err(error)
             }
         }
+    }
+
+    pub fn start_callback(
+        &mut self,
+        sink: FrameCallbackSink,
+    ) -> Result<CallbackMeasurement<'_>, Error> {
+        const OPERATION: &str = "MV3D_LP_RegisterImageDataCallBack";
+        self.require_state(OPERATION, &[CameraState::Open])?;
+        if self.image_callback_attempted {
+            return Err(Error::InvalidState {
+                operation: OPERATION,
+                state: "image callback registration already attempted",
+            });
+        }
+
+        let mut registration = CallbackRegistration::image(sink)?;
+        self.image_callback_attempted = true;
+        let register = self.runtime.call(OPERATION, |driver| {
+            driver.register_image_callback(self.handle(), registration.cookie())
+        });
+        if let Err(error) = register {
+            registration.deactivate();
+            self.state = CameraState::Faulted;
+            return Err(error);
+        }
+
+        let start = self
+            .runtime
+            .call("MV3D_LP_StartMeasure", |driver| driver.start(self.handle()));
+        match start {
+            Ok(()) => {
+                self.state = CameraState::CallbackMeasuring;
+                let handle = self.handle();
+                self.image_registration = Some(registration);
+                Ok(CallbackMeasurement {
+                    runtime: self.runtime,
+                    handle,
+                    state: &mut self.state,
+                    registration: &mut self.image_registration,
+                    active: true,
+                    _not_send_or_sync: PhantomData,
+                })
+            }
+            Err(error) => {
+                registration.deactivate();
+                self.state = CameraState::Faulted;
+                Err(error)
+            }
+        }
+    }
+
+    pub fn register_exception_callback(
+        &mut self,
+        sink: ExceptionCallbackSink,
+    ) -> Result<(), Error> {
+        const OPERATION: &str = "MV3D_LP_RegisterExceptionCallBack";
+        self.require_state(OPERATION, &[CameraState::Open])?;
+        if self.exception_callback_attempted {
+            return Err(Error::InvalidState {
+                operation: OPERATION,
+                state: "exception callback registration already attempted",
+            });
+        }
+
+        let mut registration = CallbackRegistration::exception(sink)?;
+        self.exception_callback_attempted = true;
+        let register = self.runtime.call(OPERATION, |driver| {
+            driver.register_exception_callback(self.handle(), registration.cookie())
+        });
+        match register {
+            Ok(()) => {
+                self.exception_registration = Some(registration);
+                Ok(())
+            }
+            Err(error) => {
+                registration.deactivate();
+                self.state = CameraState::Faulted;
+                Err(error)
+            }
+        }
+    }
+
+    pub fn exception_callback_stats(&self) -> Option<CallbackStatsRecord> {
+        self.exception_registration
+            .as_ref()
+            .map(CallbackRegistration::stats)
     }
 
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
@@ -312,12 +413,20 @@ impl<'runtime> Camera<'runtime> {
     }
 
     fn cleanup(&mut self) -> Result<(), CleanupError> {
+        if let Some(mut registration) = self.image_registration.take() {
+            registration.deactivate();
+        }
+        if let Some(mut registration) = self.exception_registration.take() {
+            registration.deactivate();
+        }
         let Some(handle) = self.handle.take() else {
             return Ok(());
         };
 
-        let stop = if self.state == CameraState::Measuring
-            || (self.state == CameraState::Faulted && self.pending_transfer.is_none())
+        let stop = if matches!(
+            self.state,
+            CameraState::Measuring | CameraState::CallbackMeasuring
+        ) || (self.state == CameraState::Faulted && self.pending_transfer.is_none())
         {
             self.runtime
                 .cleanup_call("MV3D_LP_StopMeasure", |driver| driver.stop(handle))
@@ -407,6 +516,95 @@ fn validated_file_name(operation: &'static str, bytes: &[u8]) -> Result<CString,
         operation,
         kind: InvalidInput::InteriorNul,
     })
+}
+
+/// An active native-callback acquisition session.
+///
+/// This guard deliberately does not expose pull acquisition or buffer clearing. Its callback
+/// registration is revoked and drained before `MV3D_LP_StopMeasure` is called.
+pub struct CallbackMeasurement<'camera> {
+    runtime: &'camera Runtime,
+    handle: Handle,
+    state: &'camera mut CameraState,
+    registration: &'camera mut Option<CallbackRegistration>,
+    active: bool,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl CallbackMeasurement<'_> {
+    pub fn state(&self) -> CameraState {
+        *self.state
+    }
+
+    pub fn soft_trigger(&mut self) -> Result<(), Error> {
+        self.require_measuring("MV3D_LP_SoftTrigger")?;
+        self.runtime.call("MV3D_LP_SoftTrigger", |driver| {
+            driver.soft_trigger(self.handle)
+        })
+    }
+
+    pub fn callback_stats(&self) -> CallbackStatsRecord {
+        self.registration
+            .as_ref()
+            .map(CallbackRegistration::stats)
+            .unwrap_or_default()
+    }
+
+    pub fn stop(mut self) -> Result<(), Error> {
+        let result = self.stop_with(false);
+        self.active = false;
+        result
+    }
+
+    fn stop_with(&mut self, cleanup: bool) -> Result<(), Error> {
+        self.deactivate_callback();
+        self.require_measuring("MV3D_LP_StopMeasure")?;
+        let result = if cleanup {
+            self.runtime
+                .cleanup_call("MV3D_LP_StopMeasure", |driver| driver.stop(self.handle))
+        } else {
+            self.runtime
+                .call("MV3D_LP_StopMeasure", |driver| driver.stop(self.handle))
+        };
+        match result {
+            Ok(()) => {
+                *self.state = CameraState::CallbackRetired;
+                Ok(())
+            }
+            Err(error) => {
+                *self.state = CameraState::Faulted;
+                Err(error)
+            }
+        }
+    }
+
+    fn deactivate_callback(&mut self) {
+        if let Some(mut registration) = self.registration.take() {
+            registration.deactivate();
+        }
+    }
+
+    fn require_measuring(&self, operation: &'static str) -> Result<(), Error> {
+        if *self.state == CameraState::CallbackMeasuring {
+            Ok(())
+        } else {
+            Err(Error::InvalidState {
+                operation,
+                state: self.state.as_str(),
+            })
+        }
+    }
+}
+
+impl Drop for CallbackMeasurement<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.stop_with(true);
+            self.active = false;
+        } else {
+            self.deactivate_callback();
+        }
+    }
 }
 
 /// A measuring session that exclusively borrows its camera state.

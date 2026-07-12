@@ -1,11 +1,15 @@
 use std::net::Ipv4Addr;
+use std::num::NonZeroUsize;
+use std::sync::mpsc::Receiver;
 
 use mv3d_lp::{
-    Camera, DeviceInfo, ImageFileFormat, ImageProcessor, ImageType, IpConfiguration, Measurement,
-    OwnedFrame, OwnedImage, Result, Sdk, SdkText,
+    CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Camera, CameraState,
+    DeviceException, DeviceExceptionType, DeviceInfo, ImageFileFormat, ImageProcessor, ImageType,
+    IpConfiguration, Measurement, OwnedFrame, OwnedImage, Result, Sdk, SdkText,
 };
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn public_lifecycle_and_control_methods_have_safe_signatures() {
     let _: fn() -> Result<Sdk> = Sdk::initialize;
     let _: for<'sdk> fn(&'sdk Sdk, Ipv4Addr) -> Result<Camera<'sdk>> = Sdk::open_by_ip;
@@ -14,7 +18,33 @@ fn public_lifecycle_and_control_methods_have_safe_signatures() {
     let _: fn(Sdk) -> Result<()> = Sdk::shutdown;
     let _: for<'sdk> fn(&'sdk Sdk) -> ImageProcessor<'sdk> = Sdk::image_processor;
     let _ = Camera::start;
+    let _: for<'camera> fn(
+        &'camera mut Camera<'static>,
+        CallbackOptions,
+    ) -> Result<(CallbackMeasurement<'camera>, Receiver<OwnedFrame>)> =
+        Camera::<'static>::start_receiving;
+    let _: for<'camera> fn(
+        &'camera mut Camera<'static>,
+        CallbackOptions,
+        fn(OwnedFrame),
+    ) -> Result<(CallbackMeasurement<'camera>, CallbackWorker)> =
+        Camera::<'static>::start_with_callback::<fn(OwnedFrame)>;
+    let _: for<'camera> fn(
+        &'camera mut Camera<'static>,
+        CallbackOptions,
+    ) -> Result<Receiver<DeviceException>> = Camera::<'static>::exception_receiver;
+    let _: for<'camera> fn(
+        &'camera mut Camera<'static>,
+        CallbackOptions,
+        fn(DeviceException),
+    ) -> Result<CallbackWorker> = Camera::<'static>::on_exception::<fn(DeviceException)>;
     let _ = Camera::clear_buffer;
+    let _: fn(&CallbackMeasurement<'static>) -> CameraState = CallbackMeasurement::<'static>::state;
+    let _: fn(&mut CallbackMeasurement<'static>) -> Result<()> =
+        CallbackMeasurement::<'static>::soft_trigger;
+    let _: fn(&CallbackMeasurement<'static>) -> CallbackStats =
+        CallbackMeasurement::<'static>::callback_stats;
+    let _: fn(CallbackMeasurement<'static>) -> Result<()> = CallbackMeasurement::<'static>::stop;
     let _ = Measurement::get_image;
     let _ = Measurement::soft_trigger;
     let _ = Measurement::clear_buffer;
@@ -39,6 +69,36 @@ fn owned_output_types_can_move_between_threads() {
     assert_send_sync::<IpConfiguration>();
     assert_send_sync::<OwnedFrame>();
     assert_send_sync::<OwnedImage>();
+    assert_send_sync::<DeviceException>();
+    assert_send_sync::<DeviceExceptionType>();
+    assert_send_sync::<CallbackOptions>();
+    assert_send_sync::<CallbackStats>();
+}
+
+#[test]
+fn callback_public_types_preserve_owned_data_and_counters() {
+    fn assert_exception_fields(event: &DeviceException) {
+        let _: DeviceExceptionType = event.kind;
+        let _: &SdkText = &event.description;
+    }
+
+    fn assert_stats_fields(stats: &CallbackStats) {
+        let _: u64 = stats.delivered;
+        let _: u64 = stats.dropped_full;
+        let _: u64 = stats.invalid_payloads;
+        let _: u64 = stats.panics;
+        let _: bool = stats.accepting;
+    }
+
+    let _: fn(&DeviceException) = assert_exception_fields;
+    let _: fn(&CallbackStats) = assert_stats_fields;
+    let _: NonZeroUsize = CallbackOptions::default().queue_capacity;
+
+    assert_eq!(DeviceExceptionType::DISCONNECTED.bits(), 1);
+    assert_eq!(DeviceExceptionType::UNDEFINED.raw(), -1);
+    let unknown = DeviceExceptionType::from_bits(0xDEAD_BEEF);
+    assert_eq!(unknown.bits(), 0xDEAD_BEEF);
+    assert_eq!(unknown.name(), None);
 }
 
 #[test]

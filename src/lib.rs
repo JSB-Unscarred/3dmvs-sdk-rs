@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod callback;
 mod camera;
 mod device;
 #[cfg(all(windows, feature = "display-windows"))]
@@ -13,7 +14,11 @@ mod sdk;
 mod text;
 mod types;
 
-pub use camera::{Camera, CameraState, Measurement};
+pub use callback::{
+    CallbackOptions, CallbackStats, CallbackWorker, CallbackWorkerExit, DeviceException,
+    DeviceExceptionType,
+};
+pub use camera::{CallbackMeasurement, Camera, CameraState, Measurement};
 pub use device::{DeviceInfo, IpConfiguration, IpConfigurationMode};
 #[cfg(all(windows, feature = "display-windows"))]
 pub use display_windows::DisplayRange;

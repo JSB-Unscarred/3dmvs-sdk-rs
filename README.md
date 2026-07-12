@@ -65,6 +65,30 @@ fn main() -> Result<()> {
 
 `Sdk` 和 `Camera` 都不是 `Send` 或 `Sync`。每个进程只允许一次初始化尝试，`Finalize` 后不能重新初始化。`Camera` 借用 `Sdk`，因此相机存活时无法安全地关闭 SDK。
 
+## 回调采集
+
+```rust,no_run
+use std::net::Ipv4Addr;
+
+use mv3d_lp::{CallbackOptions, Result, Sdk};
+
+fn receive_one_frame() -> Result<()> {
+    let sdk = Sdk::initialize()?;
+    let mut camera = sdk.open_by_ip(Ipv4Addr::new(192, 168, 1, 100))?;
+    let (measurement, frames) = camera.start_receiving(CallbackOptions::default())?;
+
+    if let Ok(frame) = frames.recv() {
+        println!("callback frame {}, {} bytes", frame.frame_number, frame.data.len());
+    }
+
+    measurement.stop()?;
+    camera.close()?;
+    sdk.shutdown()
+}
+```
+
+回调队列有界且使用非阻塞发送；队列满时丢弃最新事件。`start_with_callback` 和 `on_exception` 提供的闭包只在 Rust 工作线程串行执行，不会运行在 SDK callback 栈上。原生回调注册对单个设备句柄是一次性的；停止 callback measurement 后如需再次注册，应关闭并重新打开设备。
+
 ## 已提供
 
 - 版本检查、初始化和结束
@@ -76,12 +100,14 @@ fn main() -> Result<()> {
 - 命令节点执行
 - `Measurement<'_>` 测量会话和 pull 模式图像获取
 - `OwnedFrame` 主数据、可选亮度数据和可选逐行曝光时间戳的立即复制
+- `CallbackMeasurement<'_>`、有界 `Receiver<OwnedFrame>` 图像回调和 Rust 工作线程闭包适配器
+- 拥有化设备异常事件、未知异常值保留和同一 registry/cookie 生命周期保护
 - 异步设备文件上传/下载、可恢复进度轮询和文件名生命周期保护
 - `ImageProcessor` 深度转点云、环视点云、深度拼接、六种格式转换和图像保存
 - `OwnedImage` 主数据及可用辅助载荷的立即复制
 - 默认关闭的 Windows `display-windows` 图像显示 feature
 
-当前不提供借用帧、零拷贝、图像回调、废弃 API、原始句柄或 DLL 中未公开的导出。回调注册、排空和注销契约留待后续里程碑。
+当前不提供借用帧、零拷贝、废弃 API、原始句柄或 DLL 中未公开的导出。回调注册、晚到回调和并发排空契约记录在 [`m4/callback-contract.md`](m4/callback-contract.md)。
 
 ## 安全边界
 
@@ -98,6 +124,8 @@ fn main() -> Result<()> {
 - pull 采集只接受有限超时；`0xFFFF_FFFF` 无限等待哨兵不会传给 SDK。
 - 单帧采用聚合内存上限和 fallible allocation，尺寸与长度运算全部使用 checked arithmetic。
 - GetImage 依赖的 SDK 缓冲区稳定窗口和待补证据记录在 [`m2/image-ownership-contract.md`](m2/image-ownership-contract.md)。
+- 图像和异常回调只把永不复用的 cookie 交给 SDK；Stop/Close 前先从 Rust registry 摘除并排空，用户闭包仅在 Rust 工作线程执行。
+- 回调 payload 在 trampoline 返回前的稳定读取假设和剩余厂商问题记录在 [`m4/callback-contract.md`](m4/callback-contract.md)。
 - 文件传输、ImgProc 输出所有权和显示句柄契约记录在 [`m3/contracts.md`](m3/contracts.md)。
 - ImgProc 的 SDK 输出在同一把全局锁内校验并立即复制；多图操作只接受厂商规定的 1 至 8 张输入。
 - 活动文件传输的两个文件名由 `Camera` 持有；提前丢弃 guard 不会释放文件名或假装取消传输。

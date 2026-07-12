@@ -4,6 +4,7 @@
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 mod abi;
 mod bindings;
+mod callback;
 mod camera;
 mod device;
 #[cfg(feature = "display-windows")]
@@ -16,7 +17,13 @@ mod frame;
 mod parameter;
 mod runtime;
 
-pub use camera::{Camera, CameraState, CleanupError, FileTransfer, Measurement};
+pub use callback::{
+    CallbackDelivery, CallbackStatsRecord, ExceptionCallbackSink, ExceptionRecord,
+    FrameCallbackSink,
+};
+pub use camera::{
+    CallbackMeasurement, Camera, CameraState, CleanupError, FileTransfer, Measurement,
+};
 pub use device::{DeviceRecord, IpConfiguration};
 #[cfg(feature = "display-windows")]
 pub use display::DisplayRangeRecord;

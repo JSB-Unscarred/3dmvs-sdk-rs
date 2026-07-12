@@ -22,6 +22,8 @@ pub enum Operation {
     SoftTrigger,
     ClearDataBuffer,
     GetImage,
+    RegisterImageDataCallback,
+    RegisterExceptionCallback,
     GetParam,
     SetParam,
     Execute,
@@ -55,6 +57,8 @@ impl Operation {
             Self::SoftTrigger => "MV3D_LP_SoftTrigger",
             Self::ClearDataBuffer => "MV3D_LP_ClearDataBuffer",
             Self::GetImage => "MV3D_LP_GetImage",
+            Self::RegisterImageDataCallback => "MV3D_LP_RegisterImageDataCallBack",
+            Self::RegisterExceptionCallback => "MV3D_LP_RegisterExceptionCallBack",
             Self::GetParam => "MV3D_LP_GetParam",
             Self::SetParam => "MV3D_LP_SetParam",
             Self::Execute => "MV3D_LP_Execute",
@@ -217,6 +221,10 @@ pub enum InputViolation {
         max: usize,
         actual: usize,
     },
+    CallbackQueueCapacity {
+        maximum: usize,
+        actual: usize,
+    },
     TimeoutTooLong {
         maximum_millis: u32,
         actual_millis: u128,
@@ -268,6 +276,10 @@ impl fmt::Display for InputViolation {
                     "the value has {actual} bytes; at most {max} are allowed"
                 )
             }
+            Self::CallbackQueueCapacity { maximum, actual } => write!(
+                formatter,
+                "callback queue capacity is {actual}; at most {maximum} events are allowed"
+            ),
             Self::TimeoutTooLong {
                 maximum_millis,
                 actual_millis,
@@ -478,6 +490,7 @@ pub enum Error {
     AllocationFailed {
         operation: Operation,
     },
+    CallbackWorkerSpawn,
     DeviceCleanup {
         stop: Option<Box<Error>>,
         close: Option<Box<Error>>,
@@ -535,6 +548,9 @@ impl fmt::Display for Error {
                     formatter,
                     "memory allocation failed while preparing {operation}"
                 )
+            }
+            Self::CallbackWorkerSpawn => {
+                formatter.write_str("could not spawn the Rust callback worker thread")
             }
             Self::DeviceCleanup { stop, close } => match (stop, close) {
                 (Some(stop), Some(close)) => write!(
@@ -606,6 +622,9 @@ impl From<mv3d_lp_internal::Error> for Error {
             InternalError::InvalidState { operation, state } => {
                 let operation = operation_from_sdk_name(operation);
                 let expected = match operation {
+                    Operation::RegisterImageDataCallback | Operation::RegisterExceptionCallback => {
+                        "open with no previous callback registration"
+                    }
                     Operation::StartMeasure
                     | Operation::FileAccessRead
                     | Operation::FileAccessWrite => "open",
@@ -720,6 +739,11 @@ impl From<mv3d_lp_internal::Error> for Error {
                     InternalContract::HandleCountOverflow => ContractViolation::LengthOverflow {
                         field: "live device handle count",
                     },
+                    InternalContract::CallbackCookieExhausted => {
+                        ContractViolation::LengthOverflow {
+                            field: "callback cookie sequence",
+                        }
+                    }
                     InternalContract::NullPointerWithLength { field, length } => {
                         ContractViolation::NullPointerWithLength { field, length }
                     }
@@ -802,6 +826,8 @@ pub(crate) fn operation_from_sdk_name(name: &'static str) -> Operation {
         "MV3D_LP_SoftTrigger" => Operation::SoftTrigger,
         "MV3D_LP_ClearDataBuffer" => Operation::ClearDataBuffer,
         "MV3D_LP_GetImage" => Operation::GetImage,
+        "MV3D_LP_RegisterImageDataCallBack" => Operation::RegisterImageDataCallback,
+        "MV3D_LP_RegisterExceptionCallBack" => Operation::RegisterExceptionCallback,
         "MV3D_LP_GetParam" => Operation::GetParam,
         "MV3D_LP_SetParam" => Operation::SetParam,
         "MV3D_LP_Execute" => Operation::Execute,
