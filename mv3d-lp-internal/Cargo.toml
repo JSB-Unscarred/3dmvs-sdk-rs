@@ -1,0 +1,16 @@
+[package]
+name = "mv3d-lp-internal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+links = "Mv3dLp"
+description = "Private native FFI boundary for mv3d-lp."
+
+[lib]
+name = "mv3d_lp_internal"
+path = "src/lib.rs"
+
+[features]
+default = []
+native = []

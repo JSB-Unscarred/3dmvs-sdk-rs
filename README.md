@@ -1,24 +1,103 @@
-# 3dmvs-sdk-rs
+# mv3d-lp
 
-海康威视 3D MVS 激光轮廓传感器 SDK 的 Rust 包装。项目目标是把 FFI、裸指针、SDK 全局状态、回调和厂商缓冲区等不安全边界隔离在内部，对外只提供安全 Rust API。
+海康威视 3D MVS 激光轮廓传感器 SDK 的安全 Rust 包装。项目把原始句柄、裸指针、C union、SDK 全局状态和资源清理封装在私有 crate 中，对外只提供安全 Rust API。
 
-## 当前状态
+## 支持范围
 
-M0：契约与 ABI 基线已经完成。
+- 原生目标：`x86_64-pc-windows-msvc`
+- 已审计的 LPSDK 运行时版本：`1.3.3.3`
+- Rust：`1.85` 或更高版本
+- 默认启用 `native` feature
 
-- 基线说明：docs/m0-contract-and-abi.md
-- 机器可读清单：m0/sdk-baseline.json
-- 35 个公开 API 的契约分类：m0/api-contracts.json
-- x86/x64 ABI 快照：m0/abi
-- 可重复校验脚本：tools/m0/verify.ps1
-- C++ ABI 探针：tools/m0/abi_probe.cpp
+原生构建要求安装 3DMVS。构建脚本先读取 `MV3DLP_DEV_ENV`，未设置时使用：
 
-仓库不包含厂商头文件、导入库、DLL 或安装包。校验和后续构建默认使用本机 3DMVS 安装目录。
+```text
+C:\Program Files (x86)\3DMVS\Development
+```
 
-## 验证 M0
+它只链接 `Libraries\win64\Mv3dLp.lib`，不会复制厂商头文件、LIB 或 DLL，也不会修改 `PATH`。运行时环境通常由 3DMVS 安装程序配置；如果程序启动时报告 DLL 或 GenTL 加载失败，应确认以下 x64 目录优先于任何 `Win32_i86` 目录，并检查 `GENICAM_GENTL64_PATH`：
 
-在安装了 3DMVS 和 Visual Studio C++ 工具链的 Windows 主机上执行：
+```text
+C:\Program Files (x86)\Common Files\Mv3dLpSDK\Runtime\Win64_x64
+C:\Program Files (x86)\Common Files\MV3D\Runtime\Win64_x64
+```
 
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\m0\verify.ps1 -Architecture all
+非 x64 Windows MSVC 目标可使用 `--no-default-features` 编译安全门面；此时 `Sdk::initialize()` 返回 `Error::UnsupportedPlatform`。
 
-脚本会核对 SDK 文件哈希与版本、公开头文件和 DLL 导出表，并分别编译、运行 x86 与 x64 ABI 探针。
+## 基本使用
+
+```rust,no_run
+use std::net::Ipv4Addr;
+
+use mv3d_lp::{ParamKey, ParameterValue, Result, Sdk};
+
+fn main() -> Result<()> {
+    let sdk = Sdk::initialize()?;
+    println!("LPSDK {}", sdk.version());
+
+    for device in sdk.devices()? {
+        println!("{}", device.model_name.to_string_lossy());
+    }
+
+    let mut camera = sdk.open_by_ip(Ipv4Addr::new(192, 168, 1, 100))?;
+    camera.start()?;
+    camera.set_parameter(
+        &ParamKey::new("ExposureTime")?,
+        ParameterValue::Float(1000.0),
+    )?;
+    camera.stop()?;
+    camera.close()?;
+
+    sdk.shutdown()
+}
+```
+
+也可以使用 `SerialNumber` 和 `Sdk::open_by_serial` 打开设备。设备返回的文本使用 `SdkText` 保存原始有界字节；需要 UTF-8 时显式调用 `to_str()`，仅用于展示时可调用 `to_string_lossy()`。
+
+`Sdk` 和 `Camera` 都不是 `Send` 或 `Sync`。每个进程只允许一次初始化尝试，`Finalize` 后不能重新初始化。`Camera` 借用 `Sdk`，因此相机存活时无法安全地关闭 SDK。
+
+## M1 已提供
+
+- 版本检查、初始化和结束
+- 设备计数、带有限重试的设备枚举
+- 按 IPv4 或序列号打开设备
+- IP 配置
+- Start、Stop、软触发、清空数据缓冲区和关闭
+- Bool、Integer、Float、Enumeration、String 参数的读取与设置
+- 命令节点执行
+
+M1 不提供图像获取、回调、文件传输、ImgProc、废弃 API、原始句柄或 DLL 中未公开的导出。图像所有权和回调排空等接口留待后续里程碑。
+
+## 安全边界
+
+- 公共 crate 使用 `#![forbid(unsafe_code)]`。
+- 会执行 `unsafe` 操作的代码只位于私有 crate 的 FFI 文件；bindings 和 ABI 文件只保留原始声明及函数类型校验。
+- 对外不公开厂商结构体、C union、裸指针或句柄。
+- SDK 固定字符串会在字段边界内复制，且不假设编码。
+- 参数 union 先校验判别值再读取；写入时整个结构先清零。
+- 打开成功必须同时返回非空句柄；关闭调用后句柄无条件失效。
+- Open 返回错误时附带的非空值不会被当作有效句柄再次传给 SDK。
+- Start/Stop 失败后相机进入 `Faulted`，只允许清理。
+- `Drop` 最佳努力执行清理且不 panic；显式 `close`/`shutdown` 可取得错误。
+- 只有活句柄计数归零且每次关闭结果都确定成功时才调用 `Finalize`；相机被遗忘或 Close 失败时会跳过 Finalize，安全地泄漏原生会话直到进程退出。
+- 所有 SDK 调用通过同一把进程级互斥锁串行化。
+
+## 验证
+
+无需安装 SDK 或连接相机：
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --no-default-features
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo test --workspace --no-default-features
+```
+
+已安装 3DMVS 的 x64 Windows MSVC 主机可额外检查原生构建：
+
+```powershell
+cargo check --workspace --features native
+cargo test --workspace --features native --no-run
+```
+
+仓库中的测试只验证本包装的状态机、转换、边界和清理逻辑，不调用厂商 SDK，也不要求真实设备。

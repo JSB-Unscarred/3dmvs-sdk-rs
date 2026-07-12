@@ -1,0 +1,28 @@
+[workspace]
+members = ["mv3d-lp-internal"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[package]
+name = "mv3d-lp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Safe Rust wrapper for the Hikrobot 3D MVS laser profiler SDK."
+readme = "README.md"
+publish = false
+
+[lib]
+name = "mv3d_lp"
+path = "src/lib.rs"
+
+[features]
+default = ["native"]
+native = ["mv3d-lp-internal/native"]
+
+[dependencies]
+mv3d-lp-internal = { path = "mv3d-lp-internal", version = "0.1.0", default-features = false }
