@@ -6,6 +6,7 @@
     "internal": "Used inside safe runtime or resource management; not exposed as a direct free function.",
     "planned_m1": "Contract is sufficient for the first safe facade.",
     "planned_owned_output": "May be exposed later only with immediate owned output copies.",
+    "implemented_m3": "Exposed through the audited M3 owned-output or retained-input safe facade.",
     "deferred_contract": "Raw binding only until missing ownership, blocking, encoding, or thread contract is resolved.",
     "deferred_callback": "Raw binding only until callback concurrency and quiescence are resolved.",
     "hidden_deprecated": "Vendor-deprecated declaration retained only for raw ABI completeness."
@@ -187,27 +188,27 @@
       "header": "Mv3dLpApi.h",
       "line": 303,
       "signature": "MV3D_LP_STATUS __cdecl(HANDLE, MV3D_LP_FILE_ACCESS*)",
-      "safe_surface": "deferred_contract",
-      "ownership": "File-name pointer lifetime is undocumented.",
-      "constraints": ["Added in 1.3.3 but absent from the installed 1.3.2 C guide.", "Blocking and completion semantics are unknown."]
+      "safe_surface": "implemented_m3",
+      "ownership": "Both filename C strings are retained by Camera until observed completion or successful CloseDevice.",
+      "constraints": ["One transfer per camera.", "A failed start faults the camera and retains names until close.", "Filename encoding remains undocumented."]
     },
     {
       "name": "MV3D_LP_FileAccessWrite",
       "header": "Mv3dLpApi.h",
       "line": 318,
       "signature": "MV3D_LP_STATUS __cdecl(HANDLE, MV3D_LP_FILE_ACCESS*)",
-      "safe_surface": "deferred_contract",
-      "ownership": "File-name pointer lifetime is undocumented.",
-      "constraints": ["Added in 1.3.3 but absent from the installed 1.3.2 C guide.", "Blocking and completion semantics are unknown."]
+      "safe_surface": "implemented_m3",
+      "ownership": "Both filename C strings are retained by Camera until observed completion or successful CloseDevice.",
+      "constraints": ["One transfer per camera.", "A failed start faults the camera and retains names until close.", "Filename encoding remains undocumented."]
     },
     {
       "name": "MV3D_LP_GetFileAccessProgress",
       "header": "Mv3dLpApi.h",
       "line": 333,
       "signature": "MV3D_LP_STATUS __cdecl(HANDLE, MV3D_LP_FILE_ACCESS_PROGRESS*)",
-      "safe_surface": "deferred_contract",
+      "safe_surface": "implemented_m3",
       "ownership": "Caller-owned progress output.",
-      "constraints": ["Completion, failure, cancellation and close interaction are undocumented."]
+      "constraints": ["Wrapper treats total > 0 and completed == total as complete.", "After the first nonzero total, the total must remain stable.", "Negative, excessive, or regressing progress is rejected without releasing retained names.", "Cancellation remains unavailable."]
     },
     {
       "name": "MV3D_LP_GetDeviceIP",
@@ -277,54 +278,54 @@
       "header": "Mv3dLpImgProc.h",
       "line": 24,
       "signature": "MV3D_LP_STATUS __cdecl(MV3D_LP_IMAGE_DATA*, MV3D_LP_IMAGE_DATA*)",
-      "safe_surface": "planned_owned_output",
-      "ownership": "Input borrowed for the call; SDK-owned output copied immediately.",
-      "constraints": ["Serialize ImgProc globally.", "Validate output pointer and length before copying."]
+      "safe_surface": "implemented_m3",
+      "ownership": "Input borrowed for the call; reusable SDK-owned output copied immediately under the global gate.",
+      "constraints": ["Require Depth input.", "Validate exact output type and length before copying.", "Discard inherited auxiliary payloads if output dimensions change."]
     },
     {
       "name": "MV3D_LP_MapDepthToPointCloudRound",
       "header": "Mv3dLpImgProc.h",
       "line": 41,
       "signature": "MV3D_LP_STATUS __cdecl(MV3D_LP_IMAGE_DATA*, uint32_t, MV3D_LP_IMAGE_DATA*)",
-      "safe_surface": "planned_owned_output",
-      "ownership": "Input descriptor array borrowed for the call; SDK-owned output copied immediately.",
-      "constraints": ["Image count at most 8.", "Serialize ImgProc globally.", "Validate output before copying."]
+      "safe_surface": "implemented_m3",
+      "ownership": "Input descriptor array borrowed for the call; reusable SDK-owned aggregate output copied immediately.",
+      "constraints": ["Image count from 1 through 8.", "All inputs must be Depth.", "Discard auxiliary pointers inherited from the first input."]
     },
     {
       "name": "MV3D_LP_ImageConvert",
       "header": "Mv3dLpImgProc.h",
       "line": 58,
       "signature": "MV3D_LP_STATUS __cdecl(MV3D_LP_IMAGE_DATA*, MV3D_LP_IMAGE_DATA*)",
-      "safe_surface": "deferred_contract",
-      "ownership": "Output allocation and lifetime are not confirmed by a vendor sample.",
-      "constraints": ["Caller must set output image type.", "Do not infer ownership from other ImgProc functions."]
+      "safe_surface": "implemented_m3",
+      "ownership": "Installed 1.3.3.3 DLL uses a reusable SDK-owned output buffer even when caller storage is supplied; wrapper copies immediately.",
+      "constraints": ["Caller sets only the output image type in a zeroed descriptor.", "Expose only the six documented conversion pairs.", "Serialize and copy before any later ImgProc call."]
     },
     {
       "name": "MV3D_LP_DepthMosaic",
       "header": "Mv3dLpImgProc.h",
       "line": 75,
       "signature": "MV3D_LP_STATUS __cdecl(MV3D_LP_IMAGE_DATA*, uint32_t, MV3D_LP_IMAGE_DATA*)",
-      "safe_surface": "planned_owned_output",
-      "ownership": "Input descriptor array borrowed for the call; SDK-owned output copied immediately.",
-      "constraints": ["Image count at most 8.", "Serialize ImgProc globally.", "Validate output before copying."]
+      "safe_surface": "implemented_m3",
+      "ownership": "Input descriptors and optional intensity planes are borrowed; SDK-owned depth and intensity outputs are copied immediately.",
+      "constraints": ["Image count from 1 through 8.", "All inputs must be Depth.", "Validate exact depth and optional intensity lengths."]
     },
     {
       "name": "MV3D_LP_SaveImage",
       "header": "Mv3dLpImgProc.h",
       "line": 106,
       "signature": "MV3D_LP_STATUS __cdecl(MV3D_LP_IMAGE_DATA*, Mv3dLpFileType, const char*)",
-      "safe_surface": "deferred_contract",
+      "safe_surface": "implemented_m3",
       "ownership": "Image and path pointers are borrowed; retention is undocumented.",
-      "constraints": ["Path encoding is undocumented.", "Synchronous completion is undocumented."]
+      "constraints": ["Reject unsupported image/file-format pairs before FFI.", "Path encoding is undocumented.", "Filename is retained through the synchronous call."]
     },
     {
       "name": "MV3D_LP_DisplayImage",
       "header": "Mv3dLpImgProc.h",
       "line": 131,
       "signature": "MV3D_LP_STATUS __cdecl(MV3D_LP_IMAGE_DATA*, void*, Mv3dLpDisplayType, int32_t, int32_t)",
-      "safe_surface": "deferred_contract",
+      "safe_surface": "implemented_m3",
       "ownership": "Image borrowed; external window handle ownership remains with the caller.",
-      "constraints": ["Window thread affinity and handle lifetime requirements are undocumented."]
+      "constraints": ["Available only with the Windows display-windows feature.", "Borrow a Win32 handle through raw-window-handle for the synchronous call.", "Mono8 does not support manual range."]
     }
   ]
 }

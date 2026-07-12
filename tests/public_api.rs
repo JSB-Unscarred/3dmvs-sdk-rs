@@ -1,7 +1,8 @@
 use std::net::Ipv4Addr;
 
 use mv3d_lp::{
-    Camera, DeviceInfo, ImageType, IpConfiguration, Measurement, OwnedFrame, Result, Sdk, SdkText,
+    Camera, DeviceInfo, ImageFileFormat, ImageProcessor, ImageType, IpConfiguration, Measurement,
+    OwnedFrame, OwnedImage, Result, Sdk, SdkText,
 };
 
 #[test]
@@ -11,12 +12,22 @@ fn public_lifecycle_and_control_methods_have_safe_signatures() {
     let _: for<'sdk> fn(&'sdk Sdk, &mv3d_lp::SerialNumber) -> Result<Camera<'sdk>> =
         Sdk::open_by_serial;
     let _: fn(Sdk) -> Result<()> = Sdk::shutdown;
+    let _: for<'sdk> fn(&'sdk Sdk) -> ImageProcessor<'sdk> = Sdk::image_processor;
     let _ = Camera::start;
     let _ = Camera::clear_buffer;
     let _ = Measurement::get_image;
     let _ = Measurement::soft_trigger;
     let _ = Measurement::clear_buffer;
     let _ = Measurement::stop;
+    let _ = Camera::download_file;
+    let _ = Camera::upload_file;
+    let _ = Camera::active_file_transfer;
+    let _ = ImageProcessor::depth_to_point_cloud;
+    let _ = ImageProcessor::depth_to_round_point_cloud;
+    let _ = ImageProcessor::convert;
+    let _ = ImageProcessor::mosaic_depth;
+    let _ = ImageProcessor::save;
+    let _: ImageFileFormat = ImageFileFormat::Ply;
 }
 
 #[test]
@@ -27,6 +38,7 @@ fn owned_output_types_can_move_between_threads() {
     assert_send_sync::<SdkText>();
     assert_send_sync::<IpConfiguration>();
     assert_send_sync::<OwnedFrame>();
+    assert_send_sync::<OwnedImage>();
 }
 
 #[test]

@@ -3,8 +3,8 @@ use std::net::Ipv4Addr;
 use std::rc::Rc;
 
 use crate::{
-    Camera, ContractViolation, DeviceInfo, Error, IpConfiguration, IpConfigurationMode, Operation,
-    Result, SdkText, SdkVersion, SerialNumber,
+    Camera, ContractViolation, DeviceInfo, Error, ImageProcessor, IpConfiguration,
+    IpConfigurationMode, Operation, Result, SdkText, SdkVersion, SerialNumber,
 };
 
 /// The process-wide 3DMVS SDK session.
@@ -90,6 +90,14 @@ impl Sdk {
             .open_by_serial(serial_number.as_bytes())
             .map(Camera::from_internal)
             .map_err(Error::from)
+    }
+
+    #[must_use]
+    pub fn image_processor(&self) -> ImageProcessor<'_> {
+        ImageProcessor {
+            inner: &self.inner,
+            _not_send_or_sync: PhantomData,
+        }
     }
 
     pub fn shutdown(self) -> Result<()> {

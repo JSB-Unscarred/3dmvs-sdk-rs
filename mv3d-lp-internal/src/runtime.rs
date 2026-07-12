@@ -4,13 +4,18 @@ use std::cell::Cell;
 use std::ffi::CString;
 use std::marker::PhantomData;
 use std::net::Ipv4Addr;
+#[cfg(feature = "display-windows")]
+use std::num::NonZeroIsize;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::camera::Camera;
 use crate::device::{DeviceRecord, IpConfigRaw, IpConfiguration};
+#[cfg(feature = "display-windows")]
+use crate::display::DisplayRangeRecord;
 use crate::driver::{Driver, DriverError, DriverResult, Handle};
 use crate::error::{ContractViolation, Error, InvalidInput};
+use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 
 const EXPECTED_VERSION: &[u8] = b"1.3.3.3";
 const MAX_DEVICE_COUNT: usize = 256;
@@ -215,6 +220,60 @@ impl Runtime {
             driver.open_by_serial(&serial, output)
         })?;
         Ok(Camera::new(self, handle))
+    }
+
+    pub fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> Result<FrameRecord, Error> {
+        self.call("MV3D_LP_MapDepthToPointCloud", |driver| {
+            driver.map_depth_to_point_cloud(input)
+        })
+    }
+
+    pub fn map_depth_to_point_cloud_round(
+        &self,
+        inputs: &[ImageInput<'_>],
+    ) -> Result<FrameRecord, Error> {
+        self.call("MV3D_LP_MapDepthToPointCloudRound", |driver| {
+            driver.map_depth_to_point_cloud_round(inputs)
+        })
+    }
+
+    pub fn convert_image(
+        &self,
+        input: ImageInput<'_>,
+        target: ImageTypeRecord,
+    ) -> Result<FrameRecord, Error> {
+        self.call("MV3D_LP_ImageConvert", |driver| {
+            driver.convert_image(input, target)
+        })
+    }
+
+    pub fn mosaic_depth(&self, inputs: &[ImageInput<'_>]) -> Result<FrameRecord, Error> {
+        self.call("MV3D_LP_DepthMosaic", |driver| driver.mosaic_depth(inputs))
+    }
+
+    pub fn save_image(
+        &self,
+        input: ImageInput<'_>,
+        format: ImageFileFormatRecord,
+        file_name: &[u8],
+    ) -> Result<(), Error> {
+        let file_name =
+            validated_c_string("MV3D_LP_SaveImage", file_name, u32::MAX as usize, false)?;
+        self.call("MV3D_LP_SaveImage", |driver| {
+            driver.save_image(input, format, &file_name)
+        })
+    }
+
+    #[cfg(feature = "display-windows")]
+    pub fn display_image(
+        &self,
+        input: ImageInput<'_>,
+        window: NonZeroIsize,
+        range: DisplayRangeRecord,
+    ) -> Result<(), Error> {
+        self.call("MV3D_LP_DisplayImage", |driver| {
+            driver.display_image(input, window, range)
+        })
     }
 
     pub fn shutdown(mut self) -> Result<(), Error> {

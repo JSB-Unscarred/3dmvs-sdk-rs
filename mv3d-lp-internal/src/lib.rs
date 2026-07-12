@@ -6,17 +6,23 @@ mod abi;
 mod bindings;
 mod camera;
 mod device;
+#[cfg(feature = "display-windows")]
+mod display;
 mod driver;
 mod error;
 mod ffi;
+mod file_transfer;
 mod frame;
 mod parameter;
 mod runtime;
 
-pub use camera::{Camera, CameraState, CleanupError, Measurement};
+pub use camera::{Camera, CameraState, CleanupError, FileTransfer, Measurement};
 pub use device::{DeviceRecord, IpConfiguration};
+#[cfg(feature = "display-windows")]
+pub use display::DisplayRangeRecord;
 pub use error::{ContractViolation, Error, InvalidInput};
-pub use frame::{FrameRecord, ImageTypeRecord};
+pub use file_transfer::{FileProgress, FileTransferDirection, FileTransferStatus};
+pub use frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 pub use parameter::{ParameterRecord, ParameterValueRecord};
 pub use runtime::Runtime;
 

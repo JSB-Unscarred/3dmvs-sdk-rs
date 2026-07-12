@@ -1,11 +1,16 @@
 #![cfg_attr(not(feature = "native"), allow(dead_code))]
 
 use std::ffi::CStr;
+#[cfg(feature = "display-windows")]
+use std::num::NonZeroIsize;
 use std::ptr::NonNull;
 
 use crate::device::{DeviceInfoRaw, DeviceListAttempt, IpConfigRaw};
+#[cfg(feature = "display-windows")]
+use crate::display::DisplayRangeRecord;
 use crate::error::ContractViolation;
-use crate::frame::FrameRecord;
+use crate::file_transfer::FileProgressRaw;
+use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +63,44 @@ pub(crate) trait Driver {
         value: &ParameterValueRecord,
     ) -> DriverResult<()>;
     fn execute(&self, handle: Handle, key: &CStr) -> DriverResult<()>;
+    fn file_access_read(
+        &self,
+        handle: Handle,
+        user_file_name: &CStr,
+        device_file_name: &CStr,
+    ) -> DriverResult<()>;
+    fn file_access_write(
+        &self,
+        handle: Handle,
+        user_file_name: &CStr,
+        device_file_name: &CStr,
+    ) -> DriverResult<()>;
+    fn file_access_progress(&self, handle: Handle) -> DriverResult<FileProgressRaw>;
+
+    fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> DriverResult<FrameRecord>;
+    fn map_depth_to_point_cloud_round(
+        &self,
+        inputs: &[ImageInput<'_>],
+    ) -> DriverResult<FrameRecord>;
+    fn convert_image(
+        &self,
+        input: ImageInput<'_>,
+        target: ImageTypeRecord,
+    ) -> DriverResult<FrameRecord>;
+    fn mosaic_depth(&self, inputs: &[ImageInput<'_>]) -> DriverResult<FrameRecord>;
+    fn save_image(
+        &self,
+        input: ImageInput<'_>,
+        format: ImageFileFormatRecord,
+        file_name: &CStr,
+    ) -> DriverResult<()>;
+    #[cfg(feature = "display-windows")]
+    fn display_image(
+        &self,
+        input: ImageInput<'_>,
+        window: NonZeroIsize,
+        range: DisplayRangeRecord,
+    ) -> DriverResult<()>;
 }
 
 pub(crate) fn status_result(status: i32) -> DriverResult<()> {

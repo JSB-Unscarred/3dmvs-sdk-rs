@@ -76,8 +76,12 @@ fn main() -> Result<()> {
 - 命令节点执行
 - `Measurement<'_>` 测量会话和 pull 模式图像获取
 - `OwnedFrame` 主数据、可选亮度数据和可选逐行曝光时间戳的立即复制
+- 异步设备文件上传/下载、可恢复进度轮询和文件名生命周期保护
+- `ImageProcessor` 深度转点云、环视点云、深度拼接、六种格式转换和图像保存
+- `OwnedImage` 主数据及可用辅助载荷的立即复制
+- 默认关闭的 Windows `display-windows` 图像显示 feature
 
-当前不提供借用帧、零拷贝、图像回调、文件传输、ImgProc、废弃 API、原始句柄或 DLL 中未公开的导出。回调注册、排空和注销契约留待后续里程碑。
+当前不提供借用帧、零拷贝、图像回调、废弃 API、原始句柄或 DLL 中未公开的导出。回调注册、排空和注销契约留待后续里程碑。
 
 ## 安全边界
 
@@ -94,6 +98,9 @@ fn main() -> Result<()> {
 - pull 采集只接受有限超时；`0xFFFF_FFFF` 无限等待哨兵不会传给 SDK。
 - 单帧采用聚合内存上限和 fallible allocation，尺寸与长度运算全部使用 checked arithmetic。
 - GetImage 依赖的 SDK 缓冲区稳定窗口和待补证据记录在 [`m2/image-ownership-contract.md`](m2/image-ownership-contract.md)。
+- 文件传输、ImgProc 输出所有权和显示句柄契约记录在 [`m3/contracts.md`](m3/contracts.md)。
+- ImgProc 的 SDK 输出在同一把全局锁内校验并立即复制；多图操作只接受厂商规定的 1 至 8 张输入。
+- 活动文件传输的两个文件名由 `Camera` 持有；提前丢弃 guard 不会释放文件名或假装取消传输。
 - `Drop` 最佳努力执行清理且不 panic；显式 `close`/`shutdown` 可取得错误。
 - 只有活句柄计数归零且每次关闭结果都确定成功时才调用 `Finalize`；相机被遗忘或 Close 失败时会跳过 Finalize，安全地泄漏原生会话直到进程退出。
 - 所有 SDK 调用通过同一把进程级互斥锁串行化。
@@ -114,6 +121,7 @@ cargo test --workspace --no-default-features
 ```powershell
 cargo check --workspace --features native
 cargo test --workspace --features native --no-run
+cargo test --workspace --features display-windows
 ```
 
 仓库中的测试只验证本包装的状态机、转换、边界和清理逻辑，不调用厂商 SDK，也不要求真实设备。

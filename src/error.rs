@@ -25,6 +25,16 @@ pub enum Operation {
     GetParam,
     SetParam,
     Execute,
+    FileAccessRead,
+    FileAccessWrite,
+    GetFileAccessProgress,
+    MapDepthToPointCloud,
+    MapDepthToPointCloudRound,
+    ImageConvert,
+    DepthMosaic,
+    SaveImage,
+    #[cfg(feature = "display-windows")]
+    DisplayImage,
 }
 
 impl Operation {
@@ -48,6 +58,16 @@ impl Operation {
             Self::GetParam => "MV3D_LP_GetParam",
             Self::SetParam => "MV3D_LP_SetParam",
             Self::Execute => "MV3D_LP_Execute",
+            Self::FileAccessRead => "MV3D_LP_FileAccessRead",
+            Self::FileAccessWrite => "MV3D_LP_FileAccessWrite",
+            Self::GetFileAccessProgress => "MV3D_LP_GetFileAccessProgress",
+            Self::MapDepthToPointCloud => "MV3D_LP_MapDepthToPointCloud",
+            Self::MapDepthToPointCloudRound => "MV3D_LP_MapDepthToPointCloudRound",
+            Self::ImageConvert => "MV3D_LP_ImageConvert",
+            Self::DepthMosaic => "MV3D_LP_DepthMosaic",
+            Self::SaveImage => "MV3D_LP_SaveImage",
+            #[cfg(feature = "display-windows")]
+            Self::DisplayImage => "MV3D_LP_DisplayImage",
         }
     }
 }
@@ -201,6 +221,39 @@ pub enum InputViolation {
         maximum_millis: u32,
         actual_millis: u128,
     },
+    ImageCount {
+        minimum: usize,
+        maximum: usize,
+        actual: usize,
+    },
+    UnexpectedImageType {
+        expected: u32,
+        actual: u32,
+    },
+    UnsupportedImageConversion {
+        source: u32,
+        target: u32,
+    },
+    UnsupportedImageFileFormat {
+        image_type: u32,
+        file_format: i32,
+    },
+    InvalidImageLayout {
+        field: &'static str,
+    },
+    UnsupportedDisplayImageType {
+        actual: u32,
+    },
+    UnsupportedDisplayMode {
+        image_type: u32,
+    },
+    InvalidDisplayRange {
+        minimum: i32,
+        maximum: i32,
+    },
+    WindowHandleUnavailable,
+    WindowHandleNotSupported,
+    NonWin32Window,
 }
 
 impl fmt::Display for InputViolation {
@@ -222,6 +275,51 @@ impl fmt::Display for InputViolation {
                 formatter,
                 "the timeout is {actual_millis} milliseconds; at most {maximum_millis} milliseconds are allowed"
             ),
+            Self::ImageCount {
+                minimum,
+                maximum,
+                actual,
+            } => write!(
+                formatter,
+                "the image count is {actual}; expected {minimum}..={maximum}"
+            ),
+            Self::UnexpectedImageType { expected, actual } => write!(
+                formatter,
+                "image type 0x{actual:08X} does not match required type 0x{expected:08X}"
+            ),
+            Self::UnsupportedImageConversion { source, target } => write!(
+                formatter,
+                "conversion from image type 0x{source:08X} to 0x{target:08X} is unsupported"
+            ),
+            Self::UnsupportedImageFileFormat {
+                image_type,
+                file_format,
+            } => write!(
+                formatter,
+                "image type 0x{image_type:08X} cannot be saved as file format {file_format}"
+            ),
+            Self::InvalidImageLayout { field } => {
+                write!(formatter, "the image has an invalid {field}")
+            }
+            Self::UnsupportedDisplayImageType { actual } => write!(
+                formatter,
+                "image type 0x{actual:08X} cannot be displayed by the SDK"
+            ),
+            Self::UnsupportedDisplayMode { image_type } => write!(
+                formatter,
+                "the requested display mode is unsupported for image type 0x{image_type:08X}"
+            ),
+            Self::InvalidDisplayRange { minimum, maximum } => write!(
+                formatter,
+                "manual display range requires minimum < maximum, got {minimum}..{maximum}"
+            ),
+            Self::WindowHandleUnavailable => {
+                formatter.write_str("the window handle is unavailable")
+            }
+            Self::WindowHandleNotSupported => {
+                formatter.write_str("the window handle cannot be represented")
+            }
+            Self::NonWin32Window => formatter.write_str("the window does not expose a Win32 HWND"),
         }
     }
 }
@@ -264,6 +362,22 @@ pub enum ContractViolation {
     },
     InvalidValue {
         field: &'static str,
+    },
+    NegativeFileProgress {
+        completed: i64,
+        total: i64,
+    },
+    FileProgressExceedsTotal {
+        completed: u64,
+        total: u64,
+    },
+    FileProgressRegressed {
+        previous: u64,
+        current: u64,
+    },
+    FileProgressTotalChanged {
+        previous: u64,
+        current: u64,
     },
 }
 
@@ -311,6 +425,21 @@ impl fmt::Display for ContractViolation {
             Self::InvalidValue { field } => {
                 write!(formatter, "{field} contains an invalid SDK value")
             }
+            Self::NegativeFileProgress { completed, total } => write!(
+                formatter,
+                "file progress contains negative values: completed={completed}, total={total}"
+            ),
+            Self::FileProgressExceedsTotal { completed, total } => {
+                write!(formatter, "file progress {completed} exceeds total {total}")
+            }
+            Self::FileProgressRegressed { previous, current } => write!(
+                formatter,
+                "file progress regressed from {previous} to {current}"
+            ),
+            Self::FileProgressTotalChanged { previous, current } => write!(
+                formatter,
+                "file progress total changed from {previous} to {current}"
+            ),
         }
     }
 }
@@ -477,10 +606,13 @@ impl From<mv3d_lp_internal::Error> for Error {
             InternalError::InvalidState { operation, state } => {
                 let operation = operation_from_sdk_name(operation);
                 let expected = match operation {
-                    Operation::StartMeasure => "open",
+                    Operation::StartMeasure
+                    | Operation::FileAccessRead
+                    | Operation::FileAccessWrite => "open",
                     Operation::StopMeasure | Operation::SoftTrigger | Operation::GetImage => {
                         "measuring"
                     }
+                    Operation::GetFileAccessProgress => "transferring",
                     _ => "open or measuring",
                 };
                 Self::InvalidState {
@@ -508,6 +640,32 @@ impl From<mv3d_lp_internal::Error> for Error {
                         maximum_millis,
                         actual_millis,
                     },
+                    mv3d_lp_internal::InvalidInput::ImageCount {
+                        minimum,
+                        maximum,
+                        actual,
+                    } => InputViolation::ImageCount {
+                        minimum,
+                        maximum,
+                        actual,
+                    },
+                    mv3d_lp_internal::InvalidInput::UnexpectedImageType { expected, actual } => {
+                        InputViolation::UnexpectedImageType { expected, actual }
+                    }
+                    mv3d_lp_internal::InvalidInput::UnsupportedImageConversion {
+                        source,
+                        target,
+                    } => InputViolation::UnsupportedImageConversion { source, target },
+                    mv3d_lp_internal::InvalidInput::UnsupportedImageFileFormat {
+                        image_type,
+                        file_format,
+                    } => InputViolation::UnsupportedImageFileFormat {
+                        image_type,
+                        file_format,
+                    },
+                    mv3d_lp_internal::InvalidInput::InvalidImageLayout { field } => {
+                        InputViolation::InvalidImageLayout { field }
+                    }
                 },
             },
             InternalError::ContractViolation { operation, kind } => {
@@ -589,6 +747,18 @@ impl From<mv3d_lp_internal::Error> for Error {
                     InternalContract::InvalidImageValue { field } => {
                         ContractViolation::InvalidValue { field }
                     }
+                    InternalContract::NegativeFileProgress { completed, total } => {
+                        ContractViolation::NegativeFileProgress { completed, total }
+                    }
+                    InternalContract::FileProgressExceedsTotal { completed, total } => {
+                        ContractViolation::FileProgressExceedsTotal { completed, total }
+                    }
+                    InternalContract::FileProgressRegressed { previous, current } => {
+                        ContractViolation::FileProgressRegressed { previous, current }
+                    }
+                    InternalContract::FileProgressTotalChanged { previous, current } => {
+                        ContractViolation::FileProgressTotalChanged { previous, current }
+                    }
                 };
                 Self::ContractViolation {
                     operation,
@@ -635,6 +805,16 @@ pub(crate) fn operation_from_sdk_name(name: &'static str) -> Operation {
         "MV3D_LP_GetParam" => Operation::GetParam,
         "MV3D_LP_SetParam" => Operation::SetParam,
         "MV3D_LP_Execute" => Operation::Execute,
+        "MV3D_LP_FileAccessRead" => Operation::FileAccessRead,
+        "MV3D_LP_FileAccessWrite" => Operation::FileAccessWrite,
+        "MV3D_LP_GetFileAccessProgress" => Operation::GetFileAccessProgress,
+        "MV3D_LP_MapDepthToPointCloud" => Operation::MapDepthToPointCloud,
+        "MV3D_LP_MapDepthToPointCloudRound" => Operation::MapDepthToPointCloudRound,
+        "MV3D_LP_ImageConvert" => Operation::ImageConvert,
+        "MV3D_LP_DepthMosaic" => Operation::DepthMosaic,
+        "MV3D_LP_SaveImage" => Operation::SaveImage,
+        #[cfg(feature = "display-windows")]
+        "MV3D_LP_DisplayImage" => Operation::DisplayImage,
         _ => unreachable!("internal wrapper used an unknown operation name: {name}"),
     }
 }

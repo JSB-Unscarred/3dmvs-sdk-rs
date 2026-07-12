@@ -160,3 +160,77 @@ fn allocation_failure_retains_its_operation() {
         }
     );
 }
+
+#[test]
+fn file_transfer_operations_and_progress_contracts_map_exactly() {
+    assert_eq!(
+        Operation::FileAccessRead.sdk_name(),
+        "MV3D_LP_FileAccessRead"
+    );
+    assert_eq!(
+        Operation::FileAccessWrite.sdk_name(),
+        "MV3D_LP_FileAccessWrite"
+    );
+    assert_eq!(
+        Operation::GetFileAccessProgress.sdk_name(),
+        "MV3D_LP_GetFileAccessProgress"
+    );
+
+    let cases = [
+        (
+            mv3d_lp_internal::ContractViolation::NegativeFileProgress {
+                completed: -1,
+                total: 10,
+            },
+            ContractViolation::NegativeFileProgress {
+                completed: -1,
+                total: 10,
+            },
+        ),
+        (
+            mv3d_lp_internal::ContractViolation::FileProgressExceedsTotal {
+                completed: 11,
+                total: 10,
+            },
+            ContractViolation::FileProgressExceedsTotal {
+                completed: 11,
+                total: 10,
+            },
+        ),
+        (
+            mv3d_lp_internal::ContractViolation::FileProgressRegressed {
+                previous: 5,
+                current: 4,
+            },
+            ContractViolation::FileProgressRegressed {
+                previous: 5,
+                current: 4,
+            },
+        ),
+        (
+            mv3d_lp_internal::ContractViolation::FileProgressTotalChanged {
+                previous: 10,
+                current: 4,
+            },
+            ContractViolation::FileProgressTotalChanged {
+                previous: 10,
+                current: 4,
+            },
+        ),
+    ];
+
+    for (kind, violation) in cases {
+        let error: Error = mv3d_lp_internal::Error::ContractViolation {
+            operation: "MV3D_LP_GetFileAccessProgress",
+            kind,
+        }
+        .into();
+        assert_eq!(
+            error,
+            Error::ContractViolation {
+                operation: Operation::GetFileAccessProgress,
+                violation,
+            }
+        );
+    }
+}

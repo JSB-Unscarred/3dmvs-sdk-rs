@@ -45,6 +45,22 @@ pub enum ContractViolation {
     InvalidImageValue {
         field: &'static str,
     },
+    NegativeFileProgress {
+        completed: i64,
+        total: i64,
+    },
+    FileProgressExceedsTotal {
+        completed: u64,
+        total: u64,
+    },
+    FileProgressRegressed {
+        previous: u64,
+        current: u64,
+    },
+    FileProgressTotalChanged {
+        previous: u64,
+        current: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +75,26 @@ pub enum InvalidInput {
     TimeoutTooLong {
         maximum_millis: u32,
         actual_millis: u128,
+    },
+    ImageCount {
+        minimum: usize,
+        maximum: usize,
+        actual: usize,
+    },
+    UnexpectedImageType {
+        expected: u32,
+        actual: u32,
+    },
+    UnsupportedImageConversion {
+        source: u32,
+        target: u32,
+    },
+    UnsupportedImageFileFormat {
+        image_type: u32,
+        file_format: i32,
+    },
+    InvalidImageLayout {
+        field: &'static str,
     },
 }
 

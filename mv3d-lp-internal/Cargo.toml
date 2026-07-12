@@ -14,3 +14,4 @@ path = "src/lib.rs"
 [features]
 default = []
 native = []
+display-windows = ["native"]

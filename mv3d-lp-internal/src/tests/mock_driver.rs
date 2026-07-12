@@ -1,18 +1,39 @@
 use std::cell::{RefCell, RefMut};
 use std::collections::VecDeque;
 use std::ffi::CStr;
+#[cfg(feature = "display-windows")]
+use std::num::NonZeroIsize;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::device::{DeviceListAttempt, IpConfigRaw};
+#[cfg(feature = "display-windows")]
+use crate::display::DisplayRangeRecord;
 use crate::driver::{Driver, DriverResult, Handle};
-use crate::frame::FrameRecord;
+use crate::file_transfer::FileProgressRaw;
+use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 use crate::runtime::{Gate, Runtime};
 
 #[derive(Clone)]
 pub(crate) struct MockDriver {
     shared: Rc<RefCell<MockState>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FileAccessCall {
+    pub operation: &'static str,
+    pub user_file_name: Vec<u8>,
+    pub device_file_name: Vec<u8>,
+    pub user_file_name_address: usize,
+    pub device_file_name_address: usize,
+}
+
+#[cfg(feature = "display-windows")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DisplayCall {
+    pub window: NonZeroIsize,
+    pub range: DisplayRangeRecord,
 }
 
 struct MockState {
@@ -35,6 +56,19 @@ struct MockState {
     get_parameter: VecDeque<DriverResult<ParameterRecord>>,
     set_parameter: VecDeque<DriverResult<()>>,
     execute: VecDeque<DriverResult<()>>,
+    file_access_read: VecDeque<DriverResult<()>>,
+    file_access_write: VecDeque<DriverResult<()>>,
+    file_access_progress: VecDeque<DriverResult<FileProgressRaw>>,
+    file_access_calls: Vec<FileAccessCall>,
+    map_depth_to_point_cloud: VecDeque<DriverResult<FrameRecord>>,
+    map_depth_to_point_cloud_round: VecDeque<DriverResult<FrameRecord>>,
+    convert_image: VecDeque<DriverResult<FrameRecord>>,
+    mosaic_depth: VecDeque<DriverResult<FrameRecord>>,
+    save_image: VecDeque<DriverResult<()>>,
+    #[cfg(feature = "display-windows")]
+    display_image: VecDeque<DriverResult<()>>,
+    #[cfg(feature = "display-windows")]
+    display_calls: Vec<DisplayCall>,
 }
 
 impl MockDriver {
@@ -60,6 +94,19 @@ impl MockDriver {
                 get_parameter: VecDeque::new(),
                 set_parameter: VecDeque::new(),
                 execute: VecDeque::new(),
+                file_access_read: VecDeque::new(),
+                file_access_write: VecDeque::new(),
+                file_access_progress: VecDeque::new(),
+                file_access_calls: Vec::new(),
+                map_depth_to_point_cloud: VecDeque::new(),
+                map_depth_to_point_cloud_round: VecDeque::new(),
+                convert_image: VecDeque::new(),
+                mosaic_depth: VecDeque::new(),
+                save_image: VecDeque::new(),
+                #[cfg(feature = "display-windows")]
+                display_image: VecDeque::new(),
+                #[cfg(feature = "display-windows")]
+                display_calls: Vec::new(),
             })),
         }
     }
@@ -118,6 +165,45 @@ impl MockDriver {
         self.state().get_parameter.push_back(result);
     }
 
+    pub(crate) fn push_file_access_read(&self, result: DriverResult<()>) {
+        self.state().file_access_read.push_back(result);
+    }
+
+    pub(crate) fn push_file_access_write(&self, result: DriverResult<()>) {
+        self.state().file_access_write.push_back(result);
+    }
+
+    pub(crate) fn push_file_access_progress(&self, result: DriverResult<FileProgressRaw>) {
+        self.state().file_access_progress.push_back(result);
+    }
+
+    pub(crate) fn push_map_depth_to_point_cloud(&self, result: DriverResult<FrameRecord>) {
+        self.state().map_depth_to_point_cloud.push_back(result);
+    }
+
+    pub(crate) fn push_map_depth_to_point_cloud_round(&self, result: DriverResult<FrameRecord>) {
+        self.state()
+            .map_depth_to_point_cloud_round
+            .push_back(result);
+    }
+
+    pub(crate) fn push_convert_image(&self, result: DriverResult<FrameRecord>) {
+        self.state().convert_image.push_back(result);
+    }
+
+    pub(crate) fn push_mosaic_depth(&self, result: DriverResult<FrameRecord>) {
+        self.state().mosaic_depth.push_back(result);
+    }
+
+    pub(crate) fn push_save_image(&self, result: DriverResult<()>) {
+        self.state().save_image.push_back(result);
+    }
+
+    #[cfg(feature = "display-windows")]
+    pub(crate) fn push_display_image(&self, result: DriverResult<()>) {
+        self.state().display_image.push_back(result);
+    }
+
     pub(crate) fn logs(&self) -> Vec<&'static str> {
         self.state().log.clone()
     }
@@ -128,6 +214,15 @@ impl MockDriver {
 
     pub(crate) fn image_timeouts(&self) -> Vec<u32> {
         self.state().image_timeouts.clone()
+    }
+
+    pub(crate) fn file_access_calls(&self) -> Vec<FileAccessCall> {
+        self.state().file_access_calls.clone()
+    }
+
+    #[cfg(feature = "display-windows")]
+    pub(crate) fn display_calls(&self) -> Vec<DisplayCall> {
+        self.state().display_calls.clone()
     }
 
     fn state(&self) -> RefMut<'_, MockState> {
@@ -249,6 +344,114 @@ impl Driver for MockDriver {
         let mut state = self.state();
         state.log.push("execute");
         pop_or(&mut state.execute, Ok(()))
+    }
+
+    fn file_access_read(
+        &self,
+        _: Handle,
+        user_file_name: &CStr,
+        device_file_name: &CStr,
+    ) -> DriverResult<()> {
+        let mut state = self.state();
+        state.log.push("file_access_read");
+        state.file_access_calls.push(FileAccessCall {
+            operation: "file_access_read",
+            user_file_name: user_file_name.to_bytes().to_vec(),
+            device_file_name: device_file_name.to_bytes().to_vec(),
+            user_file_name_address: user_file_name.as_ptr() as usize,
+            device_file_name_address: device_file_name.as_ptr() as usize,
+        });
+        pop_or(&mut state.file_access_read, Ok(()))
+    }
+
+    fn file_access_write(
+        &self,
+        _: Handle,
+        user_file_name: &CStr,
+        device_file_name: &CStr,
+    ) -> DriverResult<()> {
+        let mut state = self.state();
+        state.log.push("file_access_write");
+        state.file_access_calls.push(FileAccessCall {
+            operation: "file_access_write",
+            user_file_name: user_file_name.to_bytes().to_vec(),
+            device_file_name: device_file_name.to_bytes().to_vec(),
+            user_file_name_address: user_file_name.as_ptr() as usize,
+            device_file_name_address: device_file_name.as_ptr() as usize,
+        });
+        pop_or(&mut state.file_access_write, Ok(()))
+    }
+
+    fn file_access_progress(&self, _: Handle) -> DriverResult<FileProgressRaw> {
+        let mut state = self.state();
+        state.log.push("file_access_progress");
+        pop_or(
+            &mut state.file_access_progress,
+            Ok(FileProgressRaw {
+                completed: 0,
+                total: 0,
+            }),
+        )
+    }
+
+    fn map_depth_to_point_cloud(&self, _: ImageInput<'_>) -> DriverResult<FrameRecord> {
+        let mut state = self.state();
+        state.log.push("map_depth_to_point_cloud");
+        pop_or(
+            &mut state.map_depth_to_point_cloud,
+            Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
+        )
+    }
+
+    fn map_depth_to_point_cloud_round(&self, _: &[ImageInput<'_>]) -> DriverResult<FrameRecord> {
+        let mut state = self.state();
+        state.log.push("map_depth_to_point_cloud_round");
+        pop_or(
+            &mut state.map_depth_to_point_cloud_round,
+            Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
+        )
+    }
+
+    fn convert_image(&self, _: ImageInput<'_>, _: ImageTypeRecord) -> DriverResult<FrameRecord> {
+        let mut state = self.state();
+        state.log.push("convert_image");
+        pop_or(
+            &mut state.convert_image,
+            Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
+        )
+    }
+
+    fn mosaic_depth(&self, _: &[ImageInput<'_>]) -> DriverResult<FrameRecord> {
+        let mut state = self.state();
+        state.log.push("mosaic_depth");
+        pop_or(
+            &mut state.mosaic_depth,
+            Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
+        )
+    }
+
+    fn save_image(
+        &self,
+        _: ImageInput<'_>,
+        _: ImageFileFormatRecord,
+        _: &CStr,
+    ) -> DriverResult<()> {
+        let mut state = self.state();
+        state.log.push("save_image");
+        pop_or(&mut state.save_image, Ok(()))
+    }
+
+    #[cfg(feature = "display-windows")]
+    fn display_image(
+        &self,
+        _: ImageInput<'_>,
+        window: NonZeroIsize,
+        range: DisplayRangeRecord,
+    ) -> DriverResult<()> {
+        let mut state = self.state();
+        state.log.push("display_image");
+        state.display_calls.push(DisplayCall { window, range });
+        pop_or(&mut state.display_image, Ok(()))
     }
 }
 

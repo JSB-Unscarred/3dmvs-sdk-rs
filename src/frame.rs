@@ -54,6 +54,172 @@ impl ImageType {
     }
 }
 
+/// Calibration metadata used when converting depth, profile, and point-cloud images.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageCalibration {
+    pub x_scale: f32,
+    pub y_scale: f32,
+    pub z_scale: f32,
+    pub x_offset: i32,
+    pub y_offset: i32,
+    pub z_offset: i32,
+}
+
+impl Default for ImageCalibration {
+    fn default() -> Self {
+        Self {
+            x_scale: 0.0,
+            y_scale: 0.0,
+            z_scale: 0.0,
+            x_offset: 0,
+            y_offset: 0,
+            z_offset: 0,
+        }
+    }
+}
+
+/// A borrowed image view accepted by [`crate::ImageProcessor`].
+///
+/// Known uncompressed formats must be tightly packed; the vendor processing
+/// descriptors have no stride field, so acquired frames with extra padding
+/// must be repacked before processing or display.
+#[derive(Clone, Copy)]
+pub struct ImageRef<'a> {
+    pub image_type: ImageType,
+    pub width: u32,
+    pub height: u32,
+    pub data: &'a [u8],
+    pub intensity_data: Option<&'a [u8]>,
+    pub exposure_timestamps: Option<&'a [i64]>,
+    pub frame_number: u32,
+    pub device_timestamp: i64,
+    pub valid: bool,
+    pub calibration: ImageCalibration,
+}
+
+impl fmt::Debug for ImageRef<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ImageRef")
+            .field("image_type", &self.image_type)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("data_len", &self.data.len())
+            .field("intensity_data_len", &self.intensity_data.map(<[u8]>::len))
+            .field(
+                "exposure_timestamps_len",
+                &self.exposure_timestamps.map(<[i64]>::len),
+            )
+            .field("frame_number", &self.frame_number)
+            .field("device_timestamp", &self.device_timestamp)
+            .field("valid", &self.valid)
+            .field("calibration", &self.calibration)
+            .finish()
+    }
+}
+
+impl<'a> ImageRef<'a> {
+    pub(crate) fn to_internal(self) -> mv3d_lp_internal::ImageInput<'a> {
+        mv3d_lp_internal::ImageInput {
+            image_type: mv3d_lp_internal::ImageTypeRecord::from_bits(self.image_type.bits()),
+            width: self.width,
+            height: self.height,
+            data: self.data,
+            intensity_data: self.intensity_data,
+            exposure_timestamps: self.exposure_timestamps,
+            frame_number: self.frame_number,
+            device_timestamp: self.device_timestamp,
+            valid: self.valid,
+            x_scale: self.calibration.x_scale,
+            y_scale: self.calibration.y_scale,
+            z_scale: self.calibration.z_scale,
+            x_offset: self.calibration.x_offset,
+            y_offset: self.calibration.y_offset,
+            z_offset: self.calibration.z_offset,
+        }
+    }
+}
+
+/// An image whose pixel payload is fully owned by Rust.
+#[derive(PartialEq)]
+#[non_exhaustive]
+pub struct OwnedImage {
+    pub image_type: ImageType,
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+    pub intensity_data: Option<Vec<u8>>,
+    pub exposure_timestamps: Option<Vec<i64>>,
+    pub frame_number: u32,
+    pub device_timestamp: i64,
+    pub valid: bool,
+    pub calibration: ImageCalibration,
+}
+
+impl fmt::Debug for OwnedImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OwnedImage")
+            .field("image_type", &self.image_type)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("data_len", &self.data.len())
+            .field(
+                "intensity_data_len",
+                &self.intensity_data.as_ref().map(Vec::len),
+            )
+            .field(
+                "exposure_timestamps_len",
+                &self.exposure_timestamps.as_ref().map(Vec::len),
+            )
+            .field("frame_number", &self.frame_number)
+            .field("device_timestamp", &self.device_timestamp)
+            .field("valid", &self.valid)
+            .field("calibration", &self.calibration)
+            .finish()
+    }
+}
+
+impl OwnedImage {
+    #[must_use]
+    pub fn as_image(&self) -> ImageRef<'_> {
+        ImageRef {
+            image_type: self.image_type,
+            width: self.width,
+            height: self.height,
+            data: &self.data,
+            intensity_data: self.intensity_data.as_deref(),
+            exposure_timestamps: self.exposure_timestamps.as_deref(),
+            frame_number: self.frame_number,
+            device_timestamp: self.device_timestamp,
+            valid: self.valid,
+            calibration: self.calibration,
+        }
+    }
+
+    pub(crate) fn from_internal(record: mv3d_lp_internal::FrameRecord) -> Self {
+        Self {
+            image_type: ImageType::from_bits(record.image_type.bits()),
+            width: record.width,
+            height: record.height,
+            data: record.data,
+            intensity_data: record.intensity_data,
+            exposure_timestamps: record.exposure_timestamps,
+            frame_number: record.frame_number,
+            device_timestamp: record.device_timestamp,
+            valid: record.valid,
+            calibration: ImageCalibration {
+                x_scale: record.x_scale,
+                y_scale: record.y_scale,
+                z_scale: record.z_scale,
+                x_offset: record.x_offset,
+                y_offset: record.y_offset,
+                z_offset: record.z_offset,
+            },
+        }
+    }
+}
+
 impl fmt::Debug for ImageType {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.name() {
@@ -97,6 +263,29 @@ pub struct OwnedFrame {
 }
 
 impl OwnedFrame {
+    #[must_use]
+    pub fn as_image(&self) -> ImageRef<'_> {
+        ImageRef {
+            image_type: self.image_type,
+            width: self.width,
+            height: self.height,
+            data: &self.data,
+            intensity_data: self.intensity_data.as_deref(),
+            exposure_timestamps: self.exposure_timestamps.as_deref(),
+            frame_number: self.frame_number,
+            device_timestamp: self.device_timestamp,
+            valid: self.valid,
+            calibration: ImageCalibration {
+                x_scale: self.x_scale,
+                y_scale: self.y_scale,
+                z_scale: self.z_scale,
+                x_offset: self.x_offset,
+                y_offset: self.y_offset,
+                z_offset: self.z_offset,
+            },
+        }
+    }
+
     pub(crate) fn from_internal(record: mv3d_lp_internal::FrameRecord) -> Self {
         Self {
             image_type: ImageType::from_bits(record.image_type.bits()),
@@ -149,7 +338,7 @@ impl fmt::Debug for OwnedFrame {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageType, OwnedFrame};
+    use super::{ImageCalibration, ImageType, OwnedFrame, OwnedImage};
 
     #[test]
     fn debug_reports_lengths_without_payload_contents() {
@@ -173,6 +362,30 @@ mod tests {
 
         let debug = format!("{frame:?}");
 
+        assert!(debug.contains("data_len: 2"));
+        assert!(debug.contains("intensity_data_len: Some(2)"));
+        assert!(debug.contains("exposure_timestamps_len: Some(1)"));
+        assert!(!debug.contains("170"));
+        assert!(!debug.contains("187"));
+        assert!(!debug.contains("123456789"));
+    }
+
+    #[test]
+    fn processed_image_debug_is_redacted() {
+        let image = OwnedImage {
+            image_type: ImageType::MONO8,
+            width: 2,
+            height: 1,
+            data: vec![0xAA, 0xBB],
+            intensity_data: Some(vec![0xCC, 0xDD]),
+            exposure_timestamps: Some(vec![123_456_789]),
+            frame_number: 7,
+            device_timestamp: 42,
+            valid: true,
+            calibration: ImageCalibration::default(),
+        };
+
+        let debug = format!("{image:?}");
         assert!(debug.contains("data_len: 2"));
         assert!(debug.contains("intensity_data_len: Some(2)"));
         assert!(debug.contains("exposure_timestamps_len: Some(1)"));

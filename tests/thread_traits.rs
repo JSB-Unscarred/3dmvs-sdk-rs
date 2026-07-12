@@ -1,4 +1,4 @@
-use mv3d_lp::{Camera, Measurement, OwnedFrame, Sdk};
+use mv3d_lp::{Camera, FileTransfer, ImageProcessor, Measurement, OwnedFrame, OwnedImage, Sdk};
 
 macro_rules! assert_not_impl {
     ($type:ty: $bound:path) => {
@@ -23,7 +23,12 @@ assert_not_impl!(Camera<'static>: Send);
 assert_not_impl!(Camera<'static>: Sync);
 assert_not_impl!(Measurement<'static>: Send);
 assert_not_impl!(Measurement<'static>: Sync);
+assert_not_impl!(FileTransfer<'static, 'static>: Send);
+assert_not_impl!(FileTransfer<'static, 'static>: Sync);
+assert_not_impl!(ImageProcessor<'static>: Send);
+assert_not_impl!(ImageProcessor<'static>: Sync);
 assert_not_impl!(OwnedFrame: Clone);
+assert_not_impl!(OwnedImage: Clone);
 
 #[test]
 fn sdk_and_camera_thread_traits_are_locked_at_compile_time() {}

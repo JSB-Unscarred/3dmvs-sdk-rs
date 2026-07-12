@@ -23,6 +23,14 @@ path = "src/lib.rs"
 [features]
 default = ["native"]
 native = ["mv3d-lp-internal/native"]
+display-windows = [
+    "native",
+    "dep:raw-window-handle",
+    "mv3d-lp-internal/display-windows",
+]
 
 [dependencies]
 mv3d-lp-internal = { path = "mv3d-lp-internal", version = "0.1.0", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = { version = "0.6.2", optional = true }

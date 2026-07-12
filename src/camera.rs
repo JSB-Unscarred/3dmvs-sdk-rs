@@ -3,8 +3,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::{
-    CommandKey, Error, InputViolation, OwnedFrame, ParamKey, Parameter, ParameterValue, Result,
-    SdkText,
+    CommandKey, Error, FileTransfer, InputViolation, OwnedFrame, ParamKey, Parameter,
+    ParameterValue, Result, SdkText,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -12,6 +12,7 @@ pub enum CameraState {
     Open,
     Measuring,
     Faulted,
+    Transferring,
 }
 
 /// A borrowed device session. The camera cannot outlive its owning [`crate::Sdk`].
@@ -37,6 +38,7 @@ impl<'sdk> Camera<'sdk> {
             mv3d_lp_internal::CameraState::Open => CameraState::Open,
             mv3d_lp_internal::CameraState::Measuring => CameraState::Measuring,
             mv3d_lp_internal::CameraState::Faulted => CameraState::Faulted,
+            mv3d_lp_internal::CameraState::Transferring => CameraState::Transferring,
         }
     }
 
@@ -70,6 +72,47 @@ impl<'sdk> Camera<'sdk> {
 
     pub fn execute(&mut self, key: &CommandKey) -> Result<()> {
         self.inner.execute(key.as_bytes()).map_err(Error::from)
+    }
+
+    /// Starts copying a file from the camera to the host.
+    ///
+    /// Names are passed as original narrow-string bytes because the vendor SDK
+    /// does not document their encoding.
+    pub fn download_file<'camera>(
+        &'camera mut self,
+        device_file_name: &[u8],
+        local_file_name: &[u8],
+    ) -> Result<FileTransfer<'camera, 'sdk>> {
+        self.inner
+            .download_file(device_file_name, local_file_name)
+            .map(|inner| FileTransfer {
+                inner,
+                _not_send_or_sync: PhantomData,
+            })
+            .map_err(Error::from)
+    }
+
+    /// Starts copying a host file into the camera.
+    pub fn upload_file<'camera>(
+        &'camera mut self,
+        local_file_name: &[u8],
+        device_file_name: &[u8],
+    ) -> Result<FileTransfer<'camera, 'sdk>> {
+        self.inner
+            .upload_file(local_file_name, device_file_name)
+            .map(|inner| FileTransfer {
+                inner,
+                _not_send_or_sync: PhantomData,
+            })
+            .map_err(Error::from)
+    }
+
+    /// Resumes polling after a previous transfer guard was dropped.
+    pub fn active_file_transfer(&mut self) -> Option<FileTransfer<'_, 'sdk>> {
+        self.inner.active_file_transfer().map(|inner| FileTransfer {
+            inner,
+            _not_send_or_sync: PhantomData,
+        })
     }
 
     pub fn close(self) -> Result<()> {
