@@ -217,8 +217,7 @@ M4's hardware-independent callback tests cover at least:
 
 ## Residual vendor questions
 
-Before publishing the callback facade beyond the audited 1.3.3.3 environment,
-obtain vendor confirmation of:
+The project has no available separate written vendor confirmation of the following questions:
 
 1. the stable read window for every callback payload;
 2. the maximum callback concurrency and whether callbacks may be reentrant;
@@ -229,3 +228,10 @@ obtain vendor confirmation of:
 The registry/cookie design makes undocumented late delivery memory-safe, but it
 cannot repair an SDK that mutates a payload while the SDK itself is calling the
 user callback.
+
+For M5 these unanswered questions are disclosed, non-blocking residual assumptions for
+the exact audited `1.3.3.3` environment; they are not vendor guarantees and cannot be
+generalized to another runtime, firmware, or device. Release notes must link the evidence
+ledger in `m5/native-contract-evidence.md`. Any observation or new vendor material that
+contradicts a required payload-stability assumption blocks release until the callback
+surface is disabled or redesigned.

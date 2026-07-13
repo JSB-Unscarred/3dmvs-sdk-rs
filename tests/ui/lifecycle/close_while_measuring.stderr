@@ -1,0 +1,11 @@
+error[E0505]: cannot move out of `camera` because it is borrowed
+ --> tests/ui/lifecycle/close_while_measuring.rs:5:5
+  |
+3 | fn close_with_active_measurement(mut camera: Camera<'_>) {
+  |                                  ---------- binding `camera` declared here
+4 |     let measurement = camera.start().unwrap();
+  |                       ------ borrow of `camera` occurs here
+5 |     camera.close().unwrap();
+  |     ^^^^^^ move out of `camera` occurs here
+6 |     drop(measurement);
+  |          ----------- borrow later used here

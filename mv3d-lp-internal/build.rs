@@ -16,7 +16,7 @@ fn main() {
     if target != SUPPORTED_TARGET {
         panic!(
             "the `native` feature only supports target `{SUPPORTED_TARGET}`; got `{target}`. \
-             Disable default features when checking or documenting another target"
+             Disable the `native` feature when checking or documenting another target"
         );
     }
 

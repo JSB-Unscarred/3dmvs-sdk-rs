@@ -365,16 +365,16 @@ impl<'runtime> Camera<'runtime> {
             .as_mut()
             .expect("transferring state always retains its file names");
         if progress.total > 0 {
-            if let Some(previous) = pending.last_total
-                && progress.total != previous
-            {
-                return Err(Error::ContractViolation {
-                    operation: "MV3D_LP_GetFileAccessProgress",
-                    kind: crate::error::ContractViolation::FileProgressTotalChanged {
-                        previous,
-                        current: progress.total,
-                    },
-                });
+            if let Some(previous) = pending.last_total {
+                if progress.total != previous {
+                    return Err(Error::ContractViolation {
+                        operation: "MV3D_LP_GetFileAccessProgress",
+                        kind: crate::error::ContractViolation::FileProgressTotalChanged {
+                            previous,
+                            current: progress.total,
+                        },
+                    });
+                }
             }
             pending.last_total = Some(progress.total);
         } else if let Some(previous) = pending.last_total {
@@ -386,16 +386,16 @@ impl<'runtime> Camera<'runtime> {
                 },
             });
         }
-        if let Some(previous) = pending.last_completed
-            && progress.completed < previous
-        {
-            return Err(Error::ContractViolation {
-                operation: "MV3D_LP_GetFileAccessProgress",
-                kind: crate::error::ContractViolation::FileProgressRegressed {
-                    previous,
-                    current: progress.completed,
-                },
-            });
+        if let Some(previous) = pending.last_completed {
+            if progress.completed < previous {
+                return Err(Error::ContractViolation {
+                    operation: "MV3D_LP_GetFileAccessProgress",
+                    kind: crate::error::ContractViolation::FileProgressRegressed {
+                        previous,
+                        current: progress.completed,
+                    },
+                });
+            }
         }
         pending.last_completed = Some(progress.completed);
 

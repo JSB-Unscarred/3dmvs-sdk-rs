@@ -1,0 +1,11 @@
+error[E0505]: cannot move out of `sdk` because it is borrowed
+ --> tests/ui/lifecycle/shutdown_while_camera_borrowed.rs:7:5
+  |
+5 | fn shutdown_with_open_camera(sdk: Sdk) {
+  |                              --- binding `sdk` declared here
+6 |     let camera = sdk.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+  |                  --- borrow of `sdk` occurs here
+7 |     sdk.shutdown().unwrap();
+  |     ^^^ move out of `sdk` occurs here
+8 |     drop(camera);
+  |          ------ borrow later used here

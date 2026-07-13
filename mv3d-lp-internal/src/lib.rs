@@ -1,5 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(clippy::undocumented_unsafe_blocks)]
+#![deny(improper_ctypes, improper_ctypes_definitions)]
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 mod abi;

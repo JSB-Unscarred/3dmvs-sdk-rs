@@ -1,0 +1,27 @@
+error[E0277]: `Rc<()>` cannot be sent between threads safely
+ --> tests/ui/callback/non_send_handler.rs:7:68
+  |
+7 |       let _ = camera.start_with_callback(CallbackOptions::default(), move |_| {
+  |                      -------------------                             ^-------
+  |                      |                                               |
+  |  ____________________|_______________________________________________within this `{closure@$DIR/tests/ui/callback/non_send_handler.rs:7:68: 7:76}`
+  | |                    |
+  | |                    required by a bound introduced by this call
+8 | |         let _ = Rc::strong_count(&marker);
+9 | |     });
+  | |_____^ `Rc<()>` cannot be sent between threads safely
+  |
+  = help: within `{closure@$DIR/tests/ui/callback/non_send_handler.rs:7:68: 7:76}`, the trait `Send` is not implemented for `Rc<()>`
+note: required because it's used within this closure
+ --> tests/ui/callback/non_send_handler.rs:7:68
+  |
+7 |     let _ = camera.start_with_callback(CallbackOptions::default(), move |_| {
+  |                                                                    ^^^^^^^^
+note: required by a bound in `Camera::<'sdk>::start_with_callback`
+ --> src/camera.rs
+  |
+  |     pub fn start_with_callback<F>(
+  |            ------------------- required by a bound in this associated function
+...
+  |         F: FnMut(OwnedFrame) + Send + 'static,
+  |                                ^^^^ required by this bound in `Camera::<'sdk>::start_with_callback`

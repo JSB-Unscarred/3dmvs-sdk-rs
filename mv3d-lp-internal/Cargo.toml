@@ -3,6 +3,11 @@ name = "mv3d-lp-internal"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/mv3d-lp-internal"
 publish = false
 links = "Mv3dLp"
 description = "Private native FFI boundary for mv3d-lp."
@@ -15,3 +20,6 @@ path = "src/lib.rs"
 default = []
 native = []
 display-windows = ["native"]
+
+[package.metadata.docs.rs]
+no-default-features = true

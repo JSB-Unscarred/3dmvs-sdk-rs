@@ -50,7 +50,7 @@ fn failed_transition_faults_the_camera() {
 #[test]
 fn successful_open_with_a_null_handle_is_a_contract_violation() {
     let mock = MockDriver::new();
-    mock.configure_open(None, Ok(()));
+    mock.configure_open_by_ip(None, Ok(()));
     let (runtime, _) = active_runtime(&mock);
 
     assert!(matches!(
@@ -65,7 +65,7 @@ fn successful_open_with_a_null_handle_is_a_contract_violation() {
 #[test]
 fn handle_returned_on_open_failure_is_never_treated_as_valid() {
     let mock = MockDriver::new();
-    mock.configure_open(
+    mock.configure_open_by_ip(
         Some(mock_handle(2)),
         Err(DriverError::Status(0x8006_0005_u32 as i32)),
     );

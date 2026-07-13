@@ -2,7 +2,8 @@ use std::sync::mpsc::Receiver;
 
 use mv3d_lp::{
     CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Camera, DeviceException,
-    DeviceExceptionType, FileTransfer, ImageProcessor, Measurement, OwnedFrame, OwnedImage, Sdk,
+    DeviceExceptionType, DeviceInfo, FileProgress, FileTransfer, ImageProcessor, ImageRef,
+    IpConfiguration, Measurement, OwnedFrame, OwnedImage, Parameter, ParameterValue, Sdk, SdkText,
 };
 
 macro_rules! assert_not_impl {
@@ -47,8 +48,16 @@ fn owned_frames_can_move_and_be_shared_between_threads() {
     fn assert_send<T: Send>() {}
 
     assert_send_sync::<OwnedFrame>();
+    assert_send_sync::<OwnedImage>();
+    assert_send_sync::<DeviceInfo>();
     assert_send_sync::<DeviceException>();
     assert_send_sync::<DeviceExceptionType>();
+    assert_send_sync::<FileProgress>();
+    assert_send_sync::<ImageRef<'static>>();
+    assert_send_sync::<IpConfiguration>();
+    assert_send_sync::<Parameter>();
+    assert_send_sync::<ParameterValue>();
+    assert_send_sync::<SdkText>();
     assert_send_sync::<CallbackOptions>();
     assert_send_sync::<CallbackStats>();
     assert_send::<CallbackWorker>();

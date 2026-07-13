@@ -6,6 +6,9 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/JSB-Unscarred/3dmvs-sdk-rs"
+homepage = "https://github.com/JSB-Unscarred/3dmvs-sdk-rs"
 
 [package]
 name = "mv3d-lp"
@@ -14,6 +17,12 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Safe Rust wrapper for the Hikrobot 3D MVS laser profiler SDK."
 readme = "README.md"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/mv3d-lp"
+keywords = ["3d-vision", "ffi", "hikrobot", "laser-profiler"]
+categories = ["api-bindings", "hardware-support"]
 publish = false
 
 [lib]
@@ -21,7 +30,7 @@ name = "mv3d_lp"
 path = "src/lib.rs"
 
 [features]
-default = ["native"]
+default = []
 native = ["mv3d-lp-internal/native"]
 display-windows = [
     "native",
@@ -30,7 +39,13 @@ display-windows = [
 ]
 
 [dependencies]
-mv3d-lp-internal = { path = "mv3d-lp-internal", version = "0.1.0", default-features = false }
+mv3d-lp-internal = { path = "mv3d-lp-internal", version = "=0.1.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = { version = "0.6.2", optional = true }
+
+[dev-dependencies]
+trybuild = "1"
+
+[package.metadata.docs.rs]
+no-default-features = true

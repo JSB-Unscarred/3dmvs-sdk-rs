@@ -7,9 +7,22 @@
 - 原生目标：`x86_64-pc-windows-msvc`
 - 已审计的 LPSDK 运行时版本：`1.3.3.3`
 - Rust：`1.85` 或更高版本
-- 默认启用 `native` feature
+- 默认 feature 集为空；普通构建和测试不需要厂商 SDK
+- 原生访问必须显式启用 `native` feature
 
-原生构建要求安装 3DMVS。构建脚本先读取 `MV3DLP_DEV_ENV`，未设置时使用：
+默认构建提供完整的 Rust 类型与 API，但不链接厂商库；调用 `Sdk::initialize()` 会返回
+`Error::UnsupportedPlatform`。需要连接设备时，在应用的 `Cargo.toml` 中显式启用原生后端：
+
+```toml
+[dependencies]
+mv3d-lp = { git = "https://github.com/JSB-Unscarred/3dmvs-sdk-rs.git", features = ["native"] }
+```
+
+当前两个 crate 均设置了 `publish = false`，因此上例使用源码仓库依赖；只有以后明确恢复
+registry 发布后，才应改用 crates.io 版本依赖。
+
+`native` 只支持 `x86_64-pc-windows-msvc`，并要求安装 3DMVS。构建脚本先读取
+`MV3DLP_DEV_ENV`，未设置时使用：
 
 ```text
 C:\Program Files (x86)\3DMVS\Development
@@ -22,7 +35,14 @@ C:\Program Files (x86)\Common Files\Mv3dLpSDK\Runtime\Win64_x64
 C:\Program Files (x86)\Common Files\MV3D\Runtime\Win64_x64
 ```
 
-非 x64 Windows MSVC 目标可使用 `--no-default-features` 编译安全门面；此时 `Sdk::initialize()` 返回 `Error::UnsupportedPlatform`。
+`display-windows` feature 会同时启用 `native`，用于通过 `raw-window-handle` 借用 Win32
+窗口句柄。Linux、macOS、Windows GNU、32 位 Windows 和其他架构只支持默认的无原生
+构建，不属于 SDK 运行时支持范围。
+
+本项目只针对上述精确环境完成了契约审计。厂商没有为若干缓冲区稳定窗口、回调排空和
+后台文件访问语义提供可取得的书面保证；当前依据、保守假设和不能由工业实验推出的结论
+记录在 [`m5/native-contract-evidence.md`](m5/native-contract-evidence.md)。这属于已知限制，
+不得把“在特定设备上长期运行未见异常”表述成厂商保证或对其他 SDK 版本的兼容承诺。
 
 ## 基本使用
 
@@ -108,6 +128,9 @@ fn receive_one_frame() -> Result<()> {
 - 默认关闭的 Windows `display-windows` 图像显示 feature
 
 当前不提供借用帧、零拷贝、废弃 API、原始句柄或 DLL 中未公开的导出。回调注册、晚到回调和并发排空契约记录在 [`m4/callback-contract.md`](m4/callback-contract.md)。
+M5 的硬化门禁、平台矩阵与发布条件记录在
+[`m5/hardening-and-release.md`](m5/hardening-and-release.md)，逐项操作清单见
+[`m5/release-checklist.md`](m5/release-checklist.md)。
 
 ## 安全边界
 
@@ -139,9 +162,9 @@ fn receive_one_frame() -> Result<()> {
 
 ```powershell
 cargo fmt --all -- --check
-cargo check --workspace --no-default-features
-cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-cargo test --workspace --no-default-features
+cargo check --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
 已安装 3DMVS 的 x64 Windows MSVC 主机可额外检查原生构建：
@@ -153,3 +176,9 @@ cargo test --workspace --features display-windows
 ```
 
 仓库中的测试只验证本包装的状态机、转换、边界和清理逻辑，不调用厂商 SDK，也不要求真实设备。
+其中 required CI 只运行默认的无原生 feature 组合；带 SDK 的原生构建、ABI 复验和实机
+观察属于独立的非 required 证据任务，不能让普通贡献或发布核对依赖不可再分发的厂商文件。
+
+安全问题请按 [`SECURITY.md`](SECURITY.md) 私下报告。变更记录见
+[`CHANGELOG.md`](CHANGELOG.md)。本项目采用 [MIT License](LICENSE)；该许可证只覆盖本仓库
+代码，不授予 3DMVS/LPSDK 厂商组件的再分发权。

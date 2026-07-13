@@ -5,14 +5,16 @@ boundary for the audited LPSDK runtime `1.3.3.3`.
 
 ## Decision
 
-For this unpublished M2 implementation, the project accepts the existing M0 audit's
+The project accepts the existing M0 audit's
 "SDK-owned; copy immediately" rule as the native contract for runtime `1.3.3.3`, including
 the minimum stable read window needed to perform that copy. This is an explicit project
 assumption, not a claim that separate written vendor confirmation has been obtained.
 
-Before publishing or promising this safe API outside the audited environment, obtain
-vendor confirmation of the stable read window. If that confirmation is negative or cannot
-be accepted by the project, the safe `get_image` surface must remain unreleased.
+The project has no available separate written vendor confirmation of the stable read window.
+M5 therefore records this as a disclosed, non-blocking residual assumption for the exact
+audited environment rather than describing it as a vendor guarantee. Lack of confirmation
+alone does not block the `0.1.0` release, but evidence that contradicts the assumption does:
+in that case the safe `get_image` surface must be disabled or redesigned before another release.
 
 ## Evidence and status
 
@@ -32,9 +34,10 @@ The safe wrapper therefore relies on the following FFI precondition: after a suc
 concurrently modified until the caller has completed an immediate synchronous copy,
 provided that the caller makes no intervening SDK call for that process.
 
-This precondition is part of the audited native contract. If the vendor cannot guarantee
-it, the safe `get_image` API must be disabled or redesigned; a Rust mutex cannot prevent
-an undocumented vendor worker thread from writing the same allocation.
+This precondition is a disclosed project assumption in the audited native contract, not a
+separate vendor guarantee. If new vendor material or an observation contradicts it, the safe
+`get_image` API must be disabled or redesigned; a Rust mutex cannot prevent an undocumented
+vendor worker thread from writing the same allocation.
 
 ## Pointer and invalidation rules
 

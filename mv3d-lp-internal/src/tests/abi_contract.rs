@@ -1,3 +1,5 @@
+#![cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+
 use std::mem::{align_of, offset_of, size_of};
 
 use crate::bindings::{MV3D_LP_DEVICE_INFO, MV3D_LP_IMAGE_DATA, MV3D_LP_PARAM};

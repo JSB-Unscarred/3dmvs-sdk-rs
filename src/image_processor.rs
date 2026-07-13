@@ -46,6 +46,13 @@ impl ImageFileFormat {
 ///
 /// Each output is validated and copied into Rust-owned storage before the
 /// process-wide SDK call lock is released.
+///
+/// # Native contract
+///
+/// For the audited LPSDK 1.3.3.3 runtime, the wrapper assumes that input payloads marked `[IN]`
+/// are not modified or retained after the synchronous call, and that SDK-owned outputs remain
+/// readable and unchanged during the immediate copy. These are disclosed project assumptions,
+/// not separate written vendor guarantees.
 pub struct ImageProcessor<'sdk> {
     pub(crate) inner: &'sdk mv3d_lp_internal::Runtime,
     pub(crate) _not_send_or_sync: PhantomData<Rc<()>>,
@@ -274,25 +281,25 @@ pub(crate) fn validate_layout(operation: Operation, image: ImageRef<'_>) -> Resu
             },
         ));
     }
-    if let Some(intensity) = image.intensity_data
-        && intensity.len() != pixels
-    {
-        return Err(invalid(
-            operation,
-            InputViolation::InvalidImageLayout {
-                field: "intensity data length",
-            },
-        ));
+    if let Some(intensity) = image.intensity_data {
+        if intensity.len() != pixels {
+            return Err(invalid(
+                operation,
+                InputViolation::InvalidImageLayout {
+                    field: "intensity data length",
+                },
+            ));
+        }
     }
-    if let Some(timestamps) = image.exposure_timestamps
-        && timestamps.len() != usize::try_from(image.height).unwrap_or(usize::MAX)
-    {
-        return Err(invalid(
-            operation,
-            InputViolation::InvalidImageLayout {
-                field: "exposure timestamp count",
-            },
-        ));
+    if let Some(timestamps) = image.exposure_timestamps {
+        if timestamps.len() != usize::try_from(image.height).unwrap_or(usize::MAX) {
+            return Err(invalid(
+                operation,
+                InputViolation::InvalidImageLayout {
+                    field: "exposure timestamp count",
+                },
+            ));
+        }
     }
     if !image.calibration.x_scale.is_finite()
         || !image.calibration.y_scale.is_finite()

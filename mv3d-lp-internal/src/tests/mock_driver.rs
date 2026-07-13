@@ -1,5 +1,5 @@
 use std::cell::{RefCell, RefMut};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::CStr;
 #[cfg(feature = "display-windows")]
 use std::num::NonZeroIsize;
@@ -11,7 +11,7 @@ use crate::callback::CallbackCookie;
 use crate::device::{DeviceListAttempt, IpConfigRaw};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
-use crate::driver::{Driver, DriverResult, Handle};
+use crate::driver::{Driver, DriverError, DriverResult, Handle};
 use crate::file_transfer::FileProgressRaw;
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
@@ -20,6 +20,152 @@ use crate::runtime::{Gate, Runtime};
 #[derive(Clone)]
 pub(crate) struct MockDriver {
     shared: Rc<RefCell<MockState>>,
+}
+
+/// The post-FFI operation surface exercised by [`MockDriver`].
+///
+/// This is deliberately a Driver-layer ledger: injecting one of these failures tests Runtime and
+/// Camera behavior after the native boundary has already converted raw outputs. Raw pointer,
+/// union, and status-before-output behavior remains covered by the focused `ffi` conversion tests.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub(crate) enum FfiOp {
+    GetVersion,
+    Initialize,
+    Finalize,
+    GetDeviceNumber,
+    GetDeviceList,
+    SetIpConfig,
+    OpenDeviceByIp,
+    OpenDeviceBySerial,
+    CloseDevice,
+    StartMeasure,
+    StopMeasure,
+    SoftTrigger,
+    ClearDataBuffer,
+    GetImage,
+    RegisterImageCallback,
+    RegisterExceptionCallback,
+    GetParameter,
+    SetParameter,
+    Execute,
+    FileAccessRead,
+    FileAccessWrite,
+    GetFileAccessProgress,
+    MapDepthToPointCloud,
+    MapDepthToPointCloudRound,
+    ImageConvert,
+    DepthMosaic,
+    SaveImage,
+    #[cfg(feature = "display-windows")]
+    DisplayImage,
+}
+
+impl FfiOp {
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::GetVersion,
+        Self::Initialize,
+        Self::Finalize,
+        Self::GetDeviceNumber,
+        Self::GetDeviceList,
+        Self::SetIpConfig,
+        Self::OpenDeviceByIp,
+        Self::OpenDeviceBySerial,
+        Self::CloseDevice,
+        Self::StartMeasure,
+        Self::StopMeasure,
+        Self::SoftTrigger,
+        Self::ClearDataBuffer,
+        Self::GetImage,
+        Self::RegisterImageCallback,
+        Self::RegisterExceptionCallback,
+        Self::GetParameter,
+        Self::SetParameter,
+        Self::Execute,
+        Self::FileAccessRead,
+        Self::FileAccessWrite,
+        Self::GetFileAccessProgress,
+        Self::MapDepthToPointCloud,
+        Self::MapDepthToPointCloudRound,
+        Self::ImageConvert,
+        Self::DepthMosaic,
+        Self::SaveImage,
+        #[cfg(feature = "display-windows")]
+        Self::DisplayImage,
+    ];
+
+    pub(crate) const fn sdk_name(self) -> &'static str {
+        match self {
+            Self::GetVersion => "MV3D_LP_GetVersion",
+            Self::Initialize => "MV3D_LP_Initialize",
+            Self::Finalize => "MV3D_LP_Finalize",
+            Self::GetDeviceNumber => "MV3D_LP_GetDeviceNumber",
+            Self::GetDeviceList => "MV3D_LP_GetDeviceList",
+            Self::SetIpConfig => "MV3D_LP_SetIpConfig",
+            Self::OpenDeviceByIp => "MV3D_LP_OpenDeviceByIP",
+            Self::OpenDeviceBySerial => "MV3D_LP_OpenDeviceBySN",
+            Self::CloseDevice => "MV3D_LP_CloseDevice",
+            Self::StartMeasure => "MV3D_LP_StartMeasure",
+            Self::StopMeasure => "MV3D_LP_StopMeasure",
+            Self::SoftTrigger => "MV3D_LP_SoftTrigger",
+            Self::ClearDataBuffer => "MV3D_LP_ClearDataBuffer",
+            Self::GetImage => "MV3D_LP_GetImage",
+            Self::RegisterImageCallback => "MV3D_LP_RegisterImageDataCallBack",
+            Self::RegisterExceptionCallback => "MV3D_LP_RegisterExceptionCallBack",
+            Self::GetParameter => "MV3D_LP_GetParam",
+            Self::SetParameter => "MV3D_LP_SetParam",
+            Self::Execute => "MV3D_LP_Execute",
+            Self::FileAccessRead => "MV3D_LP_FileAccessRead",
+            Self::FileAccessWrite => "MV3D_LP_FileAccessWrite",
+            Self::GetFileAccessProgress => "MV3D_LP_GetFileAccessProgress",
+            Self::MapDepthToPointCloud => "MV3D_LP_MapDepthToPointCloud",
+            Self::MapDepthToPointCloudRound => "MV3D_LP_MapDepthToPointCloudRound",
+            Self::ImageConvert => "MV3D_LP_ImageConvert",
+            Self::DepthMosaic => "MV3D_LP_DepthMosaic",
+            Self::SaveImage => "MV3D_LP_SaveImage",
+            #[cfg(feature = "display-windows")]
+            Self::DisplayImage => "MV3D_LP_DisplayImage",
+        }
+    }
+
+    pub(crate) const fn driver_method(self) -> &'static str {
+        match self {
+            Self::GetVersion => "version",
+            Self::Initialize => "initialize",
+            Self::Finalize => "finalize",
+            Self::GetDeviceNumber => "device_number",
+            Self::GetDeviceList => "device_list",
+            Self::SetIpConfig => "set_ip_config",
+            Self::OpenDeviceByIp => "open_by_ip",
+            Self::OpenDeviceBySerial => "open_by_serial",
+            Self::CloseDevice => "close",
+            Self::StartMeasure => "start",
+            Self::StopMeasure => "stop",
+            Self::SoftTrigger => "soft_trigger",
+            Self::ClearDataBuffer => "clear_buffer",
+            Self::GetImage => "get_image",
+            Self::RegisterImageCallback => "register_image_callback",
+            Self::RegisterExceptionCallback => "register_exception_callback",
+            Self::GetParameter => "get_parameter",
+            Self::SetParameter => "set_parameter",
+            Self::Execute => "execute",
+            Self::FileAccessRead => "file_access_read",
+            Self::FileAccessWrite => "file_access_write",
+            Self::GetFileAccessProgress => "file_access_progress",
+            Self::MapDepthToPointCloud => "map_depth_to_point_cloud",
+            Self::MapDepthToPointCloudRound => "map_depth_to_point_cloud_round",
+            Self::ImageConvert => "convert_image",
+            Self::DepthMosaic => "mosaic_depth",
+            Self::SaveImage => "save_image",
+            #[cfg(feature = "display-windows")]
+            Self::DisplayImage => "display_image",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct OpenReply {
+    handle: Option<Handle>,
+    result: DriverResult<()>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,14 +186,19 @@ pub(crate) struct DisplayCall {
 
 struct MockState {
     log: Vec<&'static str>,
+    operations: Vec<FfiOp>,
+    injected_failures: HashMap<FfiOp, VecDeque<DriverError>>,
     capacities: Vec<usize>,
     version: DriverResult<Vec<u8>>,
     initialize: VecDeque<DriverResult<()>>,
     finalize: VecDeque<DriverResult<()>>,
     device_number: VecDeque<DriverResult<u32>>,
     device_list: VecDeque<DriverResult<DeviceListAttempt>>,
-    open_handle: Option<Handle>,
-    open: VecDeque<DriverResult<()>>,
+    next_handle: usize,
+    open_by_ip: VecDeque<OpenReply>,
+    open_by_serial: VecDeque<OpenReply>,
+    opened_handles: Vec<(FfiOp, usize)>,
+    closed_handles: Vec<usize>,
     close: VecDeque<DriverResult<()>>,
     close_entered: Option<Arc<AtomicBool>>,
     start: VecDeque<DriverResult<()>>,
@@ -62,6 +213,7 @@ struct MockState {
     image_callback_cookies: Vec<CallbackCookie>,
     exception_callback_cookies: Vec<CallbackCookie>,
     get_parameter: VecDeque<DriverResult<ParameterRecord>>,
+    set_ip_config: VecDeque<DriverResult<()>>,
     set_parameter: VecDeque<DriverResult<()>>,
     execute: VecDeque<DriverResult<()>>,
     file_access_read: VecDeque<DriverResult<()>>,
@@ -84,14 +236,19 @@ impl MockDriver {
         Self {
             shared: Rc::new(RefCell::new(MockState {
                 log: Vec::new(),
+                operations: Vec::new(),
+                injected_failures: HashMap::new(),
                 capacities: Vec::new(),
                 version: Ok(b"1.3.3.3".to_vec()),
                 initialize: VecDeque::new(),
                 finalize: VecDeque::new(),
                 device_number: VecDeque::new(),
                 device_list: VecDeque::new(),
-                open_handle: Some(mock_handle(1)),
-                open: VecDeque::new(),
+                next_handle: 1,
+                open_by_ip: VecDeque::new(),
+                open_by_serial: VecDeque::new(),
+                opened_handles: Vec::new(),
+                closed_handles: Vec::new(),
                 close: VecDeque::new(),
                 close_entered: None,
                 start: VecDeque::new(),
@@ -106,6 +263,7 @@ impl MockDriver {
                 image_callback_cookies: Vec::new(),
                 exception_callback_cookies: Vec::new(),
                 get_parameter: VecDeque::new(),
+                set_ip_config: VecDeque::new(),
                 set_parameter: VecDeque::new(),
                 execute: VecDeque::new(),
                 file_access_read: VecDeque::new(),
@@ -129,6 +287,19 @@ impl MockDriver {
         self.state().version = result;
     }
 
+    /// Injects a Driver-layer failure for the next invocation of `operation`.
+    ///
+    /// Unlike the typed result queues below, this entry point is shared by every [`FfiOp`]. It is
+    /// the coverage backstop that prevents a newly added Driver method from silently remaining
+    /// non-injectable in the hardening suite.
+    pub(crate) fn fail_next(&self, operation: FfiOp, error: DriverError) {
+        self.state()
+            .injected_failures
+            .entry(operation)
+            .or_default()
+            .push_back(error);
+    }
+
     pub(crate) fn push_initialize(&self, result: DriverResult<()>) {
         self.state().initialize.push_back(result);
     }
@@ -145,10 +316,20 @@ impl MockDriver {
         self.state().device_list.push_back(result);
     }
 
-    pub(crate) fn configure_open(&self, handle: Option<Handle>, result: DriverResult<()>) {
-        let mut state = self.state();
-        state.open_handle = handle;
-        state.open.push_back(result);
+    pub(crate) fn configure_open_by_ip(&self, handle: Option<Handle>, result: DriverResult<()>) {
+        self.state()
+            .open_by_ip
+            .push_back(OpenReply { handle, result });
+    }
+
+    pub(crate) fn configure_open_by_serial(
+        &self,
+        handle: Option<Handle>,
+        result: DriverResult<()>,
+    ) {
+        self.state()
+            .open_by_serial
+            .push_back(OpenReply { handle, result });
     }
 
     pub(crate) fn push_close(&self, result: DriverResult<()>) {
@@ -195,6 +376,18 @@ impl MockDriver {
         self.state().get_parameter.push_back(result);
     }
 
+    pub(crate) fn push_set_ip_config(&self, result: DriverResult<()>) {
+        self.state().set_ip_config.push_back(result);
+    }
+
+    pub(crate) fn push_set_parameter(&self, result: DriverResult<()>) {
+        self.state().set_parameter.push_back(result);
+    }
+
+    pub(crate) fn push_execute(&self, result: DriverResult<()>) {
+        self.state().execute.push_back(result);
+    }
+
     pub(crate) fn push_file_access_read(&self, result: DriverResult<()>) {
         self.state().file_access_read.push_back(result);
     }
@@ -238,6 +431,33 @@ impl MockDriver {
         self.state().log.clone()
     }
 
+    pub(crate) fn operations(&self) -> Vec<FfiOp> {
+        self.state().operations.clone()
+    }
+
+    pub(crate) fn opened_handles(&self) -> Vec<(FfiOp, usize)> {
+        self.state().opened_handles.clone()
+    }
+
+    pub(crate) fn closed_handles(&self) -> Vec<usize> {
+        self.state().closed_handles.clone()
+    }
+
+    pub(crate) fn assert_no_pending_failures(&self) {
+        let pending = self
+            .state()
+            .injected_failures
+            .iter()
+            .filter_map(|(operation, failures)| {
+                (!failures.is_empty()).then_some((*operation, failures.len()))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            pending.is_empty(),
+            "unconsumed Driver-layer failure injections: {pending:?}"
+        );
+    }
+
     pub(crate) fn capacities(&self) -> Vec<usize> {
         self.state().capacities.clone()
     }
@@ -278,32 +498,37 @@ pub(crate) fn active_runtime(mock: &MockDriver) -> (Runtime, Arc<Gate>) {
 impl Driver for MockDriver {
     fn version(&self) -> DriverResult<Vec<u8>> {
         let mut state = self.state();
-        state.log.push("version");
+        record_call(&mut state, FfiOp::GetVersion);
+        return_injected_failure(&mut state, FfiOp::GetVersion)?;
         state.version.clone()
     }
 
     fn initialize(&self) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("initialize");
+        record_call(&mut state, FfiOp::Initialize);
+        return_injected_failure(&mut state, FfiOp::Initialize)?;
         pop_or(&mut state.initialize, Ok(()))
     }
 
     fn finalize(&self) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("finalize");
+        record_call(&mut state, FfiOp::Finalize);
+        return_injected_failure(&mut state, FfiOp::Finalize)?;
         pop_or(&mut state.finalize, Ok(()))
     }
 
     fn device_number(&self) -> DriverResult<u32> {
         let mut state = self.state();
-        state.log.push("device_number");
+        record_call(&mut state, FfiOp::GetDeviceNumber);
+        return_injected_failure(&mut state, FfiOp::GetDeviceNumber)?;
         pop_or(&mut state.device_number, Ok(0))
     }
 
     fn device_list(&self, capacity: usize) -> DriverResult<DeviceListAttempt> {
         let mut state = self.state();
-        state.log.push("device_list");
+        record_call(&mut state, FfiOp::GetDeviceList);
         state.capacities.push(capacity);
+        return_injected_failure(&mut state, FfiOp::GetDeviceList)?;
         pop_or(
             &mut state.device_list,
             Ok(DeviceListAttempt {
@@ -314,58 +539,67 @@ impl Driver for MockDriver {
     }
 
     fn set_ip_config(&self, _: &CStr, _: &IpConfigRaw) -> DriverResult<()> {
-        self.state().log.push("set_ip_config");
-        Ok(())
+        let mut state = self.state();
+        record_call(&mut state, FfiOp::SetIpConfig);
+        return_injected_failure(&mut state, FfiOp::SetIpConfig)?;
+        pop_or(&mut state.set_ip_config, Ok(()))
     }
 
     fn open_by_ip(&self, _: &CStr, handle: &mut Option<Handle>) -> DriverResult<()> {
-        self.open("open_by_ip", handle)
+        self.open(FfiOp::OpenDeviceByIp, handle)
     }
 
     fn open_by_serial(&self, _: &CStr, handle: &mut Option<Handle>) -> DriverResult<()> {
-        self.open("open_by_serial", handle)
+        self.open(FfiOp::OpenDeviceBySerial, handle)
     }
 
-    fn close(&self, _: Handle) -> DriverResult<()> {
+    fn close(&self, handle: Handle) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("close");
+        record_call(&mut state, FfiOp::CloseDevice);
+        state.closed_handles.push(handle.as_ptr().addr());
         if let Some(entered) = &state.close_entered {
             entered.store(true, Ordering::SeqCst);
         }
+        return_injected_failure(&mut state, FfiOp::CloseDevice)?;
         pop_or(&mut state.close, Ok(()))
     }
 
     fn start(&self, _: Handle) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("start");
+        record_call(&mut state, FfiOp::StartMeasure);
+        return_injected_failure(&mut state, FfiOp::StartMeasure)?;
         pop_or(&mut state.start, Ok(()))
     }
 
     fn stop(&self, _: Handle) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("stop");
+        record_call(&mut state, FfiOp::StopMeasure);
         if let Some(entered) = &state.stop_entered {
             entered.store(true, Ordering::SeqCst);
         }
+        return_injected_failure(&mut state, FfiOp::StopMeasure)?;
         pop_or(&mut state.stop, Ok(()))
     }
 
     fn soft_trigger(&self, _: Handle) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("soft_trigger");
+        record_call(&mut state, FfiOp::SoftTrigger);
+        return_injected_failure(&mut state, FfiOp::SoftTrigger)?;
         pop_or(&mut state.soft_trigger, Ok(()))
     }
 
     fn clear_buffer(&self, _: Handle) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("clear_buffer");
+        record_call(&mut state, FfiOp::ClearDataBuffer);
+        return_injected_failure(&mut state, FfiOp::ClearDataBuffer)?;
         pop_or(&mut state.clear_buffer, Ok(()))
     }
 
     fn get_image(&self, _: Handle, timeout_ms: u32) -> DriverResult<FrameRecord> {
         let mut state = self.state();
-        state.log.push("get_image");
+        record_call(&mut state, FfiOp::GetImage);
         state.image_timeouts.push(timeout_ms);
+        return_injected_failure(&mut state, FfiOp::GetImage)?;
         pop_or(
             &mut state.get_image,
             Err(crate::driver::DriverError::Status(0x8006_0006_u32 as i32)),
@@ -374,33 +608,38 @@ impl Driver for MockDriver {
 
     fn register_image_callback(&self, _: Handle, cookie: CallbackCookie) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("register_image_callback");
+        record_call(&mut state, FfiOp::RegisterImageCallback);
         state.image_callback_cookies.push(cookie);
+        return_injected_failure(&mut state, FfiOp::RegisterImageCallback)?;
         pop_or(&mut state.register_image_callback, Ok(()))
     }
 
     fn register_exception_callback(&self, _: Handle, cookie: CallbackCookie) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("register_exception_callback");
+        record_call(&mut state, FfiOp::RegisterExceptionCallback);
         state.exception_callback_cookies.push(cookie);
+        return_injected_failure(&mut state, FfiOp::RegisterExceptionCallback)?;
         pop_or(&mut state.register_exception_callback, Ok(()))
     }
 
     fn get_parameter(&self, _: Handle, _: &CStr) -> DriverResult<ParameterRecord> {
         let mut state = self.state();
-        state.log.push("get_parameter");
+        record_call(&mut state, FfiOp::GetParameter);
+        return_injected_failure(&mut state, FfiOp::GetParameter)?;
         pop_or(&mut state.get_parameter, Ok(ParameterRecord::Bool(false)))
     }
 
     fn set_parameter(&self, _: Handle, _: &CStr, _: &ParameterValueRecord) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("set_parameter");
+        record_call(&mut state, FfiOp::SetParameter);
+        return_injected_failure(&mut state, FfiOp::SetParameter)?;
         pop_or(&mut state.set_parameter, Ok(()))
     }
 
     fn execute(&self, _: Handle, _: &CStr) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("execute");
+        record_call(&mut state, FfiOp::Execute);
+        return_injected_failure(&mut state, FfiOp::Execute)?;
         pop_or(&mut state.execute, Ok(()))
     }
 
@@ -411,7 +650,7 @@ impl Driver for MockDriver {
         device_file_name: &CStr,
     ) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("file_access_read");
+        record_call(&mut state, FfiOp::FileAccessRead);
         state.file_access_calls.push(FileAccessCall {
             operation: "file_access_read",
             user_file_name: user_file_name.to_bytes().to_vec(),
@@ -419,6 +658,7 @@ impl Driver for MockDriver {
             user_file_name_address: user_file_name.as_ptr() as usize,
             device_file_name_address: device_file_name.as_ptr() as usize,
         });
+        return_injected_failure(&mut state, FfiOp::FileAccessRead)?;
         pop_or(&mut state.file_access_read, Ok(()))
     }
 
@@ -429,7 +669,7 @@ impl Driver for MockDriver {
         device_file_name: &CStr,
     ) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("file_access_write");
+        record_call(&mut state, FfiOp::FileAccessWrite);
         state.file_access_calls.push(FileAccessCall {
             operation: "file_access_write",
             user_file_name: user_file_name.to_bytes().to_vec(),
@@ -437,12 +677,14 @@ impl Driver for MockDriver {
             user_file_name_address: user_file_name.as_ptr() as usize,
             device_file_name_address: device_file_name.as_ptr() as usize,
         });
+        return_injected_failure(&mut state, FfiOp::FileAccessWrite)?;
         pop_or(&mut state.file_access_write, Ok(()))
     }
 
     fn file_access_progress(&self, _: Handle) -> DriverResult<FileProgressRaw> {
         let mut state = self.state();
-        state.log.push("file_access_progress");
+        record_call(&mut state, FfiOp::GetFileAccessProgress);
+        return_injected_failure(&mut state, FfiOp::GetFileAccessProgress)?;
         pop_or(
             &mut state.file_access_progress,
             Ok(FileProgressRaw {
@@ -454,7 +696,8 @@ impl Driver for MockDriver {
 
     fn map_depth_to_point_cloud(&self, _: ImageInput<'_>) -> DriverResult<FrameRecord> {
         let mut state = self.state();
-        state.log.push("map_depth_to_point_cloud");
+        record_call(&mut state, FfiOp::MapDepthToPointCloud);
+        return_injected_failure(&mut state, FfiOp::MapDepthToPointCloud)?;
         pop_or(
             &mut state.map_depth_to_point_cloud,
             Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
@@ -463,7 +706,8 @@ impl Driver for MockDriver {
 
     fn map_depth_to_point_cloud_round(&self, _: &[ImageInput<'_>]) -> DriverResult<FrameRecord> {
         let mut state = self.state();
-        state.log.push("map_depth_to_point_cloud_round");
+        record_call(&mut state, FfiOp::MapDepthToPointCloudRound);
+        return_injected_failure(&mut state, FfiOp::MapDepthToPointCloudRound)?;
         pop_or(
             &mut state.map_depth_to_point_cloud_round,
             Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
@@ -472,7 +716,8 @@ impl Driver for MockDriver {
 
     fn convert_image(&self, _: ImageInput<'_>, _: ImageTypeRecord) -> DriverResult<FrameRecord> {
         let mut state = self.state();
-        state.log.push("convert_image");
+        record_call(&mut state, FfiOp::ImageConvert);
+        return_injected_failure(&mut state, FfiOp::ImageConvert)?;
         pop_or(
             &mut state.convert_image,
             Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
@@ -481,7 +726,8 @@ impl Driver for MockDriver {
 
     fn mosaic_depth(&self, _: &[ImageInput<'_>]) -> DriverResult<FrameRecord> {
         let mut state = self.state();
-        state.log.push("mosaic_depth");
+        record_call(&mut state, FfiOp::DepthMosaic);
+        return_injected_failure(&mut state, FfiOp::DepthMosaic)?;
         pop_or(
             &mut state.mosaic_depth,
             Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
@@ -495,7 +741,8 @@ impl Driver for MockDriver {
         _: &CStr,
     ) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("save_image");
+        record_call(&mut state, FfiOp::SaveImage);
+        return_injected_failure(&mut state, FfiOp::SaveImage)?;
         pop_or(&mut state.save_image, Ok(()))
     }
 
@@ -507,18 +754,58 @@ impl Driver for MockDriver {
         range: DisplayRangeRecord,
     ) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push("display_image");
+        record_call(&mut state, FfiOp::DisplayImage);
         state.display_calls.push(DisplayCall { window, range });
+        return_injected_failure(&mut state, FfiOp::DisplayImage)?;
         pop_or(&mut state.display_image, Ok(()))
     }
 }
 
 impl MockDriver {
-    fn open(&self, operation: &'static str, output: &mut Option<Handle>) -> DriverResult<()> {
+    fn open(&self, operation: FfiOp, output: &mut Option<Handle>) -> DriverResult<()> {
         let mut state = self.state();
-        state.log.push(operation);
-        *output = state.open_handle;
-        pop_or(&mut state.open, Ok(()))
+        record_call(&mut state, operation);
+        return_injected_failure(&mut state, operation)?;
+
+        let configured = match operation {
+            FfiOp::OpenDeviceByIp => state.open_by_ip.pop_front(),
+            FfiOp::OpenDeviceBySerial => state.open_by_serial.pop_front(),
+            _ => unreachable!("only open operations use MockDriver::open"),
+        };
+        let reply = configured.unwrap_or_else(|| {
+            let handle = mock_handle(state.next_handle);
+            state.next_handle = state
+                .next_handle
+                .checked_add(1)
+                .expect("mock handle sequence exhausted");
+            OpenReply {
+                handle: Some(handle),
+                result: Ok(()),
+            }
+        });
+        if let Some(handle) = reply.handle {
+            state
+                .opened_handles
+                .push((operation, handle.as_ptr().addr()));
+        }
+        *output = reply.handle;
+        reply.result
+    }
+}
+
+fn record_call(state: &mut MockState, operation: FfiOp) {
+    state.log.push(operation.driver_method());
+    state.operations.push(operation);
+}
+
+fn return_injected_failure(state: &mut MockState, operation: FfiOp) -> DriverResult<()> {
+    let error = state
+        .injected_failures
+        .get_mut(&operation)
+        .and_then(VecDeque::pop_front);
+    match error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 

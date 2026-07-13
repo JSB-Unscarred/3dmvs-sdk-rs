@@ -1,0 +1,10 @@
+error[E0499]: cannot borrow `*camera` as mutable more than once at a time
+ --> tests/ui/lifecycle/reborrow_camera_while_transferring.rs:7:5
+  |
+4 |     let transfer = camera
+  |                    ------ first mutable borrow occurs here
+...
+7 |     camera.clear_buffer().unwrap();
+  |     ^^^^^^ second mutable borrow occurs here
+8 |     drop(transfer);
+  |          -------- first borrow later used here

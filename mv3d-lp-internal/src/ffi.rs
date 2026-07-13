@@ -1,10 +1,13 @@
 #![cfg_attr(not(feature = "native"), allow(dead_code, unused_imports))]
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 use std::ffi::CStr;
 use std::mem::{MaybeUninit, size_of};
@@ -15,27 +18,36 @@ use std::mem::{MaybeUninit, size_of};
     target_env = "msvc"
 ))]
 use std::num::NonZeroIsize;
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    test,
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 use std::ptr;
 
 use crate::bindings;
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 use crate::callback::{CallbackCookie, exception_trampoline, image_trampoline};
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 use crate::device::{DeviceInfoRaw, DeviceListAttempt, IpConfigRaw};
 #[cfg(all(
@@ -45,11 +57,14 @@ use crate::device::{DeviceInfoRaw, DeviceListAttempt, IpConfigRaw};
     target_env = "msvc"
 ))]
 use crate::display::DisplayRangeRecord;
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 use crate::driver::{Driver, Handle, status_result};
 use crate::driver::{DriverError, DriverResult};
@@ -81,19 +96,25 @@ impl Default for FrameLimits {
     }
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 pub(crate) struct NativeDriver;
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 impl Driver for NativeDriver {
     fn version(&self) -> DriverResult<Vec<u8>> {
@@ -501,23 +522,28 @@ impl Driver for NativeDriver {
         // SAFETY: raw-window-handle guarantees a live non-null Win32 HWND while the borrowed
         // WindowHandle is held by the public wrapper. The vendor-[IN] image payload is read-only
         // and remains valid through this synchronous call.
-        status_result(unsafe {
-            bindings::MV3D_LP_DisplayImage(
+        // SAFETY: `input` was validated above and borrows live payloads; `window` came from a
+        // borrowed Win32 raw-window-handle and remains live for this synchronous call.
+        unsafe {
+            native_display_image_call(
                 &mut input,
                 window.get() as *mut std::ffi::c_void,
                 display_type,
                 minimum,
                 maximum,
             )
-        })
+        }
     }
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_LP_IMAGE_DATA> {
     if input.width == 0 {
@@ -564,14 +590,14 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
         }
         None => 0,
     };
-    if let Some(timestamps) = input.exposure_timestamps
-        && timestamps.len() != usize::try_from(input.height).unwrap_or(usize::MAX)
-    {
-        return Err(length_mismatch(
-            "exposure timestamps",
-            usize::try_from(input.height).unwrap_or(usize::MAX),
-            timestamps.len(),
-        ));
+    if let Some(timestamps) = input.exposure_timestamps {
+        if timestamps.len() != usize::try_from(input.height).unwrap_or(usize::MAX) {
+            return Err(length_mismatch(
+                "exposure timestamps",
+                usize::try_from(input.height).unwrap_or(usize::MAX),
+                timestamps.len(),
+            ));
+        }
     }
     if !input.x_scale.is_finite() || !input.y_scale.is_finite() || !input.z_scale.is_finite() {
         return Err(invalid_image_value("calibration scale"));
@@ -622,11 +648,45 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
     })
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "display-windows",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
+))]
+/// Calls the raw display entry point after the higher-level display validation.
+///
+/// # Safety
+///
+/// `image` must point to an initialized descriptor whose borrowed payloads remain readable for
+/// the call, and `window` must be a live Win32 `HWND` accepted by the vendor runtime. Test callers
+/// may use dummy values only when the no-native symbol stub is linked.
+pub(crate) unsafe fn native_display_image_call(
+    image: *mut bindings::MV3D_LP_IMAGE_DATA,
+    window: *mut std::ffi::c_void,
+    display_type: bindings::Mv3dLpDisplayType,
+    minimum: i32,
+    maximum: i32,
+) -> DriverResult<()> {
+    // SAFETY: Production callers provide the validated live image and HWND used by
+    // NativeDriver. The no-native unit test supplies initialized raw storage and a local symbol
+    // stub with the identical C signature.
+    status_result(unsafe {
+        bindings::MV3D_LP_DisplayImage(image, window, display_type, minimum, maximum)
+    })
+}
+
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn require_image_type(
     input: ImageInput<'_>,
@@ -640,11 +700,14 @@ fn require_image_type(
     }
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn validate_multi_depth_inputs(
     inputs: &[ImageInput<'_>],
@@ -678,11 +741,14 @@ fn validate_multi_depth_inputs(
     validate_byte_limit("aggregate output image", predicted_output)
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn image_input_payload_bytes(input: ImageInput<'_>) -> DriverResult<usize> {
     let exposure_bytes = input.exposure_timestamps.map_or(Ok(0), |timestamps| {
@@ -699,11 +765,14 @@ fn image_input_payload_bytes(input: ImageInput<'_>) -> DriverResult<usize> {
         .ok_or_else(|| length_overflow("input image payloads"))
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn expected_image_bytes(width: u32, height: u32, bytes_per_pixel: usize) -> DriverResult<usize> {
     usize::try_from(width)
@@ -713,11 +782,14 @@ fn expected_image_bytes(width: u32, height: u32, bytes_per_pixel: usize) -> Driv
         .ok_or_else(|| length_overflow("expected output image"))
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn validate_expected_image_bytes(
     width: u32,
@@ -728,11 +800,14 @@ fn validate_expected_image_bytes(
     validate_byte_limit(field, expected_image_bytes(width, height, bytes_per_pixel)?)
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn validate_byte_limit(field: &'static str, actual: usize) -> DriverResult<()> {
     if actual > DEFAULT_MAX_FRAME_BYTES {
@@ -746,11 +821,14 @@ fn validate_byte_limit(field: &'static str, actual: usize) -> DriverResult<()> {
     }
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn conversion_supported(source: i32, target: i32) -> bool {
     matches!(
@@ -773,11 +851,14 @@ fn conversion_supported(source: i32, target: i32) -> bool {
     )
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn file_format_supported(image_type: i32, format: ImageFileFormatRecord) -> bool {
     match format {
@@ -830,11 +911,14 @@ fn display_image_type_supported(image_type: i32) -> bool {
     )
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn image_inputs_to_native(
     inputs: &[ImageInput<'_>],
@@ -853,11 +937,14 @@ fn image_inputs_to_native(
     Ok(native)
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    test,
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 unsafe fn processed_image_from_native(
     output: &bindings::MV3D_LP_IMAGE_DATA,
@@ -884,11 +971,14 @@ unsafe fn processed_image_from_native(
     unsafe { image_from_native(&sanitized, FrameLimits::default()) }
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    test,
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 #[derive(Clone, Copy)]
 enum AuxiliaryPayloads {
@@ -897,11 +987,14 @@ enum AuxiliaryPayloads {
     None,
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    test,
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn validate_processed_image_lengths(image: &bindings::MV3D_LP_IMAGE_DATA) -> DriverResult<()> {
     let pixels = usize::try_from(image.nWidth)
@@ -926,11 +1019,14 @@ fn validate_processed_image_lengths(image: &bindings::MV3D_LP_IMAGE_DATA) -> Dri
     Ok(())
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn zeroed_device_info() -> bindings::MV3D_LP_DEVICE_INFO {
     // SAFETY: The C structure consists only of integer scalars and byte arrays; all-zero is a
@@ -1194,23 +1290,23 @@ pub(crate) fn image_from_test_buffers(
             data.map_or(0, <[u8]>::len),
         ));
     }
-    if let Some(expected) = layout.intensity_len
-        && intensity_data.is_none_or(|bytes| bytes.len() < expected)
-    {
-        return Err(length_mismatch(
-            "test intensity backing",
-            expected,
-            intensity_data.map_or(0, <[u8]>::len),
-        ));
+    if let Some(expected) = layout.intensity_len {
+        if intensity_data.is_none_or(|bytes| bytes.len() < expected) {
+            return Err(length_mismatch(
+                "test intensity backing",
+                expected,
+                intensity_data.map_or(0, <[u8]>::len),
+            ));
+        }
     }
-    if let Some(expected) = layout.exposure_count
-        && exposure_timestamps.is_none_or(|values| values.len() < expected)
-    {
-        return Err(length_mismatch(
-            "test exposure backing",
-            expected,
-            exposure_timestamps.map_or(0, <[i64]>::len),
-        ));
+    if let Some(expected) = layout.exposure_count {
+        if exposure_timestamps.is_none_or(|values| values.len() < expected) {
+            return Err(length_mismatch(
+                "test exposure backing",
+                expected,
+                exposure_timestamps.map_or(0, <[i64]>::len),
+            ));
+        }
     }
 
     // SAFETY: Each pointer was derived from a live borrowed slice above, and the backing checks
@@ -1218,13 +1314,7 @@ pub(crate) fn image_from_test_buffers(
     unsafe { image_from_native(&image, limits) }
 }
 
-#[cfg(all(
-    test,
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
-))]
+#[cfg(test)]
 pub(crate) fn processed_image_from_test_buffers(
     mut image: bindings::MV3D_LP_IMAGE_DATA,
     expected: ImageTypeRecord,
@@ -1256,11 +1346,14 @@ pub(crate) fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {
     unsafe { MaybeUninit::zeroed().assume_init() }
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn device_info_from_native(native: bindings::MV3D_LP_DEVICE_INFO) -> DeviceInfoRaw {
     DeviceInfoRaw {
@@ -1421,11 +1514,14 @@ fn as_u8_array<const N: usize>(source: &[i8; N]) -> [u8; N] {
     std::array::from_fn(|index| source[index] as u8)
 }
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
 ))]
 fn as_c_char_array<const N: usize>(source: &[u8; N]) -> [i8; N] {
     std::array::from_fn(|index| source[index] as i8)

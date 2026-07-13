@@ -63,6 +63,13 @@ impl<'sdk> Camera<'sdk> {
     ///
     /// This is a one-shot mode for the current device handle. After the returned callback
     /// measurement stops, close and reopen the camera before starting another acquisition.
+    ///
+    /// # Native contract
+    ///
+    /// For the audited LPSDK 1.3.3.3 runtime, this wrapper assumes that each callback descriptor
+    /// and payload remains readable and unchanged until the native callback returns. The wrapper
+    /// copies every payload before returning from that callback, but the vendor does not provide
+    /// a separate written guarantee for this stability window.
     pub fn start_receiving(
         &mut self,
         options: CallbackOptions,
@@ -99,6 +106,9 @@ impl<'sdk> Camera<'sdk> {
     ///
     /// Exception registration is one-shot. This method and [`Camera::on_exception`] are mutually
     /// exclusive for a device handle, even if the receiver or worker is later dropped.
+    /// The audited LPSDK 1.3.3.3 contract assumes that each exception descriptor remains readable
+    /// until the native callback returns; the event is copied within that window, which is not a
+    /// separate written vendor guarantee.
     pub fn exception_receiver(
         &mut self,
         options: CallbackOptions,
@@ -163,7 +173,9 @@ impl<'sdk> Camera<'sdk> {
     /// Starts copying a file from the camera to the host.
     ///
     /// Names are passed as original narrow-string bytes because the vendor SDK
-    /// does not document their encoding.
+    /// does not document their encoding. The wrapper retains both names until the observed
+    /// terminal progress state or a successful camera close. Those termination semantics are an
+    /// audited LPSDK 1.3.3.3 assumption rather than a separate vendor guarantee.
     pub fn download_file<'camera>(
         &'camera mut self,
         device_file_name: &[u8],
@@ -179,6 +191,9 @@ impl<'sdk> Camera<'sdk> {
     }
 
     /// Starts copying a host file into the camera.
+    ///
+    /// This uses the same retained-name and native termination assumptions as
+    /// [`Camera::download_file`].
     pub fn upload_file<'camera>(
         &'camera mut self,
         local_file_name: &[u8],
@@ -338,6 +353,14 @@ impl<'camera> Measurement<'camera> {
     /// durations round up to one millisecond, and the SDK's infinite-wait
     /// sentinel is rejected. A completed wait with no frame is reported as
     /// [`crate::StatusCode::NO_DATA`] through [`crate::Error::Sdk`].
+    ///
+    /// # Native contract
+    ///
+    /// For the audited LPSDK 1.3.3.3 runtime, this wrapper assumes that a successful call's
+    /// descriptor and payloads remain readable and unchanged during the immediate synchronous
+    /// copy. The process-wide lock prevents intervening wrapper calls, but cannot control private
+    /// SDK worker threads; the vendor does not provide a separate written guarantee for this
+    /// stability window.
     pub fn get_image(&mut self, timeout: Duration) -> Result<OwnedFrame> {
         let timeout_ms = timeout_millis(timeout)?;
         self.inner
