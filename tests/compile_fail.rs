@@ -1,44 +1,56 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct CompileFailCase {
     bin: &'static str,
+    source: &'static str,
     error_code: &'static str,
 }
 
 const CASES: &[CompileFailCase] = &[
     CompileFailCase {
         bin: "non_send_handler",
+        source: include_str!("compile_fail_cases/callback/non_send_handler.rs"),
         error_code: "E0277",
     },
     CompileFailCase {
         bin: "non_static_handler",
+        source: include_str!("compile_fail_cases/callback/non_static_handler.rs"),
         error_code: "E0521",
     },
     CompileFailCase {
         bin: "camera_outlives_sdk",
+        source: include_str!("compile_fail_cases/lifecycle/camera_outlives_sdk.rs"),
         error_code: "E0515",
     },
     CompileFailCase {
         bin: "close_while_measuring",
+        source: include_str!("compile_fail_cases/lifecycle/close_while_measuring.rs"),
         error_code: "E0505",
     },
     CompileFailCase {
         bin: "image_ref_outlives_payload",
+        source: include_str!("compile_fail_cases/lifecycle/image_ref_outlives_payload.rs"),
         error_code: "E0515",
     },
     CompileFailCase {
         bin: "reborrow_camera_while_measuring",
+        source: include_str!("compile_fail_cases/lifecycle/reborrow_camera_while_measuring.rs"),
         error_code: "E0499",
     },
     CompileFailCase {
         bin: "reborrow_camera_while_transferring",
+        source: include_str!("compile_fail_cases/lifecycle/reborrow_camera_while_transferring.rs"),
         error_code: "E0499",
     },
     CompileFailCase {
         bin: "shutdown_while_camera_borrowed",
+        source: include_str!("compile_fail_cases/lifecycle/shutdown_while_camera_borrowed.rs"),
         error_code: "E0505",
     },
 ];
@@ -46,20 +58,36 @@ const CASES: &[CompileFailCase] = &[
 #[test]
 fn safety_contracts_fail_with_the_expected_error_codes() {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let manifest = workspace.join("tests/compile_fail_cases/Cargo.toml");
-    let target = workspace.join("target/compile-fail");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let project = CompileFailProject::new(&workspace)
+        .unwrap_or_else(|error| panic!("failed to prepare compile-fail project: {error}"));
+
+    let output = Command::new(&cargo)
+        .arg("generate-lockfile")
+        .arg("--offline")
+        .arg("--manifest-path")
+        .arg(project.manifest())
+        .env("CARGO_TARGET_DIR", project.target())
+        .output()
+        .unwrap_or_else(|error| panic!("failed to generate compile-fail lockfile: {error}"));
+
+    assert!(
+        output.status.success(),
+        "failed to generate compile-fail lockfile\nCargo stdout:\n{}\nCargo stderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     for case in CASES {
         let output = Command::new(&cargo)
             .arg("check")
             .arg("--frozen")
             .arg("--manifest-path")
-            .arg(&manifest)
+            .arg(project.manifest())
             .arg("--bin")
             .arg(case.bin)
             .arg("--message-format=json")
-            .env("CARGO_TARGET_DIR", &target)
+            .env("CARGO_TARGET_DIR", project.target())
             .output()
             .unwrap_or_else(|error| panic!("failed to run Cargo for `{}`: {error}", case.bin));
 
@@ -79,6 +107,75 @@ fn safety_contracts_fail_with_the_expected_error_codes() {
             "`{}` failed for an unexpected reason\nexpected error codes: {expected:?}\nactual error codes: {codes:?}\nuncoded error: {has_uncoded_error}\nCargo stderr:\n{stderr}\nCargo JSON:\n{stdout}",
             case.bin
         );
+    }
+}
+
+struct CompileFailProject {
+    root: PathBuf,
+}
+
+impl CompileFailProject {
+    fn new(workspace: &Path) -> io::Result<Self> {
+        let project = Self {
+            root: create_scratch_dir()?,
+        };
+        let bins = project.root.join("src/bin");
+        fs::create_dir_all(&bins)?;
+
+        let dependency_path = format!("{:?}", workspace.to_string_lossy());
+        fs::write(
+            project.manifest(),
+            format!(
+                "[package]\n\
+                 name = \"mv3d-lp-compile-fail\"\n\
+                 version = \"0.0.0\"\n\
+                 edition = \"2024\"\n\
+                 publish = false\n\n\
+                 [workspace]\n\n\
+                 [dependencies]\n\
+                 mv3d-lp = {{ path = {dependency_path}, default-features = false }}\n"
+            ),
+        )?;
+
+        for case in CASES {
+            fs::write(bins.join(format!("{}.rs", case.bin)), case.source)?;
+        }
+
+        Ok(project)
+    }
+
+    fn manifest(&self) -> PathBuf {
+        self.root.join("Cargo.toml")
+    }
+
+    fn target(&self) -> PathBuf {
+        self.root.join("target")
+    }
+}
+
+impl Drop for CompileFailProject {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn create_scratch_dir() -> io::Result<PathBuf> {
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+
+    let base = option_env!("CARGO_TARGET_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    fs::create_dir_all(&base)?;
+
+    loop {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let candidate = base.join(format!("compile-fail-{}-{id}", std::process::id()));
+
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
     }
 }
 
