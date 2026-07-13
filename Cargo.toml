@@ -1,5 +1,6 @@
 [workspace]
 members = ["mv3d-lp-internal"]
+default-members = [".", "mv3d-lp-internal"]
 resolver = "3"
 
 [workspace.package]
