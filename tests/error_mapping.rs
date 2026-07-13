@@ -1,4 +1,6 @@
-use mv3d_lp::{ContractViolation, Error, InputViolation, Operation, SdkError, StatusCode};
+use mv3d_lp::{
+    ContractViolation, Error, InputViolation, Operation, SdkError, SdkText, SdkVersion, StatusCode,
+};
 
 #[test]
 fn known_high_bit_status_preserves_its_exact_bits() {
@@ -34,6 +36,47 @@ fn get_image_operation_uses_the_vendor_symbol() {
     assert_eq!(
         error,
         Error::Sdk(SdkError::new(Operation::GetImage, StatusCode::NO_DATA))
+    );
+}
+
+#[test]
+fn incompatible_version_retains_the_original_sdk_text() {
+    let error: Error = mv3d_lp_internal::Error::IncompatibleSdkVersion {
+        expected: b"1.3.3.3",
+        actual: b"01.3.3.3".to_vec(),
+    }
+    .into();
+
+    assert_eq!(
+        error,
+        Error::IncompatibleSdkVersion {
+            expected: SdkVersion::new(1, 3, 3, 3),
+            actual: SdkVersion::new(1, 3, 3, 3),
+            actual_text: SdkText::new("01.3.3.3").unwrap(),
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "incompatible SDK runtime version 01.3.3.3; expected 1.3.3.3"
+    );
+}
+
+#[test]
+fn malformed_incompatible_version_maps_without_panicking() {
+    let error: Error = mv3d_lp_internal::Error::IncompatibleSdkVersion {
+        expected: b"1.3.3.3",
+        actual: format!("{}1.3.3.3", "0".repeat(SdkText::MAX_LEN)).into_bytes(),
+    }
+    .into();
+
+    assert_eq!(
+        error,
+        Error::ContractViolation {
+            operation: Operation::GetVersion,
+            violation: ContractViolation::InvalidValue {
+                field: "SDK version",
+            },
+        }
     );
 }
 

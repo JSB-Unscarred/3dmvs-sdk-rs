@@ -1,4 +1,4 @@
-use crate::SdkVersion;
+use crate::{SdkText, SdkVersion};
 use std::error::Error as StdError;
 use std::fmt;
 
@@ -484,6 +484,7 @@ pub enum Error {
     IncompatibleSdkVersion {
         expected: SdkVersion,
         actual: SdkVersion,
+        actual_text: SdkText,
     },
     RuntimeAlreadyActive,
     RuntimeTerminal,
@@ -533,9 +534,13 @@ impl fmt::Display for Error {
                 formatter,
                 "the device list kept changing during {attempts} discovery attempts"
             ),
-            Self::IncompatibleSdkVersion { expected, actual } => write!(
+            Self::IncompatibleSdkVersion {
+                expected,
+                actual_text,
+                ..
+            } => write!(
                 formatter,
-                "incompatible SDK runtime version {actual}; expected {expected}"
+                "incompatible SDK runtime version {actual_text}; expected {expected}"
             ),
             Self::RuntimeAlreadyActive => {
                 formatter.write_str("the process already has an active 3DMVS SDK runtime")
@@ -605,8 +610,16 @@ impl From<mv3d_lp_internal::Error> for Error {
             InternalError::RuntimeTerminal => Self::RuntimeTerminal,
             InternalError::IncompatibleSdkVersion { expected, actual } => {
                 let expected = parse_version_bytes(expected);
-                match parse_version_bytes_checked(&actual) {
-                    Some(actual) => Self::IncompatibleSdkVersion { expected, actual },
+                let actual = SdkText::try_from(actual).ok().and_then(|actual_text| {
+                    parse_version_bytes_checked(actual_text.as_bytes())
+                        .map(|actual| (actual, actual_text))
+                });
+                match actual {
+                    Some((actual, actual_text)) => Self::IncompatibleSdkVersion {
+                        expected,
+                        actual,
+                        actual_text,
+                    },
                     None => Self::ContractViolation {
                         operation: Operation::GetVersion,
                         violation: ContractViolation::InvalidValue {
