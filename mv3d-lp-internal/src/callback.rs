@@ -131,8 +131,10 @@ impl CallbackEntry {
         }
         let Some(in_flight) = state.in_flight.checked_add(1) else {
             state.accepting = false;
-            state.sink.take();
+            let retired_sink = state.sink.take();
+            drop(state);
             increment_saturating(&self.panics);
+            self.drop_sink_without_unwind(retired_sink);
             return None;
         };
         let sink = state.sink.as_ref()?.clone();
@@ -140,14 +142,14 @@ impl CallbackEntry {
         drop(state);
         Some(InFlight {
             entry: Arc::clone(self),
-            sink,
+            sink: Some(sink),
         })
     }
 
-    fn begin_deactivate(&self) {
+    fn begin_deactivate(&self) -> Option<CallbackSink> {
         let mut state = self.lock();
         state.accepting = false;
-        state.sink.take();
+        state.sink.take()
     }
 
     fn wait_until_drained(&self) {
@@ -164,7 +166,20 @@ impl CallbackEntry {
         if panic {
             increment_saturating(&self.panics);
         }
-        self.begin_deactivate();
+        let retired_sink = self.begin_deactivate();
+        self.drop_sink_without_unwind(retired_sink);
+    }
+
+    fn drop_sink_without_unwind(&self, sink: Option<CallbackSink>) {
+        let Some(sink) = sink else {
+            return;
+        };
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(sink))) {
+            increment_saturating(&self.panics);
+            // A custom panic payload may itself panic from Drop. Leaking only this exceptional
+            // payload keeps user-controlled destruction from escaping callback cleanup.
+            std::mem::forget(payload);
+        }
     }
 
     fn record_invalid_payload(&self) {
@@ -191,18 +206,40 @@ impl CallbackEntry {
     }
 }
 
+impl Drop for CallbackEntry {
+    fn drop(&mut self) {
+        // Registration normally removes the sink first. This final guard also covers early
+        // construction failures and future paths that release the last entry directly.
+        let sink = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .sink
+            .take();
+        self.drop_sink_without_unwind(sink);
+    }
+}
+
 struct InFlight {
     entry: Arc<CallbackEntry>,
-    sink: CallbackSink,
+    sink: Option<CallbackSink>,
 }
 
 impl Drop for InFlight {
     fn drop(&mut self) {
+        // Release the callback clone before publishing that this invocation has drained. The
+        // registration retains its own clone until wait_until_drained returns, so whichever clone
+        // is last is always destroyed behind a panic boundary and never while holding state.
+        let sink = self.sink.take();
+        self.entry.drop_sink_without_unwind(sink);
+
         let mut state = self.entry.lock();
         if state.in_flight == 0 {
             state.accepting = false;
-            state.sink.take();
+            let retired_sink = state.sink.take();
+            drop(state);
             increment_saturating(&self.entry.panics);
+            self.entry.drop_sink_without_unwind(retired_sink);
             return;
         }
         state.in_flight -= 1;
@@ -315,10 +352,11 @@ impl CallbackRegistration {
         if !self.active {
             return;
         }
-        self.entry.begin_deactivate();
+        let retired_sink = self.entry.begin_deactivate();
         registry().remove(self.cookie, &self.entry);
         self.entry.wait_until_drained();
         self.active = false;
+        self.entry.drop_sink_without_unwind(retired_sink);
     }
 }
 
@@ -374,7 +412,7 @@ fn dispatch_image(cookie: CallbackCookie, image: *mut bindings::MV3D_LP_IMAGE_DA
     let Some(in_flight) = entry.try_enter(CallbackKind::Image) else {
         return;
     };
-    let CallbackSink::Image(sink) = &in_flight.sink else {
+    let Some(CallbackSink::Image(sink)) = in_flight.sink.as_ref() else {
         return;
     };
     // SAFETY: after registry admission the audited SDK callback contract guarantees that the
@@ -399,7 +437,7 @@ fn dispatch_exception(cookie: CallbackCookie, exception: *mut bindings::MV3D_LP_
     let Some(in_flight) = entry.try_enter(CallbackKind::Exception) else {
         return;
     };
-    let CallbackSink::Exception(sink) = &in_flight.sink else {
+    let Some(CallbackSink::Exception(sink)) = in_flight.sink.as_ref() else {
         return;
     };
     // SAFETY: after registry admission the SDK owns a readable exception descriptor for the
