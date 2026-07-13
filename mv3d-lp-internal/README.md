@@ -5,6 +5,10 @@
 LPSDK bindings, process-wide runtime state, callback registry, and native
 resource cleanup from the public safe facade.
 
+Production native calls, union reads, and image pointer conversion live in `ffi.rs`. Callback
+trampoline entry, raw-pointer admission, and exception copying live in `callback.rs`. `bindings.rs`
+contains the raw declarations; `abi.rs` checks layouts and function signatures.
+
 Registry publication is currently disabled. If the public facade is published in the future,
 this implementation crate must be published first because registry packages cannot depend on an
 unpublished path dependency. Its API remains an implementation detail: applications should depend
