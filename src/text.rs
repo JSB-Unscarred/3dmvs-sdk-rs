@@ -17,7 +17,9 @@ impl SdkText {
     pub const MAX_LEN: usize = Self::STORAGE_CAPACITY;
 
     pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self> {
-        Self::from_vec(bytes.as_ref().to_vec())
+        let bytes = bytes.as_ref();
+        validate_bytes("SDK text", bytes, Self::MAX_LEN)?;
+        Ok(Self(bytes.to_vec()))
     }
 
     fn from_vec(bytes: Vec<u8>) -> Result<Self> {
@@ -125,7 +127,9 @@ impl SerialNumber {
     pub const MAX_LEN: usize = 16;
 
     pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self> {
-        Self::from_vec(bytes.as_ref().to_vec())
+        let bytes = bytes.as_ref();
+        validate_bytes("serial number", bytes, Self::MAX_LEN)?;
+        Ok(Self(bytes.to_vec()))
     }
 
     fn from_vec(bytes: Vec<u8>) -> Result<Self> {
