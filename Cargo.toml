@@ -20,7 +20,6 @@ readme = "README.md"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/mv3d-lp"
 keywords = ["3d-vision", "ffi", "hikrobot", "laser-profiler"]
 categories = ["api-bindings", "hardware-support"]
 publish = false
@@ -43,9 +42,3 @@ mv3d-lp-internal = { path = "mv3d-lp-internal", version = "=0.1.0", default-feat
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = { version = "0.6.2", optional = true }
-
-[dev-dependencies]
-trybuild = "1"
-
-[package.metadata.docs.rs]
-no-default-features = true

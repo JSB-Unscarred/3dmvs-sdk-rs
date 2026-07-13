@@ -244,7 +244,7 @@ impl Driver for NativeDriver {
     }
 
     fn clear_buffer(&self, handle: Handle) -> DriverResult<()> {
-        // SAFETY: Camera owns the handle and M2 exposes only copies, never borrowed SDK buffers.
+        // SAFETY: Camera owns the handle; the safe facade exposes only owned copies of SDK buffers.
         status_result(unsafe { bindings::MV3D_LP_ClearDataBuffer(handle.as_ptr()) })
     }
 

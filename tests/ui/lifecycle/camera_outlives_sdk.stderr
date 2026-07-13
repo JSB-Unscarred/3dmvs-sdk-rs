@@ -1,8 +1,0 @@
-error[E0515]: cannot return value referencing local variable `sdk`
- --> tests/ui/lifecycle/camera_outlives_sdk.rs:7:5
-  |
-7 |     sdk.open_by_ip(Ipv4Addr::LOCALHOST).unwrap()
-  |     ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |     |
-  |     returns a value referencing data owned by the current function
-  |     `sdk` is borrowed here

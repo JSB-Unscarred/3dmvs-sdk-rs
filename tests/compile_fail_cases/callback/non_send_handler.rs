@@ -1,3 +1,4 @@
+// Expected rustc error: E0277 (`Send` is not implemented).
 use std::rc::Rc;
 
 use mv3d_lp::{CallbackOptions, Camera};
@@ -10,4 +11,3 @@ fn register_non_send_handler(camera: &mut Camera<'_>) {
 }
 
 fn main() {}
-

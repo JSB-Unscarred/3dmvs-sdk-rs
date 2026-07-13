@@ -1,3 +1,4 @@
+// Expected rustc error: E0515 (the image cannot outlive its payload).
 use mv3d_lp::{ImageCalibration, ImageRef, ImageType};
 
 fn image_without_payload() -> ImageRef<'static> {

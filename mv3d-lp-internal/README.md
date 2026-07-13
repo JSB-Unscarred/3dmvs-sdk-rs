@@ -16,4 +16,4 @@ available only through the explicit `native` feature on
 The vendor SDK, headers, import libraries, DLLs, and installers are not included
 or redistributed.
 
-Licensed under the [MIT License](LICENSE).
+Licensed under the repository's [MIT License](../LICENSE).

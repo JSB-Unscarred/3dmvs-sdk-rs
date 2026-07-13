@@ -1,9 +1,0 @@
-error[E0499]: cannot borrow `*camera` as mutable more than once at a time
- --> tests/ui/lifecycle/reborrow_camera_while_measuring.rs:5:5
-  |
-4 |     let measurement = camera.start().unwrap();
-  |                       ------ first mutable borrow occurs here
-5 |     camera.clear_buffer().unwrap();
-  |     ^^^^^^ second mutable borrow occurs here
-6 |     drop(measurement);
-  |          ----------- first borrow later used here

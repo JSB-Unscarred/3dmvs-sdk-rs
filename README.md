@@ -40,9 +40,9 @@ C:\Program Files (x86)\Common Files\MV3D\Runtime\Win64_x64
 构建，不属于 SDK 运行时支持范围。
 
 本项目只针对上述精确环境完成了契约审计。厂商没有为若干缓冲区稳定窗口、回调排空和
-后台文件访问语义提供可取得的书面保证；当前依据、保守假设和不能由工业实验推出的结论
-记录在 [`m5/native-contract-evidence.md`](m5/native-contract-evidence.md)。这属于已知限制，
-不得把“在特定设备上长期运行未见异常”表述成厂商保证或对其他 SDK 版本的兼容承诺。
+后台文件访问语义提供可取得的书面保证；这些限制集中列在
+[原生契约的已知假设](#原生契约的已知假设)中。它们是包装层的保守前提，不是厂商保证，
+也不能推广到其他 SDK、固件、设备或平台版本。
 
 ## 基本使用
 
@@ -127,10 +127,7 @@ fn receive_one_frame() -> Result<()> {
 - `OwnedImage` 主数据及可用辅助载荷的立即复制
 - 默认关闭的 Windows `display-windows` 图像显示 feature
 
-当前不提供借用帧、零拷贝、废弃 API、原始句柄或 DLL 中未公开的导出。回调注册、晚到回调和并发排空契约记录在 [`m4/callback-contract.md`](m4/callback-contract.md)。
-M5 的硬化门禁、平台矩阵与发布条件记录在
-[`m5/hardening-and-release.md`](m5/hardening-and-release.md)，逐项操作清单见
-[`m5/release-checklist.md`](m5/release-checklist.md)。
+当前不提供借用帧、零拷贝、废弃 API、原始句柄或 DLL 中未公开的导出。
 
 ## 安全边界
 
@@ -146,15 +143,32 @@ M5 的硬化门禁、平台矩阵与发布条件记录在
 - GetImage 成功后会在私有 FFI 边界内校验描述符并立即复制所有可用载荷；SDK 裸指针不会跨越 Driver 边界。
 - pull 采集只接受有限超时；`0xFFFF_FFFF` 无限等待哨兵不会传给 SDK。
 - 单帧采用聚合内存上限和 fallible allocation，尺寸与长度运算全部使用 checked arithmetic。
-- GetImage 依赖的 SDK 缓冲区稳定窗口和待补证据记录在 [`m2/image-ownership-contract.md`](m2/image-ownership-contract.md)。
 - 图像和异常回调只把永不复用的 cookie 交给 SDK；Stop/Close 前先从 Rust registry 摘除并排空，用户闭包仅在 Rust 工作线程执行。
-- 回调 payload 在 trampoline 返回前的稳定读取假设和剩余厂商问题记录在 [`m4/callback-contract.md`](m4/callback-contract.md)。
-- 文件传输、ImgProc 输出所有权和显示句柄契约记录在 [`m3/contracts.md`](m3/contracts.md)。
 - ImgProc 的 SDK 输出在同一把全局锁内校验并立即复制；多图操作只接受厂商规定的 1 至 8 张输入。
 - 活动文件传输的两个文件名由 `Camera` 持有；提前丢弃 guard 不会释放文件名或假装取消传输。
 - `Drop` 最佳努力执行清理且不 panic；显式 `close`/`shutdown` 可取得错误。
 - 只有活句柄计数归零且每次关闭结果都确定成功时才调用 `Finalize`；相机被遗忘或 Close 失败时会跳过 Finalize，安全地泄漏原生会话直到进程退出。
 - 所有 SDK 调用通过同一把进程级互斥锁串行化。
+
+## 原生契约的已知假设
+
+安全 API 还依赖闭源 LPSDK `1.3.3.3` 的下列行为。公开头文件、官方示例和本机观察与这些
+行为一致，但项目没有取得覆盖它们的独立厂商书面保证。
+
+| 区域 | 包装层依赖的原生行为 | Rust 侧缓解 |
+| --- | --- | --- |
+| pull `GetImage` | 成功返回后，描述符和非空载荷在立即同步复制完成前可读且不会被 SDK 私有线程并发修改 | 在进程级锁内校验长度、指针和算术，执行有上限的 fallible allocation 并立即复制 |
+| 图像回调 | trampoline 返回前，描述符和载荷保持可读且不会被并发修改 | 不在原生回调中执行用户代码；校验并拥有化全部数据，panic 不越过 FFI 边界 |
+| 回调生命周期 | Stop/Close 未必排空回调，且 SDK 没有已文档化的注销操作 | cookie 永不复用；registry 先撤销再排空；未知、晚到或已撤销 cookie 被忽略 |
+| 文件传输 | Close 成功会终止后台访问；`0/0` 不是完成；`completed == total > 0` 才表示完成 | 文件名由 `Camera` 保留；错误、倒退或总量变化不被当作完成；Close 结果不确定时保守保留内存 |
+| ImgProc 输出 | 成功返回的 SDK 输出在立即复制期间可读，且下一次算法调用前有效 | 在全局锁内校验并复制，限制单个和聚合大小以及多图数量 |
+| ImgProc/Save 输入 | 标为输入的可变 C 指针不会被写入，调用返回后也不会继续保留 | 只传递调用期间存活且布局经过校验的借用数据 |
+| Windows 显示 | 图像数据和 Win32 句柄只在同步调用期间被借用 | 通过 `raw-window-handle` 借用窗口，并让图像与窗口在调用期间保持存活 |
+
+实机实验只能说明某个已记录环境中没有观察到问题，不能把这些行为升级为厂商保证。若新的
+文档、运行日志或实验结果与任一必要假设冲突，受影响的安全 API 必须先停用或重新设计。
+LPSDK 版本、头文件、导入库、DLL、运行时配置、ABI、相关固件或 FFI surface 发生变化时，
+也必须重新审计后才能宣称支持。
 
 ## 验证
 
@@ -165,6 +179,7 @@ cargo fmt --all -- --check
 cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+cargo doc --workspace --no-deps --locked
 ```
 
 已安装 3DMVS 的 x64 Windows MSVC 主机可额外检查原生构建：
@@ -176,9 +191,30 @@ cargo test --workspace --features display-windows
 ```
 
 仓库中的测试只验证本包装的状态机、转换、边界和清理逻辑，不调用厂商 SDK，也不要求真实设备。
-其中 required CI 只运行默认的无原生 feature 组合；带 SDK 的原生构建、ABI 复验和实机
-观察属于独立的非 required 证据任务，不能让普通贡献或发布核对依赖不可再分发的厂商文件。
+`cargo test` 默认也会运行负向编译契约；这些用例只核对编译失败及 rustc 错误码，不保存或
+比较易受格式和编译器诊断文案影响的完整输出快照。
+带 SDK 的原生构建、ABI 复验和实机观察属于独立证据，不能让普通开发依赖不可再分发的厂商文件。
 
-安全问题请按 [`SECURITY.md`](SECURITY.md) 私下报告。变更记录见
-[`CHANGELOG.md`](CHANGELOG.md)。本项目采用 [MIT License](LICENSE)；该许可证只覆盖本仓库
-代码，不授予 3DMVS/LPSDK 厂商组件的再分发权。
+## 安全问题报告
+
+首个正式版本发布前，仅 `main` 的最新提交接受安全修复；发布后维护最新的 `0.1.x`，存在
+soundness 或 ABI 风险的旧版可能停止支持。
+
+请通过 [GitHub Security Advisories](https://github.com/JSB-Unscarred/3dmvs-sdk-rs/security/advisories/new)
+私下报告内存安全、FFI、回调生命周期、ABI、资源清理、路径处理或设备控制问题。在维护者有
+合理时间评估和控制问题前，请不要先创建公开 issue。报告请尽量包含：
+
+- 受影响的版本或 commit、启用的 feature、Rust target 与 toolchain；
+- Windows、LPSDK/runtime、设备和固件版本；
+- 最小复现、预期行为、实际行为，以及是否能用 fake backend 在无硬件环境复现；
+- 已移除序列号、IP、路径、凭据和客户数据的 panic、sanitizer、Miri、回调或清理日志。
+
+维护者会确认可用报告并协调修复或缓解，但本志愿项目不承诺固定响应时限。问题修复后，项目
+可能发布 advisory，并停止支持受影响版本。能推翻上述原生假设的证据即使尚无可利用方式，
+也属于安全相关的契约失效。
+
+## 许可证与信任边界
+
+本项目采用 [MIT License](LICENSE)。该许可证只覆盖本仓库代码，不授予 3DMVS/LPSDK 的
+头文件、导入库、DLL、运行时、安装程序、设备、固件或网络服务的再分发权。测试能够验证
+Rust 包装在已声明契约下的行为，但无法检查闭源 DLL 内部线程，也不能把实机测试变成厂商保证。

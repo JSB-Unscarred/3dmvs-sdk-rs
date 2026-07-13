@@ -1,3 +1,4 @@
+// Expected rustc error: E0505 (the camera borrows the SDK).
 use std::net::Ipv4Addr;
 
 use mv3d_lp::Sdk;
@@ -9,4 +10,3 @@ fn shutdown_with_open_camera(sdk: Sdk) {
 }
 
 fn main() {}
-

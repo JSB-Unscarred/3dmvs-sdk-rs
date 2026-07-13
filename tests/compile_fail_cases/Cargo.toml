@@ -1,0 +1,43 @@
+# Isolated Cargo project used only by the compile-fail test harness.
+[package]
+name = "mv3d-lp-compile-fail"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+mv3d-lp = { path = "../..", default-features = false }
+
+[[bin]]
+name = "non_send_handler"
+path = "callback/non_send_handler.rs"
+
+[[bin]]
+name = "non_static_handler"
+path = "callback/non_static_handler.rs"
+
+[[bin]]
+name = "camera_outlives_sdk"
+path = "lifecycle/camera_outlives_sdk.rs"
+
+[[bin]]
+name = "close_while_measuring"
+path = "lifecycle/close_while_measuring.rs"
+
+[[bin]]
+name = "image_ref_outlives_payload"
+path = "lifecycle/image_ref_outlives_payload.rs"
+
+[[bin]]
+name = "reborrow_camera_while_measuring"
+path = "lifecycle/reborrow_camera_while_measuring.rs"
+
+[[bin]]
+name = "reborrow_camera_while_transferring"
+path = "lifecycle/reborrow_camera_while_transferring.rs"
+
+[[bin]]
+name = "shutdown_while_camera_borrowed"
+path = "lifecycle/shutdown_while_camera_borrowed.rs"

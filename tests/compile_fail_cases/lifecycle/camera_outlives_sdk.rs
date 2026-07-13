@@ -1,3 +1,4 @@
+// Expected rustc error: E0515 (the camera cannot outlive its SDK).
 use std::net::Ipv4Addr;
 
 use mv3d_lp::{Camera, Sdk};
@@ -8,4 +9,3 @@ fn camera_without_sdk() -> Camera<'static> {
 }
 
 fn main() {}
-
