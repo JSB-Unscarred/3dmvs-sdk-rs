@@ -39,3 +39,44 @@ fn nul_and_invalid_keys_are_rejected_before_ffi() {
         })
     ));
 }
+
+#[test]
+fn parameter_and_command_keys_enforce_the_sdk_byte_limit() {
+    let maximum_parameter_key = "p".repeat(ParamKey::MAX_LEN);
+    let maximum_command_key = "c".repeat(CommandKey::MAX_LEN);
+    assert_eq!(
+        ParamKey::new(maximum_parameter_key)
+            .unwrap()
+            .as_bytes()
+            .len(),
+        ParamKey::MAX_LEN
+    );
+    assert_eq!(
+        CommandKey::new(maximum_command_key)
+            .unwrap()
+            .as_bytes()
+            .len(),
+        CommandKey::MAX_LEN
+    );
+
+    assert!(matches!(
+        ParamKey::new("p".repeat(ParamKey::MAX_LEN + 1)),
+        Err(Error::InvalidInput {
+            field: "parameter key",
+            violation: InputViolation::TooLong {
+                max: ParamKey::MAX_LEN,
+                actual: 256,
+            },
+        })
+    ));
+    assert!(matches!(
+        CommandKey::new("c".repeat(CommandKey::MAX_LEN + 1)),
+        Err(Error::InvalidInput {
+            field: "command key",
+            violation: InputViolation::TooLong {
+                max: CommandKey::MAX_LEN,
+                actual: 256,
+            },
+        })
+    ));
+}

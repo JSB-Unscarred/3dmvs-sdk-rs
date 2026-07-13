@@ -252,9 +252,12 @@ macro_rules! ascii_key {
         pub struct $name(String);
 
         impl $name {
+            /// Maximum key length accepted by the SDK, in bytes.
+            pub const MAX_LEN: usize = 255;
+
             pub fn new(value: impl Into<String>) -> Result<Self> {
                 let value = value.into();
-                validate_ascii_key($field, &value)?;
+                validate_ascii_key($field, &value, Self::MAX_LEN)?;
                 Ok(Self(value))
             }
 
@@ -315,11 +318,21 @@ macro_rules! ascii_key {
 ascii_key!(ParamKey, "parameter key");
 ascii_key!(CommandKey, "command key");
 
-fn validate_ascii_key(field: &'static str, value: &str) -> Result<()> {
+fn validate_ascii_key(field: &'static str, value: &str, max: usize) -> Result<()> {
     if value.is_empty() {
         return Err(Error::InvalidInput {
             field,
             violation: InputViolation::Empty,
+        });
+    }
+
+    if value.len() > max {
+        return Err(Error::InvalidInput {
+            field,
+            violation: InputViolation::TooLong {
+                max,
+                actual: value.len(),
+            },
         });
     }
 
