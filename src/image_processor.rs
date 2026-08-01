@@ -44,8 +44,8 @@ impl ImageFileFormat {
 
 /// Safe access to the process-global LPSDK image-processing functions.
 ///
-/// Each output is validated and copied into Rust-owned storage before the
-/// process-wide SDK call lock is released.
+/// Each output is validated and copied into Rust-owned storage before the dedicated
+/// image-processing lock is released.
 ///
 /// # Native contract
 ///

@@ -9,9 +9,10 @@ use crate::{
 
 /// The process-wide 3DMVS SDK session.
 ///
-/// A process can make one initialization attempt. Dropping or explicitly
-/// shutting down this value finalizes the SDK and leaves the process in a
-/// terminal state. `Sdk` is intentionally neither `Send` nor `Sync`.
+/// A process can have one active SDK session at a time. Version checks are retryable, an
+/// initialization failure is retryable after successful cleanup, and a successful shutdown
+/// permits a later session. Cleanup or Finalize uncertainty leaves the process terminal. `Sdk` is
+/// intentionally neither `Send` nor `Sync`.
 pub struct Sdk {
     inner: mv3d_lp_internal::Runtime,
     version: SdkVersion,

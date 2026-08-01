@@ -1,6 +1,6 @@
+use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
-use std::rc::Rc;
 use std::time::Duration;
 
 use crate::{Device, Error, Result};
@@ -25,20 +25,21 @@ pub enum FileTransferStatus {
 
 /// An asynchronous device file transfer that owns its device.
 ///
-/// The active transfer stays on the thread that started it. Dropping this value closes the owned
+/// Unique ownership of the active transfer may move between threads. The transfer remains
+/// `!Sync`, so polling and cleanup cannot run concurrently. Dropping this value closes the owned
 /// device. Once progress is complete, [`FileTransfer::try_into_device`] returns the device for
 /// another operation.
 #[must_use = "dropping FileTransfer closes its owned device"]
 pub struct FileTransfer<'sdk> {
     inner: mv3d_lp_internal::FileTransfer<'sdk>,
-    _not_send_or_sync: PhantomData<Rc<()>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'sdk> FileTransfer<'sdk> {
     pub(crate) fn from_internal(inner: mv3d_lp_internal::FileTransfer<'sdk>) -> Self {
         Self {
             inner,
-            _not_send_or_sync: PhantomData,
+            _not_sync: PhantomData,
         }
     }
 

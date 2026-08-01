@@ -81,7 +81,7 @@ fn public_lifecycle_and_control_methods_have_safe_signatures() {
 }
 
 #[test]
-fn public_device_and_sessions_support_scoped_thread_handoff() {
+fn public_device_sessions_and_transfer_support_scoped_thread_handoff() {
     fn handoff_device(device: Device<'_>) {
         std::thread::scope(|scope| {
             scope
@@ -109,9 +109,19 @@ fn public_device_and_sessions_support_scoped_thread_handoff() {
         });
     }
 
+    fn handoff_file_transfer(transfer: FileTransfer<'_>) {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || drop(transfer))
+                .join()
+                .expect("scoped file transfer handoff thread should not panic");
+        });
+    }
+
     let _: for<'sdk> fn(Device<'sdk>) = handoff_device;
     let _: for<'device> fn(Measurement<'device>) = handoff_measurement;
     let _: for<'device> fn(CallbackMeasurement<'device>) = handoff_callback_measurement;
+    let _: for<'sdk> fn(FileTransfer<'sdk>) = handoff_file_transfer;
 }
 
 #[test]

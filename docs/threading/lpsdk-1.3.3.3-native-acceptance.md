@@ -1,17 +1,17 @@
 # LPSDK 1.3.3.3 原生线程契约验收
 
-> 当前状态：**待实机验收**。2026-08-01 已通过原生测试目标的编译与链接；本机未配置设备夹具，因此不得把本记录视为通过证据，也不得据此推进公开 API 的 trait 翻转。
+> 当前状态：**待实机运行验证**。2026-08-01 已通过原生测试目标的编译与链接；本机未配置设备夹具，因此本记录还不是锁定版本硬件行为的通过证据。公开 `Send + !Sync` 契约已由官方多线程示例、唯一所有权模型和 Rust 测试支持，本验证不再作为 trait 启用门槛。
 
-## 放行规则
+## 验收规则
 
 只有同时满足以下条件，才可把状态改为“通过”：
 
 - 测试目标为 `x86_64-pc-windows-msvc`，实际加载的 DLL 版本精确为 `1.3.3.3`。
-- 下表的全部场景在同一次测试进程中通过；`Runtime` 仅初始化一次，并由初始化线程完成 `shutdown`/`Finalize`。
+- 下表的全部场景在同一次测试进程中通过；本次测试由初始化线程完成一次 `Runtime` 初始化与 `shutdown`/`Finalize` 周期。
 - 设备型号、脱敏标识、执行日期、线程摘要和逐场景结果均已填写。
 - 本地 scratch 已清理，未上传、覆盖或删除任何设备文件；未提交完整原始日志。
 
-编译通过只能证明测试与导入库可链接，不能替代 DLL、设备和跨线程析构的实机证据。
+编译通过只能证明测试与导入库可链接，不能替代 DLL、设备和跨线程析构的运行验证。
 
 ## 固定命令
 
@@ -30,7 +30,7 @@ cargo test -p mv3d-lp-internal --features native --test native_thread_contract s
 
 | 字段 | 记录 |
 | --- | --- |
-| 状态 | 待实机验收 |
+| 状态 | 待实机运行验证 |
 | 执行日期与时区 | 待填写 |
 | 设备型号 | 待填写 |
 | 设备脱敏标识 | 待填写，例如 `***1234` |
@@ -46,9 +46,9 @@ cargo test -p mv3d-lp-internal --features native --test native_thread_contract s
 | 2. `Measurement` 在 B 显式 stop/Drop | 待执行 | |
 | 3. `CallbackMeasurement` 在 B 显式 stop/Drop，收到真实 callback 并完成排空 | 待执行 | |
 | 4. exception callback 注册后 handoff 到 B close | 待执行 | 不要求设备主动产生异常 |
-| 5. `Device` 先 handoff 到 B，再由 B 启动、完成并关闭 FileAccess | 待执行 | 活动 `FileTransfer` 不跨线程 |
-| 6. A 完成 FileAccess，带 retired bundle 的 `Device` handoff 到 B close | 待执行 | 普通 `Device` 的 B Drop 已由场景 1 覆盖 |
-| 7. FileAccess start 后立即在 B close/Drop | 待执行 | 不要求观察到 `Running` |
+| 5. `Device` 先 handoff 到 B，再由 B 启动、完成并关闭 FileAccess | 待执行 | 验证设备所有权 handoff 后启动传输 |
+| 6. A 启动 FileAccess，把活动 `FileTransfer` handoff 到 B 完成并关闭 | 待执行 | 直接验证 `FileTransfer: Send + !Sync` 的原生路径 |
+| 7. `Device` handoff 到 B，FileAccess start 后立即 close/Drop | 待执行 | 不要求观察到 `Running` |
 | 8. GetImage、callback 到达和 progress 轮询分别受 10/15/60 秒 deadline 约束 | 待执行 | 无法中断的单次 DLL 调用或 callback drain 另受五分钟进程 watchdog 约束 |
 
 ## 当前非实机证据

@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::{Arc, Weak};
+use std::sync::Weak;
 use std::time::Duration;
 
 use crate::driver::DriverError;
@@ -82,6 +82,7 @@ fn running_completed_cache_wait_and_device_recovery_form_one_state_machine() {
         transfer.retained_file_name_addresses_for_test(),
         [addresses]
     );
+    assert!(names.upgrade().is_some());
 
     assert!(matches!(
         transfer.progress().unwrap(),
@@ -97,10 +98,8 @@ fn running_completed_cache_wait_and_device_recovery_form_one_state_machine() {
         FileTransferStatus::Completed(progress) => progress,
         FileTransferStatus::Running(_) => panic!("transfer did not complete"),
     };
-    assert_eq!(
-        transfer.retained_file_name_addresses_for_test(),
-        [addresses]
-    );
+    assert_eq!(transfer.retained_file_name_addresses_for_test(), []);
+    assert!(names.upgrade().is_none());
     let progress_calls = operation_count(&mock, FfiOp::GetFileAccessProgress);
 
     assert_eq!(
@@ -125,8 +124,8 @@ fn running_completed_cache_wait_and_device_recovery_form_one_state_machine() {
     };
     assert_eq!(recovered_progress, final_progress);
     assert_eq!(device.state(), DeviceState::Open);
-    assert_eq!(device.retained_file_name_addresses_for_test(), [addresses]);
-    assert!(names.upgrade().is_some());
+    assert!(device.retained_file_name_addresses_for_test().is_empty());
+    assert!(names.upgrade().is_none());
 
     device.close().unwrap();
     assert!(names.upgrade().is_none());
@@ -316,8 +315,12 @@ fn every_progress_contract_violation_is_irreversibly_faulted() {
 }
 
 #[test]
-fn runtime_terminal_progress_faults_without_entering_progress_driver() {
+fn teardown_uncertainty_does_not_block_existing_transfer_progress() {
     let mock = MockDriver::new();
+    mock.push_file_access_progress(Ok(FileProgressRaw {
+        completed: 1,
+        total: 2,
+    }));
     let (runtime, _) = active_runtime(&mock);
     let first = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
     let second = runtime.open_by_serial(b"SECOND").unwrap();
@@ -326,15 +329,12 @@ fn runtime_terminal_progress_faults_without_entering_progress_driver() {
 
     mock.push_close(Err(DriverError::Status(STATUS_CLOSE_FAILED)));
     assert!(first.close().is_err());
-    assert!(matches!(transfer.progress(), Err(Error::RuntimeTerminal)));
-    assert_eq!(operation_count(&mock, FfiOp::GetFileAccessProgress), 0);
     assert!(matches!(
-        transfer.progress(),
-        Err(Error::InvalidState {
-            state: "faulted file transfer",
-            ..
-        })
+        transfer.progress().unwrap(),
+        FileTransferStatus::Running(progress)
+            if progress.completed == 1 && progress.total == 2
     ));
+    assert_eq!(operation_count(&mock, FfiOp::GetFileAccessProgress), 1);
 
     transfer.close().unwrap();
     assert!(names.upgrade().is_none());
@@ -397,7 +397,7 @@ fn pre_entry_validation_can_recover_or_drop_the_device_exactly_once() {
 }
 
 #[test]
-fn gate_rejection_is_not_driver_entry_and_returns_an_open_device() {
+fn teardown_uncertainty_allows_driver_entry_for_an_existing_device() {
     const FIRST_HANDLE: usize = 0x1234_5678;
     const SECOND_HANDLE: usize = 0x2345_6789;
 
@@ -410,32 +410,13 @@ fn gate_rejection_is_not_driver_entry_and_returns_an_open_device() {
 
     mock.push_close(Err(DriverError::Status(STATUS_CLOSE_FAILED)));
     assert!(first.close().is_err());
-    let error =
-        expect_error(second.download_file(b"secret-device-name.cfg", b"secret-host-path.cfg"));
-    let names = take_only_file_name_lifetime();
-
-    assert!(matches!(error.start_error(), Error::RuntimeTerminal));
-    assert!(error.cleanup_error().is_none());
-    assert!(names.upgrade().is_none());
-    assert!(mock.file_access_calls().is_empty());
-    assert_redacted(
-        &error,
-        &[
-            "secret-device-name.cfg",
-            "secret-host-path.cfg",
-            "23456789",
-            "591751049",
-        ],
-    );
-
-    let (source, device) = error.into_rejected_device().unwrap();
-    assert_eq!(source, Error::RuntimeTerminal);
-    assert_eq!(device.state(), DeviceState::Open);
-    assert!(device.retained_file_name_addresses_for_test().is_empty());
-    device.close().unwrap();
+    let transfer = second
+        .download_file(b"device-name.cfg", b"host-path.cfg")
+        .unwrap();
+    transfer.close().unwrap();
 
     assert_eq!(mock.closed_handles(), [FIRST_HANDLE, SECOND_HANDLE]);
-    assert_eq!(operation_count(&mock, FfiOp::FileAccessRead), 0);
+    assert_eq!(operation_count(&mock, FfiOp::FileAccessRead), 1);
     assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 2);
     assert!(matches!(
         runtime.shutdown(),
@@ -585,7 +566,7 @@ fn transfer_drop_and_close_paths_close_once_without_stop() {
 }
 
 #[test]
-fn completed_bundles_keep_addresses_and_live_until_successful_close() {
+fn completed_bundles_are_released_before_device_reuse() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     let device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
@@ -598,20 +579,16 @@ fn completed_bundles_keep_addresses_and_live_until_successful_close() {
         .download_file(b"device-a.cfg", b"host-a.cfg")
         .unwrap();
     let first_names = take_only_file_name_lifetime();
-    let first_addresses = file_access_addresses(&mock, 0);
     assert!(matches!(
         first.progress().unwrap(),
         FileTransferStatus::Completed(_)
     ));
-    assert_eq!(
-        first.retained_file_name_addresses_for_test(),
-        [first_addresses]
-    );
+    assert!(first.retained_file_name_addresses_for_test().is_empty());
+    assert!(first_names.upgrade().is_none());
     let (device, _) = match first.try_into_device() {
         Ok(recovered) => recovered,
         Err(_) => panic!("first completed transfer did not return its device"),
     };
-    assert!(first_names.upgrade().is_some());
 
     mock.push_file_access_progress(Ok(FileProgressRaw {
         completed: 2,
@@ -619,37 +596,18 @@ fn completed_bundles_keep_addresses_and_live_until_successful_close() {
     }));
     let mut second = device.upload_file(b"host-b.cfg", b"device-b.cfg").unwrap();
     let second_names = take_only_file_name_lifetime();
-    let second_addresses = file_access_addresses(&mock, 1);
     assert_eq!(second.direction(), FileTransferDirection::HostToDevice);
     assert!(matches!(
         second.progress().unwrap(),
         FileTransferStatus::Completed(_)
     ));
-    assert_eq!(
-        second.retained_file_name_addresses_for_test(),
-        [first_addresses, second_addresses]
-    );
+    assert!(second.retained_file_name_addresses_for_test().is_empty());
+    assert!(second_names.upgrade().is_none());
     let (device, _) = match second.try_into_device() {
         Ok(recovered) => recovered,
         Err(_) => panic!("second completed transfer did not return its device"),
     };
-    assert_eq!(
-        device.retained_file_name_addresses_for_test(),
-        [first_addresses, second_addresses]
-    );
-    assert!(first_names.upgrade().is_some());
-    assert!(second_names.upgrade().is_some());
-
-    let first_at_close = first_names.clone();
-    let second_at_close = second_names.clone();
-    mock.hook_next_calls(
-        FfiOp::CloseDevice,
-        1,
-        Arc::new(move || {
-            assert!(first_at_close.upgrade().is_some());
-            assert!(second_at_close.upgrade().is_some());
-        }),
-    );
+    assert!(device.retained_file_name_addresses_for_test().is_empty());
     device.close().unwrap();
 
     assert!(first_names.upgrade().is_none());
@@ -660,7 +618,7 @@ fn completed_bundles_keep_addresses_and_live_until_successful_close() {
 }
 
 #[test]
-fn close_failure_leaks_all_retired_and_pending_filename_bundles() {
+fn close_failure_leaks_only_the_active_filename_bundle() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     let device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
@@ -673,7 +631,6 @@ fn close_failure_leaks_all_retired_and_pending_filename_bundles() {
         .download_file(b"device-a.cfg", b"host-a.cfg")
         .unwrap();
     let first_names = take_only_file_name_lifetime();
-    let first_addresses = file_access_addresses(&mock, 0);
     assert!(matches!(
         first.progress().unwrap(),
         FileTransferStatus::Completed(_)
@@ -682,39 +639,23 @@ fn close_failure_leaks_all_retired_and_pending_filename_bundles() {
         Ok(recovered) => recovered,
         Err(_) => panic!("first completed transfer did not return its device"),
     };
-
-    mock.push_file_access_progress(Ok(FileProgressRaw {
-        completed: 2,
-        total: 2,
-    }));
-    let mut second = device.upload_file(b"host-b.cfg", b"device-b.cfg").unwrap();
-    let second_names = take_only_file_name_lifetime();
-    let second_addresses = file_access_addresses(&mock, 1);
-    assert!(matches!(
-        second.progress().unwrap(),
-        FileTransferStatus::Completed(_)
-    ));
-    let (device, _) = match second.try_into_device() {
-        Ok(recovered) => recovered,
-        Err(_) => panic!("second completed transfer did not return its device"),
-    };
+    assert!(first_names.upgrade().is_none());
 
     let third = device
         .download_file(b"device-c.cfg", b"host-c.cfg")
         .unwrap();
     let third_names = take_only_file_name_lifetime();
-    let third_addresses = file_access_addresses(&mock, 2);
+    let third_addresses = file_access_addresses(&mock, 1);
     assert_eq!(
         third.retained_file_name_addresses_for_test(),
-        [first_addresses, second_addresses, third_addresses]
+        [third_addresses]
     );
 
     mock.push_close(Err(DriverError::Status(STATUS_CLOSE_FAILED)));
     let cleanup = third.close().unwrap_err();
     assert!(cleanup.stop.is_none());
     assert!(cleanup.close.is_some());
-    assert!(first_names.upgrade().is_some());
-    assert!(second_names.upgrade().is_some());
+    assert!(first_names.upgrade().is_none());
     assert!(third_names.upgrade().is_some());
     assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 1);
     assert_eq!(operation_count(&mock, FfiOp::StopMeasure), 0);

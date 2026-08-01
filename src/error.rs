@@ -546,7 +546,7 @@ impl fmt::Display for Error {
                 formatter.write_str("the process already has an active 3DMVS SDK runtime")
             }
             Self::RuntimeTerminal => formatter.write_str(
-                "the process-wide 3DMVS SDK runtime is terminal and cannot be initialized again",
+                "the process-wide 3DMVS SDK runtime cannot accept this operation in its current lifecycle state",
             ),
             Self::AllocationFailed { operation } => {
                 write!(

@@ -36,8 +36,33 @@ fn close_is_attempted_even_when_cleanup_stop_fails() {
     assert!(error.close.is_some());
     let log = mock.logs();
     assert_eq!(&log[log.len() - 2..], ["stop", "close"]);
+    assert_eq!(runtime.device_count_hint().unwrap(), 0);
     assert!(matches!(
-        runtime.device_count_hint(),
+        runtime.shutdown(),
+        Err(Error::UnclosedDevices {
+            live_handles: 0,
+            teardown_uncertain: true,
+        })
+    ));
+    assert!(!mock.logs().contains(&"finalize"));
+}
+
+#[test]
+fn failed_close_does_not_block_a_healthy_device() {
+    let mock = MockDriver::new();
+    mock.fail_next(
+        FfiOp::CloseDevice,
+        DriverError::Status(0x8006_0000_u32 as i32),
+    );
+    let (runtime, _) = active_runtime(&mock);
+    let first = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    let mut second = runtime.open_by_serial(b"SECOND").unwrap();
+
+    assert!(first.close().is_err());
+    second.clear_buffer().unwrap();
+    second.close().unwrap();
+    assert!(matches!(
+        runtime.open_by_serial(b"THIRD"),
         Err(Error::RuntimeTerminal)
     ));
     assert!(matches!(
@@ -47,7 +72,16 @@ fn close_is_attempted_even_when_cleanup_stop_fails() {
             teardown_uncertain: true,
         })
     ));
-    assert!(!mock.logs().contains(&"finalize"));
+
+    assert_eq!(mock.closed_handles(), [1, 2]);
+    assert_eq!(
+        mock.operations()
+            .iter()
+            .filter(|operation| **operation == FfiOp::ClearDataBuffer)
+            .count(),
+        1
+    );
+    mock.assert_no_pending_failures();
 }
 
 #[test]

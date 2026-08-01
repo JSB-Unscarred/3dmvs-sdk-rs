@@ -142,7 +142,7 @@ impl Driver for NativeDriver {
     }
 
     fn initialize(&self) -> DriverResult<()> {
-        // SAFETY: Process lifecycle and serialization are enforced by Runtime's global gate.
+        // SAFETY: Runtime's lifecycle gate admits Initialize only from the Fresh state.
         status_result(unsafe { bindings::MV3D_LP_Initialize() })
     }
 
@@ -174,7 +174,7 @@ impl Driver for NativeDriver {
 
         let mut reported = 0;
         // SAFETY: raw owns capacity initialized MV3D_LP_DEVICE_INFO values, and reported is a
-        // valid writable scalar. Runtime holds the process-wide SDK call lock.
+        // valid writable scalar. Both remain exclusively borrowed for this synchronous call.
         let status = unsafe {
             bindings::MV3D_LP_GetDeviceList(raw.as_mut_ptr(), native_capacity, &mut reported)
         };
@@ -251,7 +251,8 @@ impl Driver for NativeDriver {
     fn get_image(&self, handle: Handle, timeout_ms: u32) -> DriverResult<FrameRecord> {
         let mut image = zeroed_image();
         // SAFETY: image is a fully zeroed writable SDK output, Device owns the live handle, and
-        // Runtime keeps the process-wide SDK gate locked until this method and its copies finish.
+        // Device's unique ownership prevents another safe call from using this handle until the
+        // descriptor and payload copies below finish.
         let status = unsafe { bindings::MV3D_LP_GetImage(handle.as_ptr(), &mut image, timeout_ms) };
         // A failed SDK call does not initialize a trustworthy output descriptor. In particular,
         // never inspect or dereference pointer fields before checking the status.
@@ -331,8 +332,8 @@ impl Driver for NativeDriver {
             pDevFileName: device_file_name.as_ptr(),
             nReserved: [0; 32],
         };
-        // SAFETY: Device owns the handle and retains both C strings until progress reaches a
-        // terminal state or CloseDevice succeeds. The descriptor is initialized and writable.
+        // SAFETY: Device owns the handle and retains both C strings until completion or a
+        // successful CloseDevice. The descriptor is initialized and writable.
         status_result(unsafe { bindings::MV3D_LP_FileAccessRead(handle.as_ptr(), &mut access) })
     }
 
@@ -378,7 +379,7 @@ impl Driver for NativeDriver {
         // Output is a fully zeroed writable descriptor and receives transient SDK-owned data.
         status_result(unsafe { bindings::MV3D_LP_MapDepthToPointCloud(&mut input, &mut output) })?;
         // SAFETY: the successful SDK call guarantees its returned payload remains readable until
-        // the next image-processing call; Runtime keeps the global gate locked through this copy.
+        // the next image-processing call; Runtime keeps its dedicated ImgProc lock through this copy.
         unsafe {
             processed_image_from_native(
                 &output,
@@ -470,7 +471,7 @@ impl Driver for NativeDriver {
         status_result(unsafe {
             bindings::MV3D_LP_DepthMosaic(inputs.as_mut_ptr(), count, &mut output)
         })?;
-        // SAFETY: the SDK output is validated and copied while the process gate is still held.
+        // SAFETY: the SDK output is validated and copied while the ImgProc lock is still held.
         unsafe {
             processed_image_from_native(
                 &output,
@@ -967,7 +968,7 @@ unsafe fn processed_image_from_native(
         }
     }
     validate_processed_image_lengths(&sanitized)?;
-    // SAFETY: the caller holds the process gate and guarantees a successful SDK ImgProc call.
+    // SAFETY: the caller holds the ImgProc lock and guarantees a successful SDK ImgProc call.
     unsafe { image_from_native(&sanitized, FrameLimits::default()) }
 }
 

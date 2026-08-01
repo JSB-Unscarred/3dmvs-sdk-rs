@@ -148,9 +148,9 @@ impl fmt::Display for Error {
                 "native 3DMVS support requires x86_64-pc-windows-msvc and the `native` feature",
             ),
             Self::RuntimeAlreadyActive => f.write_str("the 3DMVS runtime is already active"),
-            Self::RuntimeTerminal => {
-                f.write_str("the 3DMVS runtime has reached its terminal state")
-            }
+            Self::RuntimeTerminal => f.write_str(
+                "the 3DMVS runtime cannot accept this operation in its current lifecycle state",
+            ),
             Self::IncompatibleSdkVersion { expected, actual } => write!(
                 f,
                 "incompatible 3DMVS runtime version: expected {}, got {}",

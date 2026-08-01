@@ -4,7 +4,6 @@ use std::cell::RefCell;
 use std::ffi::CString;
 use std::fmt;
 use std::marker::PhantomData;
-use std::rc::Rc;
 #[cfg(test)]
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -78,7 +77,6 @@ pub struct Device<'runtime> {
     handle: Option<Handle>,
     state: DeviceState,
     pending_transfer: Option<ActiveFileTransfer>,
-    retired_transfers: Vec<FileNameBundle>,
     image_registration: Option<CallbackRegistration>,
     exception_registration: Option<CallbackRegistration>,
     image_callback_attempted: bool,
@@ -93,7 +91,6 @@ impl<'runtime> Device<'runtime> {
             handle: Some(handle),
             state: DeviceState::Open,
             pending_transfer: None,
-            retired_transfers: Vec::new(),
             image_registration: None,
             exception_registration: None,
             image_callback_attempted: false,
@@ -344,7 +341,7 @@ impl<'runtime> Device<'runtime> {
                     device: self,
                     direction,
                     state: FileTransferState::Running,
-                    _not_send_or_sync: PhantomData,
+                    _not_sync: PhantomData,
                 })
             }
             DriverEntry::Entered(Err(start)) => {
@@ -428,11 +425,9 @@ impl<'runtime> Device<'runtime> {
         pending.last_completed = Some(progress.completed);
 
         if progress.total > 0 && progress.completed == progress.total {
-            let pending = self
-                .pending_transfer
+            self.pending_transfer
                 .take()
-                .expect("completed transfer always retains its file names");
-            self.retired_transfers.push(pending.names);
+                .expect("active transfer retains its file names until completion is observed");
             self.state = DeviceState::Open;
             Ok(FileTransferStatus::Completed(progress))
         } else {
@@ -446,14 +441,9 @@ impl<'runtime> Device<'runtime> {
 
     #[cfg(test)]
     pub(crate) fn retained_file_name_addresses_for_test(&self) -> Vec<(usize, usize)> {
-        self.retired_transfers
+        self.pending_transfer
             .iter()
-            .map(FileNameBundle::addresses)
-            .chain(
-                self.pending_transfer
-                    .iter()
-                    .map(|pending| pending.names.addresses()),
-            )
+            .map(|pending| pending.names.addresses())
             .collect()
     }
 
@@ -488,16 +478,12 @@ impl<'runtime> Device<'runtime> {
 
         if close.is_none() {
             self.pending_transfer.take();
-            self.retired_transfers.clear();
         } else {
             // Close failure leaves the asynchronous pointer-retention contract unknown. Leaking
-            // the active and retired filename bundles is preferable to freeing memory the SDK
-            // may still read.
+            // the active filename bundle is preferable to freeing memory the SDK may still read.
             if let Some(pending) = self.pending_transfer.take() {
                 std::mem::forget(pending);
             }
-            let retired = std::mem::take(&mut self.retired_transfers);
-            std::mem::forget(retired);
         }
 
         if stop.is_none() && close.is_none() {
@@ -597,14 +583,15 @@ enum FileTransferState {
 
 /// An asynchronous file transfer that owns its device.
 ///
-/// The transfer remains on the thread that entered FileAccess. Dropping it closes the owned
-/// device; after completion, [`FileTransfer::try_into_device`] returns the device for reuse.
+/// Unique ownership of the transfer may move between threads. It remains `!Sync`, so polling and
+/// cleanup cannot run concurrently. Dropping it closes the owned device; after completion,
+/// [`FileTransfer::try_into_device`] returns the device for reuse.
 #[must_use = "dropping FileTransfer closes its owned device"]
 pub struct FileTransfer<'runtime> {
     device: Device<'runtime>,
     direction: FileTransferDirection,
     state: FileTransferState,
-    _not_send_or_sync: PhantomData<Rc<()>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'runtime> FileTransfer<'runtime> {

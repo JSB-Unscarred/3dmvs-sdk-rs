@@ -7,7 +7,7 @@ use crate::runtime::{Gate, Runtime};
 use super::mock_driver::{FfiOp, MockDriver};
 
 #[test]
-fn runtime_allows_one_initialization_and_then_becomes_terminal() {
+fn runtime_allows_one_active_instance_and_reinitializes_after_finalize() {
     let mock = MockDriver::new();
     let gate = Arc::new(Gate::new());
     let runtime = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate)).unwrap();
@@ -16,35 +16,96 @@ fn runtime_allows_one_initialization_and_then_becomes_terminal() {
     assert!(matches!(second, Err(Error::RuntimeAlreadyActive)));
 
     runtime.shutdown().unwrap();
-    let third = Runtime::initialize_with(Box::new(mock.clone()), gate);
-    assert!(matches!(third, Err(Error::RuntimeTerminal)));
-    assert_eq!(mock.logs(), vec!["version", "initialize", "finalize"]);
+    let third = Runtime::initialize_with(Box::new(mock.clone()), gate).unwrap();
+    third.shutdown().unwrap();
+    assert_eq!(
+        mock.logs(),
+        [
+            "version",
+            "initialize",
+            "finalize",
+            "version",
+            "initialize",
+            "finalize",
+        ]
+    );
 }
 
 #[test]
-fn initialization_failure_is_terminal_and_is_not_retried() {
+fn initialization_failure_returns_the_gate_to_fresh_for_retry() {
     let mock = MockDriver::new();
     mock.push_initialize(Err(DriverError::Status(0x8006_0005_u32 as i32)));
     let gate = Arc::new(Gate::new());
 
     let first = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate));
     assert!(matches!(first, Err(Error::Sdk { .. })));
-    let second = Runtime::initialize_with(Box::new(mock.clone()), gate);
-    assert!(matches!(second, Err(Error::RuntimeTerminal)));
-    assert_eq!(mock.logs(), vec!["version", "initialize"]);
+    let second = Runtime::initialize_with(Box::new(mock.clone()), gate).unwrap();
+    second.shutdown().unwrap();
+    assert_eq!(
+        mock.logs(),
+        [
+            "version",
+            "initialize",
+            "finalize",
+            "version",
+            "initialize",
+            "finalize"
+        ]
+    );
 }
 
 #[test]
-fn incompatible_version_prevents_sdk_initialization() {
+fn initialization_cleanup_failure_makes_the_gate_terminal() {
+    let mock = MockDriver::new();
+    mock.push_initialize(Err(DriverError::Status(0x8006_0005_u32 as i32)));
+    mock.push_finalize(Err(DriverError::Status(0x8006_0000_u32 as i32)));
+    let gate = Arc::new(Gate::new());
+
+    let first = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate));
+    assert!(matches!(
+        first,
+        Err(Error::Sdk {
+            operation: "MV3D_LP_Initialize",
+            ..
+        })
+    ));
+    let retry = Runtime::initialize_with(Box::new(mock.clone()), gate);
+    assert!(matches!(retry, Err(Error::RuntimeTerminal)));
+    assert_eq!(mock.logs(), ["version", "initialize", "finalize"]);
+}
+
+#[test]
+fn incompatible_version_prevents_sdk_initialization_without_poisoning_the_gate() {
     let mock = MockDriver::new();
     mock.set_version(Ok(b"1.3.4.0".to_vec()));
     let gate = Arc::new(Gate::new());
     let result = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate));
 
     assert!(matches!(result, Err(Error::IncompatibleSdkVersion { .. })));
-    let retry = Runtime::initialize_with(Box::new(mock.clone()), gate);
-    assert!(matches!(retry, Err(Error::RuntimeTerminal)));
-    assert_eq!(mock.logs(), vec!["version"]);
+    mock.set_version(Ok(b"1.3.3.3".to_vec()));
+    let retry = Runtime::initialize_with(Box::new(mock.clone()), gate).unwrap();
+    retry.shutdown().unwrap();
+    assert_eq!(
+        mock.logs(),
+        ["version", "version", "initialize", "finalize"]
+    );
+}
+
+#[test]
+fn version_query_failure_returns_the_gate_to_fresh_for_retry() {
+    let mock = MockDriver::new();
+    mock.set_version(Err(DriverError::Status(0x8006_0005_u32 as i32)));
+    let gate = Arc::new(Gate::new());
+
+    let first = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate));
+    assert!(matches!(first, Err(Error::Sdk { .. })));
+    mock.set_version(Ok(b"1.3.3.3".to_vec()));
+    let retry = Runtime::initialize_with(Box::new(mock.clone()), gate).unwrap();
+    retry.shutdown().unwrap();
+    assert_eq!(
+        mock.logs(),
+        ["version", "version", "initialize", "finalize"]
+    );
 }
 
 #[test]
@@ -73,8 +134,9 @@ fn handle_count_overflow_after_open_fails_closed() {
             kind: ContractViolation::HandleCountOverflow,
         })
     ));
+    assert_eq!(runtime.device_count_hint().unwrap(), 0);
     assert!(matches!(
-        runtime.device_count_hint(),
+        runtime.open_by_serial(b"SECOND"),
         Err(Error::RuntimeTerminal)
     ));
     assert!(matches!(
@@ -86,7 +148,12 @@ fn handle_count_overflow_after_open_fails_closed() {
     ));
     assert_eq!(
         mock.operations(),
-        [FfiOp::GetVersion, FfiOp::Initialize, FfiOp::OpenDeviceByIp,]
+        [
+            FfiOp::GetVersion,
+            FfiOp::Initialize,
+            FfiOp::OpenDeviceByIp,
+            FfiOp::GetDeviceNumber,
+        ]
     );
 }
 
@@ -99,8 +166,9 @@ fn handle_count_underflow_after_close_fails_closed() {
     runtime.set_live_handles_for_test(0);
 
     device.close().unwrap();
+    assert_eq!(runtime.device_count_hint().unwrap(), 0);
     assert!(matches!(
-        runtime.device_count_hint(),
+        runtime.open_by_serial(b"SECOND"),
         Err(Error::RuntimeTerminal)
     ));
     assert!(matches!(
@@ -117,6 +185,7 @@ fn handle_count_underflow_after_close_fails_closed() {
             FfiOp::Initialize,
             FfiOp::OpenDeviceByIp,
             FfiOp::CloseDevice,
+            FfiOp::GetDeviceNumber,
         ]
     );
 }

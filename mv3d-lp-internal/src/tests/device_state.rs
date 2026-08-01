@@ -84,8 +84,9 @@ fn handle_returned_on_open_failure_is_never_treated_as_valid() {
         runtime.open_by_ip(Ipv4Addr::LOCALHOST),
         Err(Error::OpenFailedWithHandle { .. })
     ));
+    assert_eq!(runtime.device_count_hint().unwrap(), 0);
     assert!(matches!(
-        runtime.device_count_hint(),
+        runtime.open_by_serial(b"SECOND"),
         Err(Error::RuntimeTerminal)
     ));
     assert!(matches!(
@@ -95,5 +96,8 @@ fn handle_returned_on_open_failure_is_never_treated_as_valid() {
             teardown_uncertain: true,
         })
     ));
-    assert_eq!(mock.logs(), ["version", "initialize", "open_by_ip"]);
+    assert_eq!(
+        mock.logs(),
+        ["version", "initialize", "open_by_ip", "device_number"]
+    );
 }

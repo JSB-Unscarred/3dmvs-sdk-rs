@@ -183,42 +183,36 @@ fn moved_callback_measurement_drains_an_in_flight_callback_before_stop() {
 }
 
 #[test]
-fn runtime_gate_serializes_owner_calls_and_moved_devices() {
+fn ordinary_calls_on_distinct_devices_can_overlap() {
     let mock = MockDriver::new();
     mock.push_get_parameter(Ok(ParameterRecord::Bool(true)));
 
     let parameter_entered = Arc::new(Signal::default());
-    let another_driver_call_entered = Arc::new(Signal::default());
+    let execute_entered = Arc::new(Signal::default());
     let overlap_observed = Arc::new(AtomicBool::new(false));
     let hook_parameter_entered = Arc::clone(&parameter_entered);
-    let hook_another_entered = Arc::clone(&another_driver_call_entered);
+    let hook_execute_entered = Arc::clone(&execute_entered);
     let hook_overlap = Arc::clone(&overlap_observed);
     mock.hook_next_calls(
         FfiOp::GetParameter,
         1,
         Arc::new(move || {
             hook_parameter_entered.signal();
-            if hook_another_entered.wait_timeout(Duration::from_millis(100)) {
+            if hook_execute_entered.wait_timeout(Duration::from_secs(5)) {
                 hook_overlap.store(true, Ordering::SeqCst);
             }
         }),
     );
-    let device_number_entered = Arc::clone(&another_driver_call_entered);
+    let hook_execute_entered = Arc::clone(&execute_entered);
     mock.hook_next_calls(
-        FfiOp::GetDeviceNumber,
+        FfiOp::Execute,
         1,
-        Arc::new(move || device_number_entered.signal()),
-    );
-    let close_entered = Arc::clone(&another_driver_call_entered);
-    mock.hook_next_calls(
-        FfiOp::CloseDevice,
-        2,
-        Arc::new(move || close_entered.signal()),
+        Arc::new(move || hook_execute_entered.signal()),
     );
 
     let (runtime, _) = active_runtime(&mock);
     let first = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    let second = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let second = runtime.open_by_serial(b"SECOND").unwrap();
 
     thread::scope(|scope| {
         let first_worker = scope.spawn(move || {
@@ -230,15 +224,18 @@ fn runtime_gate_serializes_owner_calls_and_moved_devices() {
             first.close().unwrap();
         });
         parameter_entered.wait();
-        let second_worker = scope.spawn(move || second.close().unwrap());
+        let second_worker = scope.spawn(move || {
+            let mut second = second;
+            second.execute(b"DeviceReset").unwrap();
+            second.close().unwrap();
+        });
 
-        assert_eq!(runtime.device_count_hint().unwrap(), 0);
         first_worker.join().unwrap();
         second_worker.join().unwrap();
     });
 
-    assert!(!overlap_observed.load(Ordering::SeqCst));
-    assert_eq!(mock.maximum_in_flight(), 1);
+    assert!(overlap_observed.load(Ordering::SeqCst));
+    assert!(mock.maximum_in_flight() >= 2);
     assert_eq!(mock.in_flight(), 0);
     let mut closed = mock.closed_handles();
     closed.sort_unstable();

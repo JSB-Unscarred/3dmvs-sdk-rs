@@ -61,6 +61,7 @@ impl Gate {
 pub(crate) struct RuntimeInner {
     driver: Box<dyn Driver>,
     gate: Arc<Gate>,
+    image_processing: Mutex<()>,
 }
 
 pub(crate) enum DriverEntry<T> {
@@ -74,10 +75,7 @@ impl RuntimeInner {
         operation: &'static str,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
-        let state = self.gate.lock();
-        if state.process != ProcessState::Active || state.teardown_uncertain {
-            return Err(Error::RuntimeTerminal);
-        }
+        self.ensure_active()?;
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
     }
 
@@ -86,10 +84,7 @@ impl RuntimeInner {
         operation: &'static str,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
-        let state = self.gate.lock();
-        if state.process != ProcessState::Active {
-            return Err(Error::RuntimeTerminal);
-        }
+        self.ensure_active()?;
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
     }
 
@@ -98,13 +93,33 @@ impl RuntimeInner {
         operation: &'static str,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> DriverEntry<T> {
-        let state = self.gate.lock();
-        if state.process != ProcessState::Active || state.teardown_uncertain {
-            return DriverEntry::NotEntered(Error::RuntimeTerminal);
+        if let Err(error) = self.ensure_active() {
+            return DriverEntry::NotEntered(error);
         }
         let result = call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error));
-        drop(state);
         DriverEntry::Entered(result)
+    }
+
+    fn image_call<T>(
+        &self,
+        operation: &'static str,
+        call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
+    ) -> Result<T, Error> {
+        self.ensure_active()?;
+        let _image_processing = self
+            .image_processing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
+    }
+
+    fn ensure_active(&self) -> Result<(), Error> {
+        let state = self.gate.lock();
+        if state.process == ProcessState::Active {
+            Ok(())
+        } else {
+            Err(Error::RuntimeTerminal)
+        }
     }
 
     pub(crate) fn open_handle(
@@ -215,13 +230,9 @@ impl Runtime {
 
         let version = match driver.version() {
             Ok(version) => version,
-            Err(error) => {
-                state.process = ProcessState::Terminal;
-                return Err(map_driver_error("MV3D_LP_GetVersion", error));
-            }
+            Err(error) => return Err(map_driver_error("MV3D_LP_GetVersion", error)),
         };
         if version.as_slice() != EXPECTED_VERSION {
-            state.process = ProcessState::Terminal;
             return Err(Error::IncompatibleSdkVersion {
                 expected: EXPECTED_VERSION,
                 actual: version,
@@ -229,14 +240,23 @@ impl Runtime {
         }
 
         if let Err(error) = driver.initialize() {
-            state.process = ProcessState::Terminal;
-            return Err(map_driver_error("MV3D_LP_Initialize", error));
+            let initialize = map_driver_error("MV3D_LP_Initialize", error);
+            // Preserve the primary Initialize error; the Gate records whether cleanup made a
+            // later attempt safe.
+            if driver.finalize().is_err() {
+                state.process = ProcessState::Terminal;
+            }
+            return Err(initialize);
         }
 
         state.process = ProcessState::Active;
         drop(state);
         Ok(Self {
-            inner: RuntimeInner { driver, gate },
+            inner: RuntimeInner {
+                driver,
+                gate,
+                image_processing: Mutex::new(()),
+            },
             version,
             finished: false,
             _not_send_or_sync: PhantomData,
@@ -346,18 +366,20 @@ impl Runtime {
     }
 
     pub fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> Result<FrameRecord, Error> {
-        self.call("MV3D_LP_MapDepthToPointCloud", |driver| {
-            driver.map_depth_to_point_cloud(input)
-        })
+        self.inner
+            .image_call("MV3D_LP_MapDepthToPointCloud", |driver| {
+                driver.map_depth_to_point_cloud(input)
+            })
     }
 
     pub fn map_depth_to_point_cloud_round(
         &self,
         inputs: &[ImageInput<'_>],
     ) -> Result<FrameRecord, Error> {
-        self.call("MV3D_LP_MapDepthToPointCloudRound", |driver| {
-            driver.map_depth_to_point_cloud_round(inputs)
-        })
+        self.inner
+            .image_call("MV3D_LP_MapDepthToPointCloudRound", |driver| {
+                driver.map_depth_to_point_cloud_round(inputs)
+            })
     }
 
     pub fn convert_image(
@@ -365,13 +387,14 @@ impl Runtime {
         input: ImageInput<'_>,
         target: ImageTypeRecord,
     ) -> Result<FrameRecord, Error> {
-        self.call("MV3D_LP_ImageConvert", |driver| {
+        self.inner.image_call("MV3D_LP_ImageConvert", |driver| {
             driver.convert_image(input, target)
         })
     }
 
     pub fn mosaic_depth(&self, inputs: &[ImageInput<'_>]) -> Result<FrameRecord, Error> {
-        self.call("MV3D_LP_DepthMosaic", |driver| driver.mosaic_depth(inputs))
+        self.inner
+            .image_call("MV3D_LP_DepthMosaic", |driver| driver.mosaic_depth(inputs))
     }
 
     pub fn save_image(
@@ -382,7 +405,7 @@ impl Runtime {
     ) -> Result<(), Error> {
         let file_name =
             validated_c_string("MV3D_LP_SaveImage", file_name, u32::MAX as usize, false)?;
-        self.call("MV3D_LP_SaveImage", |driver| {
+        self.inner.image_call("MV3D_LP_SaveImage", |driver| {
             driver.save_image(input, format, &file_name)
         })
     }
@@ -394,7 +417,7 @@ impl Runtime {
         window: NonZeroIsize,
         range: DisplayRangeRecord,
     ) -> Result<(), Error> {
-        self.call("MV3D_LP_DisplayImage", |driver| {
+        self.inner.image_call("MV3D_LP_DisplayImage", |driver| {
             driver.display_image(input, window, range)
         })
     }
@@ -438,13 +461,20 @@ impl Runtime {
                 teardown_uncertain,
             });
         }
-        let result = self
-            .inner
-            .driver
-            .finalize()
-            .map_err(|error| map_driver_error("MV3D_LP_Finalize", error));
-        state.process = ProcessState::Terminal;
-        result
+        match self.inner.driver.finalize() {
+            Ok(()) => {
+                *state = GateState {
+                    process: ProcessState::Fresh,
+                    live_handles: 0,
+                    teardown_uncertain: false,
+                };
+                Ok(())
+            }
+            Err(error) => {
+                state.process = ProcessState::Terminal;
+                Err(map_driver_error("MV3D_LP_Finalize", error))
+            }
+        }
     }
 }
 

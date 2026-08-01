@@ -25,8 +25,8 @@ pub enum DeviceState {
 /// `Device` is `Send` but not `Sync`: unique ownership may be handed to another thread, but the
 /// device cannot be shared for concurrent calls. It continues to borrow its owning [`crate::Sdk`],
 /// so direct handoff normally uses [`std::thread::scope`]. For a long-lived owner thread, create
-/// both the SDK and device inside that thread. No native handle is exposed, and all SDK calls
-/// remain serialized inside the private crate.
+/// both the SDK and device inside that thread. No native handle is exposed; unique ownership
+/// serializes calls on this device while calls on different devices may run concurrently.
 pub struct Device<'sdk> {
     inner: mv3d_lp_internal::Device<'sdk>,
     _not_sync: PhantomData<Cell<()>>,
@@ -177,8 +177,8 @@ impl<'sdk> Device<'sdk> {
     ///
     /// This consumes the device because the active transfer owns it. Names are passed as original
     /// narrow-string bytes because the vendor SDK does not document their encoding. The wrapper
-    /// retains every transfer's names until a successful device close. After completion, use
-    /// [`FileTransfer::try_into_device`] to recover the device.
+    /// retains the active transfer's names until completion or device close. After completion,
+    /// use [`FileTransfer::try_into_device`] to recover the device.
     pub fn download_file(
         self,
         device_file_name: &[u8],
@@ -346,9 +346,10 @@ impl<'device> Measurement<'device> {
     ///
     /// For the audited LPSDK 1.3.3.3 runtime, this wrapper assumes that a successful call's
     /// descriptor and payloads remain readable and unchanged during the immediate synchronous
-    /// copy. The process-wide lock prevents intervening wrapper calls, but cannot control private
-    /// SDK worker threads; the vendor does not provide a separate written guarantee for this
-    /// stability window.
+    /// copy. Unique `Device` ownership prevents another safe call on the same handle, and official
+    /// multi-camera examples support distinct handles running concurrently. The wrapper cannot
+    /// control private SDK worker threads; the vendor does not separately document this stability
+    /// window.
     pub fn get_image(&mut self, timeout: Duration) -> Result<OwnedFrame> {
         let timeout_ms = timeout_millis(timeout)?;
         self.inner

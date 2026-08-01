@@ -71,9 +71,9 @@ fn main() -> Result<()> {
 
 也可使用 `SerialNumber` 和 `Sdk::open_by_serial`。SDK 返回的文本由 `SdkText` 保留原始有界字节；需要 UTF-8 时使用 `to_str()`，仅展示时可使用 `to_string_lossy()`。
 
-`Sdk` 有意保持 `!Send + !Sync`，初始化与 `Finalize` 必须留在 owner thread。`Device`、`Measurement` 和 `CallbackMeasurement` 是 `Send + !Sync`：`Send` 只允许把唯一所有权交给另一线程，不表示可以从多个线程并发调用同一句柄。
+`Sdk` 有意保持 `!Send + !Sync`，初始化与 `Finalize` 必须留在 owner thread。`Device`、`Measurement`、`CallbackMeasurement` 和 `FileTransfer` 是 `Send + !Sync`：`Send` 只允许把唯一所有权交给另一线程，不表示可以从多个线程并发调用同一句柄。
 
-`Device` 仍借用 `Sdk`，设备存活时不能关闭 SDK；这个借用通常也不满足普通 `std::thread::spawn` 所要求的 `'static`。短期直接 handoff 应使用 `std::thread::scope`，长期 owner thread 则应在线程内部创建并依次关闭 `Sdk`、`Device` 和采集会话。原生 runtime 只允许一个活动实例；首次初始化失败或 `Finalize` 后进入终态，不能在同一进程中重试。
+`Device` 仍借用 `Sdk`，设备存活时不能关闭 SDK；这个借用通常也不满足普通 `std::thread::spawn` 所要求的 `'static`。短期直接 handoff 应使用 `std::thread::scope`，长期 owner thread 则应在线程内部创建并依次关闭 `Sdk`、`Device` 和采集会话。原生 runtime 同一时刻只允许一个活动实例；版本查询/兼容性失败可直接重试，`Initialize` 失败在成功清理后可重试，成功 `Finalize` 后也可重新初始化。只有原生清理结果不确定时才会进入进程终态。
 
 ### 回调采集
 
@@ -112,20 +112,20 @@ fn receive_one_frame(device: &mut Device<'_>) -> Result<()> {
 - 生命周期和所有权约束 SDK、设备、测量与文件传输的使用顺序；活动文件传输拥有设备，只有观察到完成后才能取回；Start/Stop 失败后设备只允许清理。
 - 回调 cookie 永不复用；晚到或已撤销的回调被忽略；公共 API 的用户 handler 不在原生回调线程执行，unwind panic 被隔离在原生 ABI 边界内。
 - 资源 `Drop` 做最佳努力清理；显式 `stop`、`close` 和 `shutdown` 返回清理错误。
-- 有活句柄或清理结果不确定时跳过 `Finalize`，原生会话保守地保留到进程退出。
-- 所有 SDK 调用通过同一把进程级互斥锁串行化。
+- 有活句柄或清理结果不确定时跳过 `Finalize`；单个设备 Close 结果不确定会阻止新设备和 `Finalize`，但不会使其他已打开设备的普通调用失效。
+- 进程级互斥锁只保护 runtime 生命周期和设备 open/close 记账；不同设备的普通调用可以并行。无设备句柄隔离的 ImgProc/Save 调用使用独立互斥锁串行化。
 
 ## 原生契约假设
 
-安全 API 依赖闭源 LPSDK `1.3.3.3` 的下列行为。公开头文件和官方示例与之相符，但这些行为没有独立的厂商书面保证；跨线程 handoff、析构和 callback drain 的锁定版本实机验收仍待完成，在通过前不得把 public auto trait 的编译能力视为已取得原生发布资格。
+安全 API 依赖闭源 LPSDK `1.3.3.3` 的下列行为。公开头文件、官方多线程示例和唯一所有权模型支持当前 `Send + !Sync` 契约；锁定版本的跨线程 handoff、析构和 callback drain 实机测试仍作为发布前运行验证，不作为 public auto trait 的启用门槛。
 
 | 区域 | 必要的原生行为 | Rust 侧缓解 |
 | --- | --- | --- |
-| pull `GetImage` | 成功返回后，描述符和载荷在同步复制完成前可读且不被并发修改 | 在进程锁内校验指针、长度和算术后立即复制 |
+| pull `GetImage` | 成功返回后，描述符和载荷在同步复制完成前可读且不被并发修改 | 由 `Device` 的唯一所有权排除同句柄并发，并在返回前校验指针、长度和算术后立即复制 |
 | 图像回调 | trampoline 返回前，描述符和载荷保持可读且不被并发修改 | 在 trampoline 内校验并拥有化数据；公共 API 不在此执行用户 handler |
 | 回调生命周期 | Stop/Close 未必排空回调，且 SDK 没有已文档化的注销操作 | registry 先撤销再排空；cookie 永不复用；晚到回调被忽略 |
-| 文件传输 | Close 成功会终止后台访问；只有 `completed == total > 0` 表示完成 | 活动及已完成传输的文件名均保留到成功 Close；Close 结果不确定时保守泄漏 |
-| ImgProc/Save | 输入不被写入或保留；输出在立即复制期间可读 | 仅传递调用期借用，并在全局锁内校验、限制大小和复制输出 |
+| 文件传输 | Close 成功会终止后台访问；只有 `completed == total > 0` 表示完成 | 只在传输活动期间保留文件名；观察到完成后立即释放，活动传输 Close 结果不确定时仅保留当次名称 |
+| ImgProc/Save | 输入不被写入或保留；输出在立即复制期间可读 | 仅传递调用期借用，并在独立 ImgProc 锁内校验、限制大小和复制输出 |
 | Windows 显示 | 图像和 Win32 句柄只在同步调用期间被借用 | 通过 `raw-window-handle` 借用，并保持参数在调用期间存活 |
 
 若新的文档、日志或实验与任一假设冲突，相关 safe API 必须停用或重新设计。LPSDK、头文件、导入库、DLL、运行时配置、ABI、固件或 FFI surface 变化后也必须重新审计。

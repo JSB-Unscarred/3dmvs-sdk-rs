@@ -29,7 +29,6 @@ assert_not_impl!(Handle: Sync);
 assert_not_impl!(Device<'static>: Sync);
 assert_not_impl!(Measurement<'static>: Sync);
 assert_not_impl!(CallbackMeasurement<'static>: Sync);
-assert_not_impl!(FileTransfer<'static>: Send);
 assert_not_impl!(FileTransfer<'static>: Sync);
 assert_not_impl!(FileTransferStartError<'static>: Sync);
 
@@ -40,11 +39,12 @@ fn internal_device_ownership_can_move_between_threads() {
     assert_send::<Device<'static>>();
     assert_send::<Measurement<'static>>();
     assert_send::<CallbackMeasurement<'static>>();
+    assert_send::<FileTransfer<'static>>();
     assert_send::<FileTransferStartError<'static>>();
 }
 
 #[test]
-fn runtime_and_file_transfer_remain_thread_bound() {}
+fn runtime_remains_thread_bound() {}
 
 #[test]
 fn opaque_handle_is_send_but_not_sync() {

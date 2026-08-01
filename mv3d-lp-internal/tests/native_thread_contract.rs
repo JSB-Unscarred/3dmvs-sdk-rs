@@ -91,11 +91,11 @@ fn run_scenarios(
     })?;
     require_regular_file(&started_on_b.path, "thread-B FileAccess output")?;
 
-    let retired_on_a = scratch.target("retired-on-thread-a.bin")?;
-    scenario("5 retired FileAccess state closes on thread B", || {
-        retired_transfer_handoff(runtime, serial, device_file, &retired_on_a)
+    let started_on_a = scratch.target("started-on-thread-a.bin")?;
+    scenario("5 active FileAccess handoff completes on thread B", || {
+        active_transfer_handoff(runtime, serial, device_file, &started_on_a)
     })?;
-    require_regular_file(&retired_on_a.path, "thread-A FileAccess output")?;
+    require_regular_file(&started_on_a.path, "thread-A FileAccess output")?;
 
     let close_while_running = scratch.target("close-after-start.bin")?;
     let drop_while_running = scratch.target("drop-after-start.bin")?;
@@ -281,7 +281,7 @@ fn file_access_started_on_b(
     })
 }
 
-fn retired_transfer_handoff(
+fn active_transfer_handoff(
     runtime: &Runtime,
     serial: &[u8],
     device_file: &[u8],
@@ -292,10 +292,10 @@ fn retired_transfer_handoff(
         "start read-only FileAccess on thread A",
         device.download_file(device_file, &target.sdk_name),
     )?;
-    let device = complete_transfer(transfer)?;
-    on_thread_b("native-retired-close", move || {
+    on_thread_b("native-transfer-handoff", move || {
+        let device = complete_transfer(transfer)?;
         sdk(
-            "close Device with retired FileAccess state on thread B",
+            "close handed-off FileAccess Device on thread B",
             device.close(),
         )
     })
