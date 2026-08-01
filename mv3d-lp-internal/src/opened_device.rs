@@ -79,8 +79,6 @@ pub struct Device<'runtime> {
     pending_transfer: Option<ActiveFileTransfer>,
     image_registration: Option<CallbackRegistration>,
     exception_registration: Option<CallbackRegistration>,
-    image_callback_attempted: bool,
-    exception_callback_attempted: bool,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -93,8 +91,6 @@ impl<'runtime> Device<'runtime> {
             pending_transfer: None,
             image_registration: None,
             exception_registration: None,
-            image_callback_attempted: false,
-            exception_callback_attempted: false,
             _not_sync: PhantomData,
         }
     }
@@ -124,21 +120,13 @@ impl<'runtime> Device<'runtime> {
     ) -> Result<CallbackMeasurement<'_>, Error> {
         const OPERATION: &str = "MV3D_LP_RegisterImageDataCallBack";
         self.require_state(OPERATION, &[DeviceState::Open])?;
-        if self.image_callback_attempted {
-            return Err(Error::InvalidState {
-                operation: OPERATION,
-                state: "image callback registration already attempted",
-            });
-        }
 
         let mut registration = CallbackRegistration::image(sink)?;
-        self.image_callback_attempted = true;
         let register = self.runtime.call(OPERATION, |driver| {
             driver.register_image_callback(self.handle(), registration.cookie())
         });
         if let Err(error) = register {
             registration.deactivate();
-            self.state = DeviceState::Faulted;
             return Err(error);
         }
 
@@ -161,7 +149,6 @@ impl<'runtime> Device<'runtime> {
             }
             Err(error) => {
                 registration.deactivate();
-                self.state = DeviceState::Faulted;
                 Err(error)
             }
         }
@@ -173,26 +160,20 @@ impl<'runtime> Device<'runtime> {
     ) -> Result<(), Error> {
         const OPERATION: &str = "MV3D_LP_RegisterExceptionCallBack";
         self.require_state(OPERATION, &[DeviceState::Open])?;
-        if self.exception_callback_attempted {
-            return Err(Error::InvalidState {
-                operation: OPERATION,
-                state: "exception callback registration already attempted",
-            });
-        }
 
         let mut registration = CallbackRegistration::exception(sink)?;
-        self.exception_callback_attempted = true;
         let register = self.runtime.call(OPERATION, |driver| {
             driver.register_exception_callback(self.handle(), registration.cookie())
         });
         match register {
             Ok(()) => {
-                self.exception_registration = Some(registration);
+                if let Some(mut previous) = self.exception_registration.replace(registration) {
+                    previous.deactivate();
+                }
                 Ok(())
             }
             Err(error) => {
                 registration.deactivate();
-                self.state = DeviceState::Faulted;
                 Err(error)
             }
         }
@@ -679,7 +660,7 @@ impl CallbackMeasurement<'_> {
         };
         match result {
             Ok(()) => {
-                *self.state = DeviceState::CallbackRetired;
+                *self.state = DeviceState::Open;
                 Ok(())
             }
             Err(error) => {

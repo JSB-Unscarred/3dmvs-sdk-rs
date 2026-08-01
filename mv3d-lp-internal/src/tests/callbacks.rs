@@ -17,6 +17,7 @@ use crate::callback::{
 use crate::driver::{DriverError, DriverResult};
 use crate::error::Error;
 use crate::frame::FrameRecord;
+use crate::opened_device::DeviceState;
 
 use super::mock_driver::{MockDriver, active_runtime};
 
@@ -374,12 +375,22 @@ fn failed_image_registration_retires_the_cookie_before_late_delivery() {
     });
 
     assert!(matches!(
-        device.start_callback(sink),
+        device.start_callback(Arc::clone(&sink)),
         Err(Error::Sdk { .. })
     ));
     let cookie = only_cookie(mock.image_callback_cookies());
     invoke_mono(cookie, 1, 1);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(device.state(), DeviceState::Open);
+
+    let measurement = device.start_callback(sink).unwrap();
+    let cookies = mock.image_callback_cookies();
+    assert_eq!(cookies.len(), 2);
+    assert_ne!(cookies[0], cookies[1]);
+    invoke_mono(cookies[0], 2, 2);
+    invoke_mono(cookies[1], 3, 3);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    measurement.stop().unwrap();
 
     device.close().unwrap();
     runtime.shutdown().unwrap();
@@ -399,12 +410,203 @@ fn failed_exception_registration_retires_the_cookie_before_late_delivery() {
     });
 
     assert!(matches!(
-        device.register_exception_callback(sink),
+        device.register_exception_callback(Arc::clone(&sink)),
         Err(Error::Sdk { .. })
     ));
     let cookie = only_cookie(mock.exception_callback_cookies());
     invoke_disconnect(cookie);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(device.state(), DeviceState::Open);
+
+    device.register_exception_callback(sink).unwrap();
+    let cookies = mock.exception_callback_cookies();
+    assert_eq!(cookies.len(), 2);
+    assert_ne!(cookies[0], cookies[1]);
+    invoke_disconnect(cookies[0]);
+    invoke_disconnect(cookies[1]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    device.close().unwrap();
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn callback_measurement_can_restart_with_a_fresh_cookie_after_stop() {
+    let mock = MockDriver::new();
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let first_calls = Arc::new(AtomicUsize::new(0));
+    let first_sink_calls = Arc::clone(&first_calls);
+    let first_sink: FrameCallbackSink = Arc::new(move |_| {
+        first_sink_calls.fetch_add(1, Ordering::SeqCst);
+        CallbackDelivery::Delivered
+    });
+
+    let first = device.start_callback(first_sink).unwrap();
+    let first_cookie = only_cookie(mock.image_callback_cookies());
+    invoke_mono(first_cookie, 1, 1);
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    first.stop().unwrap();
+    assert_eq!(device.state(), DeviceState::Open);
+    invoke_mono(first_cookie, 2, 2);
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+
+    let second_calls = Arc::new(AtomicUsize::new(0));
+    let second_sink_calls = Arc::clone(&second_calls);
+    let second_sink: FrameCallbackSink = Arc::new(move |_| {
+        second_sink_calls.fetch_add(1, Ordering::SeqCst);
+        CallbackDelivery::Delivered
+    });
+    let second = device.start_callback(second_sink).unwrap();
+    let cookies = mock.image_callback_cookies();
+    assert_eq!(cookies.len(), 2);
+    assert_ne!(cookies[0], cookies[1]);
+    invoke_mono(cookies[0], 3, 3);
+    invoke_mono(cookies[1], 4, 4);
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second_calls.load(Ordering::SeqCst), 1);
+    second.stop().unwrap();
+    assert_eq!(device.state(), DeviceState::Open);
+
+    device.close().unwrap();
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn repeated_image_registration_forwards_the_native_error() {
+    let mock = MockDriver::new();
+    mock.push_register_image_callback(Ok(()));
+    mock.push_register_image_callback(Err(DriverError::Status(0x8006_0005_u32 as i32)));
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+
+    let first_sink: FrameCallbackSink = Arc::new(|_| CallbackDelivery::Delivered);
+    device.start_callback(first_sink).unwrap().stop().unwrap();
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sink_calls = Arc::clone(&calls);
+    let second_sink: FrameCallbackSink = Arc::new(move |_| {
+        sink_calls.fetch_add(1, Ordering::SeqCst);
+        CallbackDelivery::Delivered
+    });
+    assert!(matches!(
+        device.start_callback(second_sink),
+        Err(Error::Sdk { .. })
+    ));
+    assert_eq!(device.state(), DeviceState::Open);
+    let cookies = mock.image_callback_cookies();
+    assert_eq!(cookies.len(), 2);
+    assert_ne!(cookies[0], cookies[1]);
+    invoke_mono(cookies[1], 1, 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    device.close().unwrap();
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn failed_callback_start_retires_its_cookie_and_can_be_retried() {
+    let mock = MockDriver::new();
+    mock.push_start(Err(DriverError::Status(0x8006_0003_u32 as i32)));
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sink_calls = Arc::clone(&calls);
+    let sink: FrameCallbackSink = Arc::new(move |_| {
+        sink_calls.fetch_add(1, Ordering::SeqCst);
+        CallbackDelivery::Delivered
+    });
+
+    assert!(matches!(
+        device.start_callback(Arc::clone(&sink)),
+        Err(Error::Sdk { .. })
+    ));
+    assert_eq!(device.state(), DeviceState::Open);
+    let first_cookie = only_cookie(mock.image_callback_cookies());
+    invoke_mono(first_cookie, 1, 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let measurement = device.start_callback(sink).unwrap();
+    let cookies = mock.image_callback_cookies();
+    assert_eq!(cookies.len(), 2);
+    assert_ne!(cookies[0], cookies[1]);
+    invoke_mono(cookies[0], 2, 2);
+    invoke_mono(cookies[1], 3, 3);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    measurement.stop().unwrap();
+
+    device.close().unwrap();
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn exception_callback_registration_replaces_and_drains_the_previous_cookie() {
+    let mock = MockDriver::new();
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let first_calls = Arc::new(AtomicUsize::new(0));
+    let first_sink_calls = Arc::clone(&first_calls);
+    let first_sink: ExceptionCallbackSink = Arc::new(move |_| {
+        first_sink_calls.fetch_add(1, Ordering::SeqCst);
+        CallbackDelivery::Delivered
+    });
+    device.register_exception_callback(first_sink).unwrap();
+    let first_cookie = only_cookie(mock.exception_callback_cookies());
+    invoke_disconnect(first_cookie);
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+
+    let second_calls = Arc::new(AtomicUsize::new(0));
+    let second_sink_calls = Arc::clone(&second_calls);
+    let second_sink: ExceptionCallbackSink = Arc::new(move |_| {
+        second_sink_calls.fetch_add(1, Ordering::SeqCst);
+        CallbackDelivery::Delivered
+    });
+    device.register_exception_callback(second_sink).unwrap();
+    let cookies = mock.exception_callback_cookies();
+    assert_eq!(cookies.len(), 2);
+    assert_ne!(cookies[0], cookies[1]);
+    invoke_disconnect(cookies[0]);
+    invoke_disconnect(cookies[1]);
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second_calls.load(Ordering::SeqCst), 1);
+
+    device.close().unwrap();
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn failed_exception_callback_replacement_keeps_the_previous_cookie_active() {
+    let mock = MockDriver::new();
+    mock.push_register_exception_callback(Ok(()));
+    mock.push_register_exception_callback(Err(DriverError::Status(0x8006_0005_u32 as i32)));
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let first_calls = Arc::new(AtomicUsize::new(0));
+    let first_sink_calls = Arc::clone(&first_calls);
+    let first_sink: ExceptionCallbackSink = Arc::new(move |_| {
+        first_sink_calls.fetch_add(1, Ordering::SeqCst);
+        CallbackDelivery::Delivered
+    });
+    device.register_exception_callback(first_sink).unwrap();
+
+    let second_calls = Arc::new(AtomicUsize::new(0));
+    let second_sink_calls = Arc::clone(&second_calls);
+    let second_sink: ExceptionCallbackSink = Arc::new(move |_| {
+        second_sink_calls.fetch_add(1, Ordering::SeqCst);
+        CallbackDelivery::Delivered
+    });
+    assert!(matches!(
+        device.register_exception_callback(second_sink),
+        Err(Error::Sdk { .. })
+    ));
+    assert_eq!(device.state(), DeviceState::Open);
+    let cookies = mock.exception_callback_cookies();
+    assert_eq!(cookies.len(), 2);
+    assert_ne!(cookies[0], cookies[1]);
+    invoke_disconnect(cookies[0]);
+    invoke_disconnect(cookies[1]);
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second_calls.load(Ordering::SeqCst), 0);
 
     device.close().unwrap();
     runtime.shutdown().unwrap();
@@ -503,6 +705,7 @@ fn assert_callback_stop_order(drop_measurement: bool) {
         mock.logs().iter().filter(|entry| **entry == "stop").count(),
         1
     );
+    assert_eq!(device.state(), DeviceState::Open);
 
     device.close().unwrap();
     runtime.shutdown().unwrap();

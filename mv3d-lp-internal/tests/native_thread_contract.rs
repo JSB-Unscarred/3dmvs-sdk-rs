@@ -236,11 +236,7 @@ fn acquisition_guard_handoff(runtime: &Runtime, serial: &[u8]) -> TestResult {
     });
     let worker = merge_results(
         worker,
-        expect_device_state(
-            &device,
-            DeviceState::CallbackRetired,
-            "moved CallbackMeasurement Drop",
-        ),
+        expect_device_state(&device, DeviceState::Open, "moved CallbackMeasurement Drop"),
         "CallbackMeasurement Drop state check",
     );
     let close = sdk(

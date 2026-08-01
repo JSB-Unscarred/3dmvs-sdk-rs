@@ -93,7 +93,7 @@ fn receive_one_frame(device: &mut Device<'_>) -> Result<()> {
 }
 ```
 
-回调队列有界并采用非阻塞发送，队列满时丢弃最新事件。`start_with_callback` 和 `on_exception` 的用户闭包各自在独立 Rust 工作线程中串行执行，不在 SDK callback 栈上运行。同一设备句柄的图像与异常回调各自最多尝试注册一次；停止 callback measurement 后如需重新注册图像回调，必须关闭并重新打开设备。
+回调队列有界并采用非阻塞发送，队列满时丢弃最新事件。`start_with_callback` 和 `on_exception` 的用户闭包各自在独立 Rust 工作线程中串行执行，不在 SDK callback 栈上运行。callback measurement 正常停止后，可在同一设备句柄上用新 cookie 重新注册图像回调；异常回调也可由新注册替换。若 SDK 不支持再次注册，原生错误会直接返回。
 
 ## 功能与限制
 

@@ -64,8 +64,9 @@ impl<'sdk> Device<'sdk> {
 
     /// Registers native image delivery, starts measurement, and returns a bounded receiver.
     ///
-    /// This is a one-shot mode for the current device handle. After the returned callback
-    /// measurement stops, close and reopen the device before starting another acquisition.
+    /// After the returned callback measurement stops successfully, another callback acquisition
+    /// may be started on the same device handle. If the native SDK rejects re-registration, its
+    /// error is returned to the caller.
     ///
     /// # Native contract
     ///
@@ -86,8 +87,8 @@ impl<'sdk> Device<'sdk> {
 
     /// Starts callback acquisition and invokes `handler` serially on a Rust worker thread.
     ///
-    /// Like [`Device::start_receiving`], this is a one-shot image registration for the current
-    /// device handle.
+    /// Like [`Device::start_receiving`], this can be called again after the previous callback
+    /// measurement stops successfully.
     pub fn start_with_callback<F>(
         &mut self,
         options: CallbackOptions,
@@ -107,8 +108,9 @@ impl<'sdk> Device<'sdk> {
 
     /// Registers an owned exception-event receiver for the lifetime of this device handle.
     ///
-    /// Exception registration is one-shot. This method and [`Device::on_exception`] are mutually
-    /// exclusive for a device handle, even if the receiver or worker is later dropped.
+    /// A later call to this method or [`Device::on_exception`] replaces the previous callback
+    /// after the native registration succeeds. If the native SDK rejects replacement, its error
+    /// is returned and the previous Rust registration remains active.
     /// The audited LPSDK 1.3.3.3 contract assumes that each exception descriptor remains readable
     /// until the native callback returns; the event is copied within that window, which is not a
     /// separate written vendor guarantee.
@@ -125,8 +127,8 @@ impl<'sdk> Device<'sdk> {
 
     /// Invokes an exception handler serially on a Rust worker thread.
     ///
-    /// This consumes the same one-shot exception registration as
-    /// [`Device::exception_receiver`].
+    /// A later call to this method or [`Device::exception_receiver`] replaces the previous
+    /// exception callback after the native registration succeeds.
     pub fn on_exception<F>(
         &mut self,
         options: CallbackOptions,
