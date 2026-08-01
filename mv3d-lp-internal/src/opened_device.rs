@@ -1,3 +1,4 @@
+use std::cell::Cell;
 #[cfg(test)]
 use std::cell::RefCell;
 use std::ffi::CString;
@@ -82,7 +83,7 @@ pub struct Device<'runtime> {
     exception_registration: Option<CallbackRegistration>,
     image_callback_attempted: bool,
     exception_callback_attempted: bool,
-    _not_send_or_sync: PhantomData<Rc<()>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'runtime> Device<'runtime> {
@@ -97,7 +98,7 @@ impl<'runtime> Device<'runtime> {
             exception_registration: None,
             image_callback_attempted: false,
             exception_callback_attempted: false,
-            _not_send_or_sync: PhantomData,
+            _not_sync: PhantomData,
         }
     }
 
@@ -119,7 +120,7 @@ impl<'runtime> Device<'runtime> {
                     handle,
                     state: &mut self.state,
                     active: true,
-                    _not_send_or_sync: PhantomData,
+                    _not_sync: PhantomData,
                 })
             }
             Err(error) => {
@@ -167,7 +168,7 @@ impl<'runtime> Device<'runtime> {
                     state: &mut self.state,
                     registration: &mut self.image_registration,
                     active: true,
-                    _not_send_or_sync: PhantomData,
+                    _not_sync: PhantomData,
                 })
             }
             Err(error) => {
@@ -827,7 +828,7 @@ pub struct CallbackMeasurement<'device> {
     state: &'device mut DeviceState,
     registration: &'device mut Option<CallbackRegistration>,
     active: bool,
-    _not_send_or_sync: PhantomData<Rc<()>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl CallbackMeasurement<'_> {
@@ -914,7 +915,7 @@ pub struct Measurement<'device> {
     handle: Handle,
     state: &'device mut DeviceState,
     active: bool,
-    _not_send_or_sync: PhantomData<Rc<()>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl Measurement<'_> {

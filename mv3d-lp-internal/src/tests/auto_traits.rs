@@ -26,19 +26,25 @@ macro_rules! assert_not_impl {
 assert_not_impl!(Runtime: Send);
 assert_not_impl!(Runtime: Sync);
 assert_not_impl!(Handle: Sync);
-assert_not_impl!(Device<'static>: Send);
 assert_not_impl!(Device<'static>: Sync);
-assert_not_impl!(Measurement<'static>: Send);
 assert_not_impl!(Measurement<'static>: Sync);
-assert_not_impl!(CallbackMeasurement<'static>: Send);
 assert_not_impl!(CallbackMeasurement<'static>: Sync);
 assert_not_impl!(FileTransfer<'static>: Send);
 assert_not_impl!(FileTransfer<'static>: Sync);
-assert_not_impl!(FileTransferStartError<'static>: Send);
 assert_not_impl!(FileTransferStartError<'static>: Sync);
 
 #[test]
-fn internal_resource_guards_remain_thread_bound() {}
+fn internal_device_ownership_can_move_between_threads() {
+    fn assert_send<T: Send>() {}
+
+    assert_send::<Device<'static>>();
+    assert_send::<Measurement<'static>>();
+    assert_send::<CallbackMeasurement<'static>>();
+    assert_send::<FileTransferStartError<'static>>();
+}
+
+#[test]
+fn runtime_and_file_transfer_remain_thread_bound() {}
 
 #[test]
 fn opaque_handle_is_send_but_not_sync() {
