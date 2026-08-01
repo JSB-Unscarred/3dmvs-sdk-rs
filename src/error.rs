@@ -600,6 +600,15 @@ impl From<SdkError> for Error {
     }
 }
 
+impl From<mv3d_lp_internal::DeviceCleanupError> for Error {
+    fn from(error: mv3d_lp_internal::DeviceCleanupError) -> Self {
+        Self::DeviceCleanup {
+            stop: error.stop.map(|error| Box::new(Self::from(*error))),
+            close: error.close.map(|error| Box::new(Self::from(*error))),
+        }
+    }
+}
+
 impl From<mv3d_lp_internal::Error> for Error {
     fn from(error: mv3d_lp_internal::Error) -> Self {
         use mv3d_lp_internal::{ContractViolation as InternalContract, Error as InternalError};

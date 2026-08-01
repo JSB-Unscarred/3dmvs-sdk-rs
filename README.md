@@ -96,7 +96,7 @@ fn receive_one_frame(device: &mut Device<'_>) -> Result<()> {
 - 设备枚举、IPv4/序列号打开和 IP 配置
 - pull/callback 采集、软触发、参数读写、命令执行和设备异常
 - 拥有化帧及可选的亮度数据和逐行曝光时间戳
-- 文件上传、下载和可恢复进度轮询
+- 文件上传、下载和拥有式进度轮询
 - 深度转点云、环视点云、拼接、格式转换和图像保存
 - 可选的 Win32 图像显示
 
@@ -107,7 +107,7 @@ fn receive_one_frame(device: &mut Device<'_>) -> Result<()> {
 - 公共 crate 使用 `#![forbid(unsafe_code)]`，不公开厂商结构体、C union、裸指针或句柄。
 - 生产代码中的原生调用、C union 读取和裸指针解引用集中在私有 crate 的 [`ffi.rs`](mv3d-lp-internal/src/ffi.rs) 与 [`callback.rs`](mv3d-lp-internal/src/callback.rs)：前者负责原生调用和数据转换，后者负责 callback trampoline 与回调指针准入。`bindings.rs` 保存原始声明，`abi.rs` 校验布局和函数类型。
 - SDK 数据先校验适用的指针、长度、判别值和 checked arithmetic，再复制为 Rust 所有值；大型图像载荷另受聚合上限和可失败分配保护。
-- 生命周期和独占借用约束 SDK、设备、测量与文件传输的使用顺序；Start/Stop 失败后设备只允许清理。
+- 生命周期和所有权约束 SDK、设备、测量与文件传输的使用顺序；活动文件传输拥有设备，只有观察到完成后才能取回；Start/Stop 失败后设备只允许清理。
 - 回调 cookie 永不复用；晚到或已撤销的回调被忽略；公共 API 的用户 handler 不在原生回调线程执行，unwind panic 被隔离在原生 ABI 边界内。
 - 资源 `Drop` 做最佳努力清理；显式 `stop`、`close` 和 `shutdown` 返回清理错误。
 - 有活句柄或清理结果不确定时跳过 `Finalize`，原生会话保守地保留到进程退出。
@@ -122,7 +122,7 @@ fn receive_one_frame(device: &mut Device<'_>) -> Result<()> {
 | pull `GetImage` | 成功返回后，描述符和载荷在同步复制完成前可读且不被并发修改 | 在进程锁内校验指针、长度和算术后立即复制 |
 | 图像回调 | trampoline 返回前，描述符和载荷保持可读且不被并发修改 | 在 trampoline 内校验并拥有化数据；公共 API 不在此执行用户 handler |
 | 回调生命周期 | Stop/Close 未必排空回调，且 SDK 没有已文档化的注销操作 | registry 先撤销再排空；cookie 永不复用；晚到回调被忽略 |
-| 文件传输 | Close 成功会终止后台访问；只有 `completed == total > 0` 表示完成 | 文件名保留至完成或成功 Close；Close 结果不确定时保守泄漏 |
+| 文件传输 | Close 成功会终止后台访问；只有 `completed == total > 0` 表示完成 | 活动及已完成传输的文件名均保留到成功 Close；Close 结果不确定时保守泄漏 |
 | ImgProc/Save | 输入不被写入或保留；输出在立即复制期间可读 | 仅传递调用期借用，并在全局锁内校验、限制大小和复制输出 |
 | Windows 显示 | 图像和 Win32 句柄只在同步调用期间被借用 | 通过 `raw-window-handle` 借用，并保持参数在调用期间存活 |
 

@@ -1,6 +1,12 @@
+#[cfg(test)]
+use std::cell::RefCell;
 use std::ffi::CString;
+use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
+#[cfg(test)]
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
 use crate::callback::{
     CallbackRegistration, CallbackStatsRecord, ExceptionCallbackSink, FrameCallbackSink,
@@ -10,7 +16,7 @@ use crate::error::{Error, InvalidInput};
 use crate::file_transfer::{FileProgress, FileTransferDirection, FileTransferStatus};
 use crate::frame::FrameRecord;
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
-use crate::runtime::RuntimeInner;
+use crate::runtime::{DriverEntry, RuntimeInner};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceState {
@@ -41,11 +47,37 @@ pub struct DeviceCleanupError {
     pub close: Option<Box<Error>>,
 }
 
+impl fmt::Display for DeviceCleanupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (&self.stop, &self.close) {
+            (Some(stop), Some(close)) => write!(
+                formatter,
+                "device cleanup failed while stopping ({stop}) and closing ({close})"
+            ),
+            (Some(stop), None) => write!(formatter, "device cleanup failed while stopping: {stop}"),
+            (None, Some(close)) => {
+                write!(formatter, "device cleanup failed while closing: {close}")
+            }
+            (None, None) => formatter.write_str("device cleanup failed without an SDK error"),
+        }
+    }
+}
+
+impl std::error::Error for DeviceCleanupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.stop
+            .as_deref()
+            .or(self.close.as_deref())
+            .map(|error| error as &(dyn std::error::Error + 'static))
+    }
+}
+
 pub struct Device<'runtime> {
     runtime: &'runtime RuntimeInner,
     handle: Option<Handle>,
     state: DeviceState,
     pending_transfer: Option<ActiveFileTransfer>,
+    retired_transfers: Vec<FileNameBundle>,
     image_registration: Option<CallbackRegistration>,
     exception_registration: Option<CallbackRegistration>,
     image_callback_attempted: bool,
@@ -60,6 +92,7 @@ impl<'runtime> Device<'runtime> {
             handle: Some(handle),
             state: DeviceState::Open,
             pending_transfer: None,
+            retired_transfers: Vec::new(),
             image_registration: None,
             exception_registration: None,
             image_callback_attempted: false,
@@ -233,11 +266,11 @@ impl<'runtime> Device<'runtime> {
         })
     }
 
-    pub fn download_file<'device>(
-        &'device mut self,
+    pub fn download_file(
+        self,
         device_file_name: &[u8],
         user_file_name: &[u8],
-    ) -> Result<FileTransfer<'device, 'runtime>, Error> {
+    ) -> Result<FileTransfer<'runtime>, FileTransferStartError<'runtime>> {
         self.begin_file_transfer(
             "MV3D_LP_FileAccessRead",
             FileTransferDirection::DeviceToHost,
@@ -246,11 +279,11 @@ impl<'runtime> Device<'runtime> {
         )
     }
 
-    pub fn upload_file<'device>(
-        &'device mut self,
+    pub fn upload_file(
+        self,
         user_file_name: &[u8],
         device_file_name: &[u8],
-    ) -> Result<FileTransfer<'device, 'runtime>, Error> {
+    ) -> Result<FileTransfer<'runtime>, FileTransferStartError<'runtime>> {
         self.begin_file_transfer(
             "MV3D_LP_FileAccessWrite",
             FileTransferDirection::HostToDevice,
@@ -259,70 +292,64 @@ impl<'runtime> Device<'runtime> {
         )
     }
 
-    pub fn active_file_transfer(&mut self) -> Option<FileTransfer<'_, 'runtime>> {
-        if self.state == DeviceState::Transferring && self.pending_transfer.is_some() {
-            let direction = self
-                .pending_transfer
-                .as_ref()
-                .expect("checked above")
-                .direction;
-            Some(FileTransfer {
-                device: self,
-                direction,
-            })
-        } else {
-            None
-        }
-    }
-
-    fn begin_file_transfer<'device>(
-        &'device mut self,
+    fn begin_file_transfer(
+        mut self,
         operation: &'static str,
         direction: FileTransferDirection,
         user_file_name: &[u8],
         device_file_name: &[u8],
-    ) -> Result<FileTransfer<'device, 'runtime>, Error> {
-        self.require_state(operation, &[DeviceState::Open])?;
-        let user_file_name = validated_file_name(operation, user_file_name)?;
-        let device_file_name = validated_file_name(operation, device_file_name)?;
-        self.pending_transfer = Some(ActiveFileTransfer {
-            user_file_name,
-            device_file_name,
-            direction,
-            last_completed: None,
-            last_total: None,
-        });
+    ) -> Result<FileTransfer<'runtime>, FileTransferStartError<'runtime>> {
+        if let Err(source) = self.require_state(operation, &[DeviceState::Open]) {
+            return Err(FileTransferStartError::rejected(source, self));
+        }
+        let user_file_name = match validated_file_name(operation, user_file_name) {
+            Ok(name) => name,
+            Err(source) => return Err(FileTransferStartError::rejected(source, self)),
+        };
+        let device_file_name = match validated_file_name(operation, device_file_name) {
+            Ok(name) => name,
+            Err(source) => return Err(FileTransferStartError::rejected(source, self)),
+        };
+        self.pending_transfer = Some(ActiveFileTransfer::new(user_file_name, device_file_name));
 
         let pending = self
             .pending_transfer
             .as_ref()
             .expect("the transfer names were stored before the SDK call");
-        let result = self.runtime.call(operation, |driver| match direction {
-            FileTransferDirection::DeviceToHost => driver.file_access_read(
-                self.handle(),
-                &pending.user_file_name,
-                &pending.device_file_name,
-            ),
-            FileTransferDirection::HostToDevice => driver.file_access_write(
-                self.handle(),
-                &pending.user_file_name,
-                &pending.device_file_name,
-            ),
-        });
+        let handle = self.handle();
+        let result = self
+            .runtime
+            .call_with_entry(operation, |driver| match direction {
+                FileTransferDirection::DeviceToHost => driver.file_access_read(
+                    handle,
+                    &pending.names.user_file_name,
+                    &pending.names.device_file_name,
+                ),
+                FileTransferDirection::HostToDevice => driver.file_access_write(
+                    handle,
+                    &pending.names.user_file_name,
+                    &pending.names.device_file_name,
+                ),
+            });
 
         match result {
-            Ok(()) => {
+            DriverEntry::NotEntered(source) => {
+                self.pending_transfer.take();
+                Err(FileTransferStartError::rejected(source, self))
+            }
+            DriverEntry::Entered(Ok(())) => {
                 self.state = DeviceState::Transferring;
                 Ok(FileTransfer {
                     device: self,
                     direction,
+                    state: FileTransferState::Running,
+                    _not_send_or_sync: PhantomData,
                 })
             }
-            Err(error) => {
-                // A failed asynchronous start has undocumented partial-state semantics. Retain
-                // both names and allow only CloseDevice, mirroring failed measurement starts.
+            DriverEntry::Entered(Err(start)) => {
                 self.state = DeviceState::Faulted;
-                Err(error)
+                let cleanup = self.cleanup().err();
+                Err(FileTransferStartError::failed(start, cleanup))
             }
         }
     }
@@ -400,7 +427,11 @@ impl<'runtime> Device<'runtime> {
         pending.last_completed = Some(progress.completed);
 
         if progress.total > 0 && progress.completed == progress.total {
-            self.pending_transfer.take();
+            let pending = self
+                .pending_transfer
+                .take()
+                .expect("completed transfer always retains its file names");
+            self.retired_transfers.push(pending.names);
             self.state = DeviceState::Open;
             Ok(FileTransferStatus::Completed(progress))
         } else {
@@ -410,6 +441,19 @@ impl<'runtime> Device<'runtime> {
 
     pub fn close(mut self) -> Result<(), DeviceCleanupError> {
         self.cleanup()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_file_name_addresses_for_test(&self) -> Vec<(usize, usize)> {
+        self.retired_transfers
+            .iter()
+            .map(FileNameBundle::addresses)
+            .chain(
+                self.pending_transfer
+                    .iter()
+                    .map(|pending| pending.names.addresses()),
+            )
+            .collect()
     }
 
     fn cleanup(&mut self) -> Result<(), DeviceCleanupError> {
@@ -443,10 +487,16 @@ impl<'runtime> Device<'runtime> {
 
         if close.is_none() {
             self.pending_transfer.take();
-        } else if let Some(pending) = self.pending_transfer.take() {
+            self.retired_transfers.clear();
+        } else {
             // Close failure leaves the asynchronous pointer-retention contract unknown. Leaking
-            // two small C strings is preferable to letting the SDK observe freed memory.
-            std::mem::forget(pending);
+            // the active and retired filename bundles is preferable to freeing memory the SDK
+            // may still read.
+            if let Some(pending) = self.pending_transfer.take() {
+                std::mem::forget(pending);
+            }
+            let retired = std::mem::take(&mut self.retired_transfers);
+            std::mem::forget(retired);
         }
 
         if stop.is_none() && close.is_none() {
@@ -477,30 +527,280 @@ impl<'runtime> Device<'runtime> {
 }
 
 struct ActiveFileTransfer {
-    user_file_name: CString,
-    device_file_name: CString,
-    direction: FileTransferDirection,
+    names: FileNameBundle,
     last_completed: Option<u64>,
     last_total: Option<u64>,
 }
 
-/// An asynchronous file transfer borrowing its device exclusively.
-///
-/// Dropping this guard does not cancel the transfer. The device retains both
-/// filenames, and [`Device::active_file_transfer`] can resume progress polling.
-#[must_use = "dropping FileTransfer does not cancel the device transfer"]
-pub struct FileTransfer<'device, 'runtime> {
-    device: &'device mut Device<'runtime>,
-    direction: FileTransferDirection,
+impl ActiveFileTransfer {
+    fn new(user_file_name: CString, device_file_name: CString) -> Self {
+        Self {
+            names: FileNameBundle::new(user_file_name, device_file_name),
+            last_completed: None,
+            last_total: None,
+        }
+    }
 }
 
-impl FileTransfer<'_, '_> {
+struct FileNameBundle {
+    user_file_name: CString,
+    device_file_name: CString,
+    #[cfg(test)]
+    _lifetime: Arc<()>,
+}
+
+impl FileNameBundle {
+    fn new(user_file_name: CString, device_file_name: CString) -> Self {
+        #[cfg(test)]
+        let lifetime = {
+            let lifetime = Arc::new(());
+            FILE_NAME_LIFETIMES.with(|lifetimes| {
+                lifetimes.borrow_mut().push(Arc::downgrade(&lifetime));
+            });
+            lifetime
+        };
+
+        Self {
+            user_file_name,
+            device_file_name,
+            #[cfg(test)]
+            _lifetime: lifetime,
+        }
+    }
+
+    #[cfg(test)]
+    fn addresses(&self) -> (usize, usize) {
+        (
+            self.user_file_name.as_ptr() as usize,
+            self.device_file_name.as_ptr() as usize,
+        )
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static FILE_NAME_LIFETIMES: RefCell<Vec<Weak<()>>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_file_name_lifetimes_for_test() -> Vec<Weak<()>> {
+    FILE_NAME_LIFETIMES.with(|lifetimes| std::mem::take(&mut *lifetimes.borrow_mut()))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileTransferState {
+    Running,
+    Completed(FileProgress),
+    Faulted,
+}
+
+/// An asynchronous file transfer that owns its device.
+///
+/// The transfer remains on the thread that entered FileAccess. Dropping it closes the owned
+/// device; after completion, [`FileTransfer::try_into_device`] returns the device for reuse.
+#[must_use = "dropping FileTransfer closes its owned device"]
+pub struct FileTransfer<'runtime> {
+    device: Device<'runtime>,
+    direction: FileTransferDirection,
+    state: FileTransferState,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl<'runtime> FileTransfer<'runtime> {
     pub fn direction(&self) -> FileTransferDirection {
         self.direction
     }
 
     pub fn progress(&mut self) -> Result<FileTransferStatus, Error> {
-        self.device.file_transfer_progress()
+        match self.state {
+            FileTransferState::Running => match self.device.file_transfer_progress() {
+                Ok(status) => {
+                    if let FileTransferStatus::Completed(progress) = status {
+                        self.state = FileTransferState::Completed(progress);
+                    }
+                    Ok(status)
+                }
+                Err(error) => {
+                    if !matches!(error, Error::Sdk { .. }) {
+                        self.device.state = DeviceState::Faulted;
+                        self.state = FileTransferState::Faulted;
+                    }
+                    Err(error)
+                }
+            },
+            FileTransferState::Completed(progress) => Ok(FileTransferStatus::Completed(progress)),
+            FileTransferState::Faulted => Err(Error::InvalidState {
+                operation: "MV3D_LP_GetFileAccessProgress",
+                state: "faulted file transfer",
+            }),
+        }
+    }
+
+    pub fn wait_timeout(
+        &mut self,
+        poll_interval: Duration,
+        timeout: Duration,
+    ) -> Result<Option<FileProgress>, Error> {
+        let started = Instant::now();
+        let poll_interval = poll_interval.max(Duration::from_millis(1));
+        loop {
+            match self.progress()? {
+                FileTransferStatus::Completed(progress) => return Ok(Some(progress)),
+                FileTransferStatus::Running(_) => {}
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                return Ok(None);
+            }
+            let remaining = timeout.saturating_sub(elapsed);
+            std::thread::sleep(poll_interval.min(remaining));
+        }
+    }
+
+    #[allow(
+        clippy::result_large_err,
+        reason = "the ownership-preserving API must return the unchanged active transfer"
+    )]
+    pub fn try_into_device(self) -> Result<(Device<'runtime>, FileProgress), Self> {
+        if let FileTransferState::Completed(progress) = self.state {
+            Ok((self.device, progress))
+        } else {
+            Err(self)
+        }
+    }
+
+    pub fn close(self) -> Result<(), DeviceCleanupError> {
+        self.device.close()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_file_name_addresses_for_test(&self) -> Vec<(usize, usize)> {
+        self.device.retained_file_name_addresses_for_test()
+    }
+}
+
+enum FileTransferStartErrorKind<'runtime> {
+    RejectedBeforeDriverEntry {
+        source: Error,
+        device: Device<'runtime>,
+    },
+    FailedAfterDriverEntry {
+        start: Error,
+        cleanup: Option<DeviceCleanupError>,
+    },
+}
+
+/// A resource-owning failure to start a file transfer.
+///
+/// A rejection before entering the native Driver retains the device. Consume the error with
+/// [`FileTransferStartError::into_rejected_device`] to recover it; otherwise dropping the error
+/// closes that device. Once the Driver was entered, the device is closed immediately and cannot
+/// be recovered.
+#[must_use = "a rejected file transfer may contain a recoverable device"]
+pub struct FileTransferStartError<'runtime> {
+    kind: Box<FileTransferStartErrorKind<'runtime>>,
+}
+
+impl<'runtime> FileTransferStartError<'runtime> {
+    fn rejected(source: Error, device: Device<'runtime>) -> Self {
+        Self {
+            kind: Box::new(FileTransferStartErrorKind::RejectedBeforeDriverEntry {
+                source,
+                device,
+            }),
+        }
+    }
+
+    fn failed(start: Error, cleanup: Option<DeviceCleanupError>) -> Self {
+        Self {
+            kind: Box::new(FileTransferStartErrorKind::FailedAfterDriverEntry { start, cleanup }),
+        }
+    }
+
+    pub fn start_error(&self) -> &Error {
+        match self.kind.as_ref() {
+            FileTransferStartErrorKind::RejectedBeforeDriverEntry { source, .. } => source,
+            FileTransferStartErrorKind::FailedAfterDriverEntry { start, .. } => start,
+        }
+    }
+
+    pub fn cleanup_error(&self) -> Option<&DeviceCleanupError> {
+        match self.kind.as_ref() {
+            FileTransferStartErrorKind::RejectedBeforeDriverEntry { .. } => None,
+            FileTransferStartErrorKind::FailedAfterDriverEntry { cleanup, .. } => cleanup.as_ref(),
+        }
+    }
+
+    pub fn into_rejected_device(self) -> Result<(Error, Device<'runtime>), Self> {
+        match *self.kind {
+            FileTransferStartErrorKind::RejectedBeforeDriverEntry { source, device } => {
+                Ok((source, device))
+            }
+            kind @ FileTransferStartErrorKind::FailedAfterDriverEntry { .. } => Err(Self {
+                kind: Box::new(kind),
+            }),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn into_failed_after_driver_entry(
+        self,
+    ) -> Result<(Error, Option<DeviceCleanupError>), Self> {
+        match *self.kind {
+            FileTransferStartErrorKind::FailedAfterDriverEntry { start, cleanup } => {
+                Ok((start, cleanup))
+            }
+            kind @ FileTransferStartErrorKind::RejectedBeforeDriverEntry { .. } => Err(Self {
+                kind: Box::new(kind),
+            }),
+        }
+    }
+}
+
+impl fmt::Debug for FileTransferStartError<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("FileTransferStartError");
+        match self.kind.as_ref() {
+            FileTransferStartErrorKind::RejectedBeforeDriverEntry { source, .. } => debug
+                .field("phase", &"rejected before Driver entry")
+                .field("source", source),
+            FileTransferStartErrorKind::FailedAfterDriverEntry { start, cleanup } => debug
+                .field("phase", &"failed after Driver entry")
+                .field("start", start)
+                .field("cleanup", cleanup),
+        };
+        debug.finish()
+    }
+}
+
+impl fmt::Display for FileTransferStartError<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind.as_ref() {
+            FileTransferStartErrorKind::RejectedBeforeDriverEntry { source, .. } => write!(
+                formatter,
+                "file transfer was rejected before entering the Driver: {source}"
+            ),
+            FileTransferStartErrorKind::FailedAfterDriverEntry {
+                start,
+                cleanup: Some(cleanup),
+            } => write!(
+                formatter,
+                "file transfer failed after entering the Driver ({start}); device cleanup also failed ({cleanup})"
+            ),
+            FileTransferStartErrorKind::FailedAfterDriverEntry {
+                start,
+                cleanup: None,
+            } => write!(
+                formatter,
+                "file transfer failed after entering the Driver and the device was closed: {start}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FileTransferStartError<'_> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.start_error())
     }
 }
 

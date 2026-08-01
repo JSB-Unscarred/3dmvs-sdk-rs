@@ -4,8 +4,9 @@ use std::sync::mpsc::Receiver;
 
 use mv3d_lp::{
     CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Device, DeviceException,
-    DeviceExceptionType, DeviceInfo, DeviceState, ImageFileFormat, ImageProcessor, ImageType,
-    IpConfiguration, Measurement, OwnedFrame, OwnedImage, Result, Sdk, SdkText,
+    DeviceExceptionType, DeviceInfo, DeviceState, Error, FileProgress, FileTransfer,
+    FileTransferStartError, ImageFileFormat, ImageProcessor, ImageType, IpConfiguration,
+    Measurement, OwnedFrame, OwnedImage, Result, Sdk, SdkText,
 };
 
 #[test]
@@ -49,9 +50,28 @@ fn public_lifecycle_and_control_methods_have_safe_signatures() {
     let _ = Measurement::soft_trigger;
     let _ = Measurement::clear_buffer;
     let _ = Measurement::stop;
-    let _ = Device::download_file;
-    let _ = Device::upload_file;
-    let _ = Device::active_file_transfer;
+    let _: fn(
+        Device<'static>,
+        &[u8],
+        &[u8],
+    ) -> std::result::Result<FileTransfer<'static>, FileTransferStartError<'static>> =
+        Device::<'static>::download_file;
+    let _: fn(
+        Device<'static>,
+        &[u8],
+        &[u8],
+    ) -> std::result::Result<FileTransfer<'static>, FileTransferStartError<'static>> =
+        Device::<'static>::upload_file;
+    let _: fn(
+        FileTransfer<'static>,
+    ) -> std::result::Result<(Device<'static>, FileProgress), FileTransfer<'static>> =
+        FileTransfer::<'static>::try_into_device;
+    let _: fn(FileTransfer<'static>) -> Result<()> = FileTransfer::<'static>::close;
+    let _: fn(
+        FileTransferStartError<'static>,
+    )
+        -> std::result::Result<(Error, Device<'static>), FileTransferStartError<'static>> =
+        FileTransferStartError::<'static>::into_rejected_device;
     let _ = ImageProcessor::depth_to_point_cloud;
     let _ = ImageProcessor::depth_to_round_point_cloud;
     let _ = ImageProcessor::convert;

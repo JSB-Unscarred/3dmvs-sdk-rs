@@ -63,6 +63,11 @@ pub(crate) struct RuntimeInner {
     gate: Arc<Gate>,
 }
 
+pub(crate) enum DriverEntry<T> {
+    NotEntered(Error),
+    Entered(Result<T, Error>),
+}
+
 impl RuntimeInner {
     pub(crate) fn call<T>(
         &self,
@@ -86,6 +91,20 @@ impl RuntimeInner {
             return Err(Error::RuntimeTerminal);
         }
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
+    }
+
+    pub(crate) fn call_with_entry<T>(
+        &self,
+        operation: &'static str,
+        call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
+    ) -> DriverEntry<T> {
+        let state = self.gate.lock();
+        if state.process != ProcessState::Active || state.teardown_uncertain {
+            return DriverEntry::NotEntered(Error::RuntimeTerminal);
+        }
+        let result = call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error));
+        drop(state);
+        DriverEntry::Entered(result)
     }
 
     pub(crate) fn open_handle(

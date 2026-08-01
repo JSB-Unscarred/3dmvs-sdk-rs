@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use crate::{
     CallbackOptions, CallbackStats, CallbackWorker, CommandKey, DeviceException,
-    DeviceExceptionType, Error, FileTransfer, InputViolation, OwnedFrame, ParamKey, Parameter,
-    ParameterValue, Result, SdkText,
+    DeviceExceptionType, Error, FileTransfer, FileTransferStartError, InputViolation, OwnedFrame,
+    ParamKey, Parameter, ParameterValue, Result, SdkText,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -172,55 +172,38 @@ impl<'sdk> Device<'sdk> {
 
     /// Starts copying a file from the device to the host.
     ///
-    /// Names are passed as original narrow-string bytes because the vendor SDK
-    /// does not document their encoding. The wrapper retains both names until the observed
-    /// terminal progress state or a successful device close. Those termination semantics are an
-    /// audited LPSDK 1.3.3.3 assumption rather than a separate vendor guarantee.
-    pub fn download_file<'device>(
-        &'device mut self,
+    /// This consumes the device because the active transfer owns it. Names are passed as original
+    /// narrow-string bytes because the vendor SDK does not document their encoding. The wrapper
+    /// retains every transfer's names until a successful device close. After completion, use
+    /// [`FileTransfer::try_into_device`] to recover the device.
+    pub fn download_file(
+        self,
         device_file_name: &[u8],
         local_file_name: &[u8],
-    ) -> Result<FileTransfer<'device, 'sdk>> {
+    ) -> std::result::Result<FileTransfer<'sdk>, FileTransferStartError<'sdk>> {
         self.inner
             .download_file(device_file_name, local_file_name)
-            .map(|inner| FileTransfer {
-                inner,
-                _not_send_or_sync: PhantomData,
-            })
-            .map_err(Error::from)
+            .map(FileTransfer::from_internal)
+            .map_err(FileTransferStartError::from_internal)
     }
 
     /// Starts copying a host file into the device.
     ///
     /// This uses the same retained-name and native termination assumptions as
     /// [`Device::download_file`].
-    pub fn upload_file<'device>(
-        &'device mut self,
+    pub fn upload_file(
+        self,
         local_file_name: &[u8],
         device_file_name: &[u8],
-    ) -> Result<FileTransfer<'device, 'sdk>> {
+    ) -> std::result::Result<FileTransfer<'sdk>, FileTransferStartError<'sdk>> {
         self.inner
             .upload_file(local_file_name, device_file_name)
-            .map(|inner| FileTransfer {
-                inner,
-                _not_send_or_sync: PhantomData,
-            })
-            .map_err(Error::from)
-    }
-
-    /// Resumes polling after a previous transfer guard was dropped.
-    pub fn active_file_transfer(&mut self) -> Option<FileTransfer<'_, 'sdk>> {
-        self.inner.active_file_transfer().map(|inner| FileTransfer {
-            inner,
-            _not_send_or_sync: PhantomData,
-        })
+            .map(FileTransfer::from_internal)
+            .map_err(FileTransferStartError::from_internal)
     }
 
     pub fn close(self) -> Result<()> {
-        self.inner.close().map_err(|error| Error::DeviceCleanup {
-            stop: error.stop.map(|error| Box::new(Error::from(*error))),
-            close: error.close.map(|error| Box::new(Error::from(*error))),
-        })
+        self.inner.close().map_err(Error::from)
     }
 }
 

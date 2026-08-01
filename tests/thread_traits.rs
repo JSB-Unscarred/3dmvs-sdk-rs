@@ -2,8 +2,9 @@ use std::sync::mpsc::Receiver;
 
 use mv3d_lp::{
     CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Device, DeviceException,
-    DeviceExceptionType, DeviceInfo, FileProgress, FileTransfer, ImageProcessor, ImageRef,
-    IpConfiguration, Measurement, OwnedFrame, OwnedImage, Parameter, ParameterValue, Sdk, SdkText,
+    DeviceExceptionType, DeviceInfo, FileProgress, FileTransfer, FileTransferStartError,
+    ImageProcessor, ImageRef, IpConfiguration, Measurement, OwnedFrame, OwnedImage, Parameter,
+    ParameterValue, Sdk, SdkText,
 };
 
 macro_rules! assert_not_impl {
@@ -31,8 +32,10 @@ assert_not_impl!(Measurement<'static>: Send);
 assert_not_impl!(Measurement<'static>: Sync);
 assert_not_impl!(CallbackMeasurement<'static>: Send);
 assert_not_impl!(CallbackMeasurement<'static>: Sync);
-assert_not_impl!(FileTransfer<'static, 'static>: Send);
-assert_not_impl!(FileTransfer<'static, 'static>: Sync);
+assert_not_impl!(FileTransfer<'static>: Send);
+assert_not_impl!(FileTransfer<'static>: Sync);
+assert_not_impl!(FileTransferStartError<'static>: Send);
+assert_not_impl!(FileTransferStartError<'static>: Sync);
 assert_not_impl!(ImageProcessor<'static>: Send);
 assert_not_impl!(ImageProcessor<'static>: Sync);
 assert_not_impl!(OwnedFrame: Clone);

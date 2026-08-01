@@ -29,7 +29,8 @@ pub use error::{ContractViolation, Error, InvalidInput};
 pub use file_transfer::{FileProgress, FileTransferDirection, FileTransferStatus};
 pub use frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 pub use opened_device::{
-    CallbackMeasurement, Device, DeviceCleanupError, DeviceState, FileTransfer, Measurement,
+    CallbackMeasurement, Device, DeviceCleanupError, DeviceState, FileTransfer,
+    FileTransferStartError, Measurement,
 };
 pub use parameter::{ParameterRecord, ParameterValueRecord};
 pub use runtime::Runtime;

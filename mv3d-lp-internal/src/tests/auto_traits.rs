@@ -1,8 +1,9 @@
 use crate::driver::Handle;
 use crate::runtime::RuntimeInner;
 use crate::{
-    CallbackMeasurement, Device, DeviceRecord, ExceptionRecord, FileTransfer, FrameRecord,
-    IpConfiguration, Measurement, ParameterRecord, ParameterValueRecord, Runtime,
+    CallbackMeasurement, Device, DeviceRecord, ExceptionRecord, FileTransfer,
+    FileTransferStartError, FrameRecord, IpConfiguration, Measurement, ParameterRecord,
+    ParameterValueRecord, Runtime,
 };
 
 macro_rules! assert_not_impl {
@@ -31,8 +32,10 @@ assert_not_impl!(Measurement<'static>: Send);
 assert_not_impl!(Measurement<'static>: Sync);
 assert_not_impl!(CallbackMeasurement<'static>: Send);
 assert_not_impl!(CallbackMeasurement<'static>: Sync);
-assert_not_impl!(FileTransfer<'static, 'static>: Send);
-assert_not_impl!(FileTransfer<'static, 'static>: Sync);
+assert_not_impl!(FileTransfer<'static>: Send);
+assert_not_impl!(FileTransfer<'static>: Sync);
+assert_not_impl!(FileTransferStartError<'static>: Send);
+assert_not_impl!(FileTransferStartError<'static>: Sync);
 
 #[test]
 fn internal_resource_guards_remain_thread_bound() {}
