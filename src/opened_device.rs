@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use crate::{
     CallbackOptions, CallbackStats, CallbackWorker, CommandKey, DeviceException,
-    DeviceExceptionType, Error, FileTransfer, FileTransferStartError, InputViolation, OwnedFrame,
-    ParamKey, Parameter, ParameterValue, Result, SdkText,
+    DeviceExceptionType, Error, FileTransfer, InputViolation, OwnedFrame, ParamKey, Parameter,
+    ParameterValue, Result, SdkText,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -175,19 +175,19 @@ impl<'sdk> Device<'sdk> {
 
     /// Starts copying a file from the device to the host.
     ///
-    /// This consumes the device because the active transfer owns it. Names are passed as original
-    /// narrow-string bytes because the vendor SDK does not document their encoding. The wrapper
-    /// retains the active transfer's names until completion or device close. After completion,
-    /// use [`FileTransfer::try_into_device`] to recover the device.
+    /// Names are passed as original narrow-string bytes because the vendor SDK does not document
+    /// their encoding. The wrapper retains the active transfer's names until completion or device
+    /// close. Dropping the returned guard does not cancel the transfer; use
+    /// [`Device::active_file_transfer`] to resume polling it.
     pub fn download_file(
-        self,
+        &mut self,
         device_file_name: &[u8],
         local_file_name: &[u8],
-    ) -> std::result::Result<FileTransfer<'sdk>, FileTransferStartError<'sdk>> {
+    ) -> Result<FileTransfer<'_>> {
         self.inner
             .download_file(device_file_name, local_file_name)
             .map(FileTransfer::from_internal)
-            .map_err(FileTransferStartError::from_internal)
+            .map_err(Error::from)
     }
 
     /// Starts copying a host file into the device.
@@ -195,14 +195,21 @@ impl<'sdk> Device<'sdk> {
     /// This uses the same retained-name and native termination assumptions as
     /// [`Device::download_file`].
     pub fn upload_file(
-        self,
+        &mut self,
         local_file_name: &[u8],
         device_file_name: &[u8],
-    ) -> std::result::Result<FileTransfer<'sdk>, FileTransferStartError<'sdk>> {
+    ) -> Result<FileTransfer<'_>> {
         self.inner
             .upload_file(local_file_name, device_file_name)
             .map(FileTransfer::from_internal)
-            .map_err(FileTransferStartError::from_internal)
+            .map_err(Error::from)
+    }
+
+    /// Resumes polling after a previous transfer guard was dropped.
+    pub fn active_file_transfer(&mut self) -> Option<FileTransfer<'_>> {
+        self.inner
+            .active_file_transfer()
+            .map(FileTransfer::from_internal)
     }
 
     pub fn close(self) -> Result<()> {

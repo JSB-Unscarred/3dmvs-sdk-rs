@@ -47,9 +47,10 @@ cargo test -p mv3d-lp-internal --features native --test native_thread_contract s
 | 3. `CallbackMeasurement` 在 B 显式 stop/Drop，收到真实 callback 并完成排空 | 待执行 | |
 | 4. exception callback 注册后 handoff 到 B close | 待执行 | 不要求设备主动产生异常 |
 | 5. `Device` 先 handoff 到 B，再由 B 启动、完成并关闭 FileAccess | 待执行 | 验证设备所有权 handoff 后启动传输 |
-| 6. A 启动 FileAccess，把活动 `FileTransfer` handoff 到 B 完成并关闭 | 待执行 | 直接验证 `FileTransfer: Send + !Sync` 的原生路径 |
-| 7. `Device` handoff 到 B，FileAccess start 后立即 close/Drop | 待执行 | 不要求观察到 `Running` |
-| 8. GetImage、callback 到达和 progress 轮询分别受 10/15/60 秒 deadline 约束 | 待执行 | 无法中断的单次 DLL 调用或 callback drain 另受五分钟进程 watchdog 约束 |
+| 6. A 启动 FileAccess，把借用式 `FileTransfer` scoped handoff 到 B 完成，join 后由 A 复用并关闭 `Device` | 待执行 | 直接验证 `FileTransfer: Send + !Sync` 的原生路径 |
+| 7. B 启动 FileAccess 后丢弃 guard，A 恢复轮询至完成并复用 `Device` | 待执行 | 验证 `active_file_transfer()` 恢复语义 |
+| 8. `Device` handoff 到 B，FileAccess start 后立即丢弃 guard，再关闭/Drop `Device` | 待执行 | 不要求观察到 `Running` |
+| 9. GetImage、callback 到达和 progress 轮询分别受 10/15/60 秒 deadline 约束 | 待执行 | 无法中断的单次 DLL 调用或 callback drain 另受五分钟进程 watchdog 约束 |
 
 ## 当前非实机证据
 

@@ -24,9 +24,7 @@ pub use display_windows::DisplayRange;
 pub use error::{
     ContractViolation, Error, InputViolation, Operation, Result, SdkError, StatusCode,
 };
-pub use file_transfer::{
-    FileProgress, FileTransfer, FileTransferDirection, FileTransferStartError, FileTransferStatus,
-};
+pub use file_transfer::{FileProgress, FileTransfer, FileTransferDirection, FileTransferStatus};
 pub use frame::{ImageCalibration, ImageRef, ImageType, OwnedFrame, OwnedImage};
 pub use image_processor::{ImageFileFormat, ImageProcessor};
 pub use opened_device::{CallbackMeasurement, Device, DeviceState, Measurement};

@@ -97,17 +97,27 @@ fn run_scenarios(
     })?;
     require_regular_file(&started_on_a.path, "thread-A FileAccess output")?;
 
-    let close_while_running = scratch.target("close-after-start.bin")?;
-    let drop_while_running = scratch.target("drop-after-start.bin")?;
-    scenario("6 immediate FileAccess close/drop on thread B", || {
-        immediate_transfer_cleanup(
-            runtime,
-            serial,
-            device_file,
-            &close_while_running,
-            &drop_while_running,
-        )
-    })?;
+    let resumed_after_drop = scratch.target("resumed-after-drop.bin")?;
+    scenario(
+        "6 FileAccess guard starts/drops on thread B and resumes on A",
+        || dropped_transfer_resumes(runtime, serial, device_file, &resumed_after_drop),
+    )?;
+    require_regular_file(&resumed_after_drop.path, "resumed FileAccess output")?;
+
+    let closed_after_drop = scratch.target("closed-after-guard-drop.bin")?;
+    let device_dropped_after_guard = scratch.target("device-dropped-after-guard.bin")?;
+    scenario(
+        "7 Device closes/drops immediately after FileAccess guard Drop on thread B",
+        || {
+            immediate_device_cleanup_after_guard_drop(
+                runtime,
+                serial,
+                device_file,
+                &closed_after_drop,
+                &device_dropped_after_guard,
+            )
+        },
+    )?;
 
     println!("native acceptance: all ordered scenarios passed");
     Ok(())
@@ -269,15 +279,22 @@ fn file_access_started_on_b(
     let local_name = target.sdk_name.clone();
     let device_file = device_file.to_vec();
     on_thread_b("native-file-start", move || {
-        let transfer = sdk(
+        let mut device = device;
+        let mut transfer = sdk(
             "start read-only FileAccess on thread B",
             device.download_file(&device_file, &local_name),
         )?;
-        let device = complete_transfer(transfer)?;
-        sdk(
-            "close FileAccess Device on its start thread",
-            device.close(),
-        )
+        let completion = complete_transfer(&mut transfer);
+        drop(transfer);
+        let reuse = completion.and_then(|()| {
+            sdk(
+                "reuse FileAccess Device on its start thread",
+                device.get_parameter(b"ExposureTime"),
+            )
+            .map(|_| ())
+        });
+        let close = sdk("close reused FileAccess Device", device.close());
+        merge_results(reuse, close, "Device cleanup after FileAccess")
     })
 }
 
@@ -287,81 +304,111 @@ fn active_transfer_handoff(
     device_file: &[u8],
     target: &LocalTarget,
 ) -> TestResult {
-    let device = open_device(runtime, serial)?;
+    let mut device = open_device(runtime, serial)?;
     let transfer = sdk(
         "start read-only FileAccess on thread A",
         device.download_file(device_file, &target.sdk_name),
     )?;
-    on_thread_b("native-transfer-handoff", move || {
-        let device = complete_transfer(transfer)?;
+    let worker = on_thread_b("native-transfer-handoff", move || {
+        let mut transfer = transfer;
+        complete_transfer(&mut transfer)
+    });
+    let reuse = worker.and_then(|()| {
         sdk(
-            "close handed-off FileAccess Device on thread B",
-            device.close(),
+            "reuse Device on thread A after FileAccess guard join",
+            device.get_parameter(b"ExposureTime"),
         )
-    })
+        .map(|_| ())
+    });
+    let close = sdk("close Device on thread A after guard join", device.close());
+    merge_results(reuse, close, "Device cleanup after FileAccess handoff")
 }
 
-fn immediate_transfer_cleanup(
+fn dropped_transfer_resumes(
+    runtime: &Runtime,
+    serial: &[u8],
+    device_file: &[u8],
+    target: &LocalTarget,
+) -> TestResult {
+    let mut device = open_device(runtime, serial)?;
+    let worker = on_thread_b("native-transfer-drop", || {
+        let transfer = sdk(
+            "start FileAccess on thread B before guard Drop",
+            device.download_file(device_file, &target.sdk_name),
+        )?;
+        drop(transfer);
+        Ok(())
+    });
+    let worker = merge_results(
+        worker,
+        expect_device_state(
+            &device,
+            DeviceState::Transferring,
+            "FileAccess guard Drop on thread B",
+        ),
+        "FileAccess guard Drop state check",
+    );
+    let completion = worker.and_then(|()| complete_active_transfer(&mut device));
+    let reuse = completion.and_then(|()| {
+        sdk(
+            "reuse Device on thread A after resumed FileAccess",
+            device.get_parameter(b"ExposureTime"),
+        )
+        .map(|_| ())
+    });
+    let close = sdk("close Device after resumed FileAccess", device.close());
+    merge_results(reuse, close, "Device cleanup after resumed FileAccess")
+}
+
+fn immediate_device_cleanup_after_guard_drop(
     runtime: &Runtime,
     serial: &[u8],
     device_file: &[u8],
     close_target: &LocalTarget,
     drop_target: &LocalTarget,
 ) -> TestResult {
-    let device = open_device(runtime, serial)?;
+    let mut device = open_device(runtime, serial)?;
     let device_file_for_close = device_file.to_vec();
     let local_name = close_target.sdk_name.clone();
-    on_thread_b("native-transfer-close", move || {
+    on_thread_b("native-transfer-close-after-drop", move || {
         let transfer = sdk(
-            "start FileAccess before immediate close",
+            "start FileAccess before immediate guard Drop and Device close",
             device.download_file(&device_file_for_close, &local_name),
         )?;
+        drop(transfer);
         sdk(
-            "close FileTransfer immediately after start",
-            transfer.close(),
+            "close Device immediately after FileAccess guard Drop",
+            device.close(),
         )
     })?;
 
-    let device = open_device(runtime, serial)?;
+    let mut device = open_device(runtime, serial)?;
     let device_file_for_drop = device_file.to_vec();
     let local_name = drop_target.sdk_name.clone();
-    on_thread_b("native-transfer-drop", move || {
+    on_thread_b("native-transfer-device-drop", move || {
         let transfer = sdk(
-            "start FileAccess before immediate Drop",
+            "start FileAccess before immediate guard and Device Drop",
             device.download_file(&device_file_for_drop, &local_name),
         )?;
         drop(transfer);
+        drop(device);
         Ok(())
     })
 }
 
-fn complete_transfer<'runtime>(
-    mut transfer: FileTransfer<'runtime>,
-) -> TestResult<Device<'runtime>> {
+fn complete_transfer(transfer: &mut FileTransfer<'_>) -> TestResult {
     match transfer.wait_timeout(FILE_POLL_INTERVAL, FILE_DEADLINE) {
-        Ok(Some(_)) => match transfer.try_into_device() {
-            Ok((device, _)) => Ok(device),
-            Err(transfer) => {
-                transfer_failure_cleanup(transfer, "completed FileAccess did not return its Device")
-            }
-        },
-        Ok(None) => transfer_failure_cleanup(transfer, "FileAccess exceeded its total deadline"),
-        Err(error) => {
-            transfer_failure_cleanup(transfer, &format!("FileAccess progress failed: {error}"))
-        }
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(String::from("FileAccess exceeded its total deadline")),
+        Err(error) => Err(format!("FileAccess progress failed: {error}")),
     }
 }
 
-fn transfer_failure_cleanup<'runtime>(
-    transfer: FileTransfer<'runtime>,
-    failure: &str,
-) -> TestResult<Device<'runtime>> {
-    let cleanup = sdk("close FileTransfer after failure", transfer.close());
-    let cleanup = cleanup
-        .err()
-        .map(|error| format!("; cleanup also failed: {error}"))
-        .unwrap_or_default();
-    Err(format!("{failure}{cleanup}"))
+fn complete_active_transfer(device: &mut Device<'_>) -> TestResult {
+    let mut transfer = device.active_file_transfer().ok_or_else(|| {
+        String::from("FileAccess guard Drop did not leave an active transfer to resume")
+    })?;
+    complete_transfer(&mut transfer)
 }
 
 fn wait_for_image(measurement: &mut Measurement<'_>) -> TestResult {

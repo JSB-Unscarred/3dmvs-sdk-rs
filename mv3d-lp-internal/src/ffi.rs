@@ -332,8 +332,10 @@ impl Driver for NativeDriver {
             pDevFileName: device_file_name.as_ptr(),
             nReserved: [0; 32],
         };
-        // SAFETY: Device owns the handle and retains both C strings until completion or a
-        // successful CloseDevice. The descriptor is initialized and writable.
+        // SAFETY: Device owns the handle, the descriptor is initialized and writable for this
+        // call, and both strings are NUL-terminated. `pstFileAccess` is treated as a call-scoped
+        // input descriptor; the wrapper additionally keeps its string pointees alive until the
+        // observed transfer completion or device cleanup as a bounded compatibility precaution.
         status_result(unsafe { bindings::MV3D_LP_FileAccessRead(handle.as_ptr(), &mut access) })
     }
 
@@ -348,7 +350,8 @@ impl Driver for NativeDriver {
             pDevFileName: device_file_name.as_ptr(),
             nReserved: [0; 32],
         };
-        // SAFETY: the same retained-name and live-handle guarantees as FileAccessRead apply.
+        // SAFETY: the same call-scoped descriptor, retained-name, and live-handle guarantees as
+        // FileAccessRead apply.
         status_result(unsafe { bindings::MV3D_LP_FileAccessWrite(handle.as_ptr(), &mut access) })
     }
 

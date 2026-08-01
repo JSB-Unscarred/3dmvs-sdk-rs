@@ -287,7 +287,7 @@ fn file_transfer_operations_and_progress_contracts_map_exactly() {
 }
 
 #[test]
-fn device_cleanup_mapping_is_shared_by_devices_and_file_transfers() {
+fn device_cleanup_mapping_preserves_the_close_error() {
     let error: Error = mv3d_lp_internal::DeviceCleanupError {
         stop: None,
         close: Some(Box::new(mv3d_lp_internal::Error::Sdk {

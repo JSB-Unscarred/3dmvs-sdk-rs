@@ -1,9 +1,8 @@
 use crate::driver::Handle;
 use crate::runtime::RuntimeInner;
 use crate::{
-    CallbackMeasurement, Device, DeviceRecord, ExceptionRecord, FileTransfer,
-    FileTransferStartError, FrameRecord, IpConfiguration, Measurement, ParameterRecord,
-    ParameterValueRecord, Runtime,
+    CallbackMeasurement, Device, DeviceRecord, ExceptionRecord, FileTransfer, FrameRecord,
+    IpConfiguration, Measurement, ParameterRecord, ParameterValueRecord, Runtime,
 };
 
 macro_rules! assert_not_impl {
@@ -30,7 +29,6 @@ assert_not_impl!(Device<'static>: Sync);
 assert_not_impl!(Measurement<'static>: Sync);
 assert_not_impl!(CallbackMeasurement<'static>: Sync);
 assert_not_impl!(FileTransfer<'static>: Sync);
-assert_not_impl!(FileTransferStartError<'static>: Sync);
 
 #[test]
 fn internal_device_ownership_can_move_between_threads() {
@@ -40,7 +38,6 @@ fn internal_device_ownership_can_move_between_threads() {
     assert_send::<Measurement<'static>>();
     assert_send::<CallbackMeasurement<'static>>();
     assert_send::<FileTransfer<'static>>();
-    assert_send::<FileTransferStartError<'static>>();
 }
 
 #[test]

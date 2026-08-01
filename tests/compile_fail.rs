@@ -46,7 +46,7 @@ const CASES: &[CompileFailCase] = &[
     CompileFailCase {
         bin: "reborrow_device_while_transferring",
         source: include_str!("compile_fail_cases/lifecycle/reborrow_device_while_transferring.rs"),
-        error_code: "E0382",
+        error_code: "E0499",
     },
     CompileFailCase {
         bin: "shutdown_while_device_borrowed",
