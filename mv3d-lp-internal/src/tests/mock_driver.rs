@@ -1,11 +1,10 @@
-use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::CStr;
 #[cfg(feature = "display-windows")]
 use std::num::NonZeroIsize;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::callback::CallbackCookie;
 use crate::device::{DeviceListAttempt, IpConfigRaw};
@@ -19,7 +18,8 @@ use crate::runtime::{Gate, Runtime};
 
 #[derive(Clone)]
 pub(crate) struct MockDriver {
-    shared: Rc<RefCell<MockState>>,
+    shared: Arc<Mutex<MockState>>,
+    call_probe: Arc<CallProbe>,
 }
 
 /// The post-FFI operation surface exercised by [`MockDriver`].
@@ -162,9 +162,121 @@ impl FfiOp {
     }
 }
 
+#[derive(Default)]
+struct CallProbe {
+    in_flight: AtomicUsize,
+    maximum_in_flight: AtomicUsize,
+    hooks: Mutex<HashMap<FfiOp, CallHook>>,
+}
+
+struct CallHook {
+    remaining: usize,
+    action: Arc<dyn Fn() + Send + Sync>,
+}
+
+struct CallGuard<'a> {
+    probe: &'a CallProbe,
+    operation: FfiOp,
+}
+
+impl CallProbe {
+    fn enter(&self, operation: FfiOp) -> CallGuard<'_> {
+        let previous = self.in_flight.fetch_add(1, Ordering::SeqCst);
+        let guard = CallGuard {
+            probe: self,
+            operation,
+        };
+        let current = previous
+            .checked_add(1)
+            .expect("mock call probe counter overflowed");
+        self.maximum_in_flight.fetch_max(current, Ordering::SeqCst);
+
+        let action = {
+            let mut hooks = self.hooks();
+            match hooks.remove(&operation) {
+                Some(mut hook) => {
+                    hook.remaining -= 1;
+                    let action = Arc::clone(&hook.action);
+                    if hook.remaining != 0 {
+                        hooks.insert(operation, hook);
+                    }
+                    Some(action)
+                }
+                None => None,
+            }
+        };
+        if let Some(action) = action {
+            action();
+        }
+
+        guard
+    }
+
+    fn hook_next_calls(
+        &self,
+        operation: FfiOp,
+        callers: usize,
+        action: Arc<dyn Fn() + Send + Sync>,
+    ) {
+        assert!(callers != 0, "a mock call hook needs at least one caller");
+        let mut hooks = self.hooks();
+        match hooks.entry(operation) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(CallHook {
+                    remaining: callers,
+                    action,
+                });
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                panic!("only one mock call hook may be active for {operation:?}")
+            }
+        }
+    }
+
+    fn hooks(&self) -> MutexGuard<'_, HashMap<FfiOp, CallHook>> {
+        match self.hooks.lock() {
+            Ok(hooks) => hooks,
+            Err(poisoned) => {
+                let hooks = poisoned.into_inner();
+                self.hooks.clear_poison();
+                hooks
+            }
+        }
+    }
+}
+
+impl CallGuard<'_> {
+    fn operation(&self) -> FfiOp {
+        self.operation
+    }
+}
+
+impl Drop for CallGuard<'_> {
+    fn drop(&mut self) {
+        self.probe.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MockHandleId(NonZeroUsize);
+
+impl MockHandleId {
+    fn new(address: usize) -> Self {
+        Self(NonZeroUsize::new(address).expect("a mock handle address must be non-zero"))
+    }
+
+    fn address(self) -> usize {
+        self.0.get()
+    }
+
+    fn into_handle(self) -> Handle {
+        mock_handle(self.address())
+    }
+}
+
 #[derive(Clone, Debug)]
 struct OpenReply {
-    handle: Option<Handle>,
+    handle: Option<MockHandleId>,
     result: DriverResult<()>,
 }
 
@@ -185,6 +297,7 @@ pub(crate) struct DisplayCall {
 }
 
 struct MockState {
+    poison_recoveries: usize,
     log: Vec<&'static str>,
     operations: Vec<FfiOp>,
     injected_failures: HashMap<FfiOp, VecDeque<DriverError>>,
@@ -200,10 +313,8 @@ struct MockState {
     opened_handles: Vec<(FfiOp, usize)>,
     closed_handles: Vec<usize>,
     close: VecDeque<DriverResult<()>>,
-    close_entered: Option<Arc<AtomicBool>>,
     start: VecDeque<DriverResult<()>>,
     stop: VecDeque<DriverResult<()>>,
-    stop_entered: Option<Arc<AtomicBool>>,
     soft_trigger: VecDeque<DriverResult<()>>,
     clear_buffer: VecDeque<DriverResult<()>>,
     get_image: VecDeque<DriverResult<FrameRecord>>,
@@ -234,7 +345,8 @@ struct MockState {
 impl MockDriver {
     pub(crate) fn new() -> Self {
         Self {
-            shared: Rc::new(RefCell::new(MockState {
+            shared: Arc::new(Mutex::new(MockState {
+                poison_recoveries: 0,
                 log: Vec::new(),
                 operations: Vec::new(),
                 injected_failures: HashMap::new(),
@@ -250,10 +362,8 @@ impl MockDriver {
                 opened_handles: Vec::new(),
                 closed_handles: Vec::new(),
                 close: VecDeque::new(),
-                close_entered: None,
                 start: VecDeque::new(),
                 stop: VecDeque::new(),
-                stop_entered: None,
                 soft_trigger: VecDeque::new(),
                 clear_buffer: VecDeque::new(),
                 get_image: VecDeque::new(),
@@ -280,6 +390,7 @@ impl MockDriver {
                 #[cfg(feature = "display-windows")]
                 display_calls: Vec::new(),
             })),
+            call_probe: Arc::new(CallProbe::default()),
         }
     }
 
@@ -316,20 +427,18 @@ impl MockDriver {
         self.state().device_list.push_back(result);
     }
 
-    pub(crate) fn configure_open_by_ip(&self, handle: Option<Handle>, result: DriverResult<()>) {
-        self.state()
-            .open_by_ip
-            .push_back(OpenReply { handle, result });
+    pub(crate) fn configure_open_by_ip(&self, handle: Option<usize>, result: DriverResult<()>) {
+        self.state().open_by_ip.push_back(OpenReply {
+            handle: handle.map(MockHandleId::new),
+            result,
+        });
     }
 
-    pub(crate) fn configure_open_by_serial(
-        &self,
-        handle: Option<Handle>,
-        result: DriverResult<()>,
-    ) {
-        self.state()
-            .open_by_serial
-            .push_back(OpenReply { handle, result });
+    pub(crate) fn configure_open_by_serial(&self, handle: Option<usize>, result: DriverResult<()>) {
+        self.state().open_by_serial.push_back(OpenReply {
+            handle: handle.map(MockHandleId::new),
+            result,
+        });
     }
 
     pub(crate) fn push_close(&self, result: DriverResult<()>) {
@@ -337,7 +446,11 @@ impl MockDriver {
     }
 
     pub(crate) fn set_close_entered(&self, entered: Arc<AtomicBool>) {
-        self.state().close_entered = Some(entered);
+        self.hook_next_calls(
+            FfiOp::CloseDevice,
+            1,
+            Arc::new(move || entered.store(true, Ordering::SeqCst)),
+        );
     }
 
     pub(crate) fn push_start(&self, result: DriverResult<()>) {
@@ -349,7 +462,11 @@ impl MockDriver {
     }
 
     pub(crate) fn set_stop_entered(&self, entered: Arc<AtomicBool>) {
-        self.state().stop_entered = Some(entered);
+        self.hook_next_calls(
+            FfiOp::StopMeasure,
+            1,
+            Arc::new(move || entered.store(true, Ordering::SeqCst)),
+        );
     }
 
     pub(crate) fn push_soft_trigger(&self, result: DriverResult<()>) {
@@ -478,13 +595,50 @@ impl MockDriver {
         self.state().file_access_calls.clone()
     }
 
+    pub(crate) fn in_flight(&self) -> usize {
+        self.call_probe.in_flight.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn maximum_in_flight(&self) -> usize {
+        self.call_probe.maximum_in_flight.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn hook_next_calls(
+        &self,
+        operation: FfiOp,
+        callers: usize,
+        action: Arc<dyn Fn() + Send + Sync>,
+    ) {
+        self.call_probe.hook_next_calls(operation, callers, action);
+    }
+
+    fn poison_recoveries(&self) -> usize {
+        self.state().poison_recoveries
+    }
+
+    fn set_next_handle(&self, address: usize) {
+        self.state().next_handle = address;
+    }
+
     #[cfg(feature = "display-windows")]
     pub(crate) fn display_calls(&self) -> Vec<DisplayCall> {
         self.state().display_calls.clone()
     }
 
-    fn state(&self) -> RefMut<'_, MockState> {
-        self.shared.borrow_mut()
+    fn state(&self) -> MutexGuard<'_, MockState> {
+        match self.shared.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                let mut state = poisoned.into_inner();
+                state.poison_recoveries += 1;
+                self.shared.clear_poison();
+                state
+            }
+        }
+    }
+
+    fn enter(&self, operation: FfiOp) -> CallGuard<'_> {
+        self.call_probe.enter(operation)
     }
 }
 
@@ -497,38 +651,43 @@ pub(crate) fn active_runtime(mock: &MockDriver) -> (Runtime, Arc<Gate>) {
 
 impl Driver for MockDriver {
     fn version(&self) -> DriverResult<Vec<u8>> {
+        let _call = self.enter(FfiOp::GetVersion);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::GetVersion);
-        return_injected_failure(&mut state, FfiOp::GetVersion)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         state.version.clone()
     }
 
     fn initialize(&self) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::Initialize);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::Initialize);
-        return_injected_failure(&mut state, FfiOp::Initialize)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.initialize, Ok(()))
     }
 
     fn finalize(&self) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::Finalize);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::Finalize);
-        return_injected_failure(&mut state, FfiOp::Finalize)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.finalize, Ok(()))
     }
 
     fn device_number(&self) -> DriverResult<u32> {
+        let _call = self.enter(FfiOp::GetDeviceNumber);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::GetDeviceNumber);
-        return_injected_failure(&mut state, FfiOp::GetDeviceNumber)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.device_number, Ok(0))
     }
 
     fn device_list(&self, capacity: usize) -> DriverResult<DeviceListAttempt> {
+        let _call = self.enter(FfiOp::GetDeviceList);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::GetDeviceList);
+        record_call(&mut state, &_call);
         state.capacities.push(capacity);
-        return_injected_failure(&mut state, FfiOp::GetDeviceList)?;
+        return_injected_failure(&mut state, &_call)?;
         pop_or(
             &mut state.device_list,
             Ok(DeviceListAttempt {
@@ -539,67 +698,70 @@ impl Driver for MockDriver {
     }
 
     fn set_ip_config(&self, _: &CStr, _: &IpConfigRaw) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::SetIpConfig);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::SetIpConfig);
-        return_injected_failure(&mut state, FfiOp::SetIpConfig)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.set_ip_config, Ok(()))
     }
 
     fn open_by_ip(&self, _: &CStr, handle: &mut Option<Handle>) -> DriverResult<()> {
-        self.open(FfiOp::OpenDeviceByIp, handle)
+        let _call = self.enter(FfiOp::OpenDeviceByIp);
+        self.open(&_call, handle)
     }
 
     fn open_by_serial(&self, _: &CStr, handle: &mut Option<Handle>) -> DriverResult<()> {
-        self.open(FfiOp::OpenDeviceBySerial, handle)
+        let _call = self.enter(FfiOp::OpenDeviceBySerial);
+        self.open(&_call, handle)
     }
 
     fn close(&self, handle: Handle) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::CloseDevice);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::CloseDevice);
+        record_call(&mut state, &_call);
         state.closed_handles.push(handle.as_ptr().addr());
-        if let Some(entered) = &state.close_entered {
-            entered.store(true, Ordering::SeqCst);
-        }
-        return_injected_failure(&mut state, FfiOp::CloseDevice)?;
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.close, Ok(()))
     }
 
     fn start(&self, _: Handle) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::StartMeasure);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::StartMeasure);
-        return_injected_failure(&mut state, FfiOp::StartMeasure)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.start, Ok(()))
     }
 
     fn stop(&self, _: Handle) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::StopMeasure);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::StopMeasure);
-        if let Some(entered) = &state.stop_entered {
-            entered.store(true, Ordering::SeqCst);
-        }
-        return_injected_failure(&mut state, FfiOp::StopMeasure)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.stop, Ok(()))
     }
 
     fn soft_trigger(&self, _: Handle) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::SoftTrigger);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::SoftTrigger);
-        return_injected_failure(&mut state, FfiOp::SoftTrigger)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.soft_trigger, Ok(()))
     }
 
     fn clear_buffer(&self, _: Handle) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::ClearDataBuffer);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::ClearDataBuffer);
-        return_injected_failure(&mut state, FfiOp::ClearDataBuffer)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.clear_buffer, Ok(()))
     }
 
     fn get_image(&self, _: Handle, timeout_ms: u32) -> DriverResult<FrameRecord> {
+        let _call = self.enter(FfiOp::GetImage);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::GetImage);
+        record_call(&mut state, &_call);
         state.image_timeouts.push(timeout_ms);
-        return_injected_failure(&mut state, FfiOp::GetImage)?;
+        return_injected_failure(&mut state, &_call)?;
         pop_or(
             &mut state.get_image,
             Err(crate::driver::DriverError::Status(0x8006_0006_u32 as i32)),
@@ -607,39 +769,44 @@ impl Driver for MockDriver {
     }
 
     fn register_image_callback(&self, _: Handle, cookie: CallbackCookie) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::RegisterImageCallback);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::RegisterImageCallback);
+        record_call(&mut state, &_call);
         state.image_callback_cookies.push(cookie);
-        return_injected_failure(&mut state, FfiOp::RegisterImageCallback)?;
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.register_image_callback, Ok(()))
     }
 
     fn register_exception_callback(&self, _: Handle, cookie: CallbackCookie) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::RegisterExceptionCallback);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::RegisterExceptionCallback);
+        record_call(&mut state, &_call);
         state.exception_callback_cookies.push(cookie);
-        return_injected_failure(&mut state, FfiOp::RegisterExceptionCallback)?;
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.register_exception_callback, Ok(()))
     }
 
     fn get_parameter(&self, _: Handle, _: &CStr) -> DriverResult<ParameterRecord> {
+        let _call = self.enter(FfiOp::GetParameter);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::GetParameter);
-        return_injected_failure(&mut state, FfiOp::GetParameter)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.get_parameter, Ok(ParameterRecord::Bool(false)))
     }
 
     fn set_parameter(&self, _: Handle, _: &CStr, _: &ParameterValueRecord) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::SetParameter);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::SetParameter);
-        return_injected_failure(&mut state, FfiOp::SetParameter)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.set_parameter, Ok(()))
     }
 
     fn execute(&self, _: Handle, _: &CStr) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::Execute);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::Execute);
-        return_injected_failure(&mut state, FfiOp::Execute)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.execute, Ok(()))
     }
 
@@ -649,8 +816,9 @@ impl Driver for MockDriver {
         user_file_name: &CStr,
         device_file_name: &CStr,
     ) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::FileAccessRead);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::FileAccessRead);
+        record_call(&mut state, &_call);
         state.file_access_calls.push(FileAccessCall {
             operation: "file_access_read",
             user_file_name: user_file_name.to_bytes().to_vec(),
@@ -658,7 +826,7 @@ impl Driver for MockDriver {
             user_file_name_address: user_file_name.as_ptr() as usize,
             device_file_name_address: device_file_name.as_ptr() as usize,
         });
-        return_injected_failure(&mut state, FfiOp::FileAccessRead)?;
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.file_access_read, Ok(()))
     }
 
@@ -668,8 +836,9 @@ impl Driver for MockDriver {
         user_file_name: &CStr,
         device_file_name: &CStr,
     ) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::FileAccessWrite);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::FileAccessWrite);
+        record_call(&mut state, &_call);
         state.file_access_calls.push(FileAccessCall {
             operation: "file_access_write",
             user_file_name: user_file_name.to_bytes().to_vec(),
@@ -677,14 +846,15 @@ impl Driver for MockDriver {
             user_file_name_address: user_file_name.as_ptr() as usize,
             device_file_name_address: device_file_name.as_ptr() as usize,
         });
-        return_injected_failure(&mut state, FfiOp::FileAccessWrite)?;
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.file_access_write, Ok(()))
     }
 
     fn file_access_progress(&self, _: Handle) -> DriverResult<FileProgressRaw> {
+        let _call = self.enter(FfiOp::GetFileAccessProgress);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::GetFileAccessProgress);
-        return_injected_failure(&mut state, FfiOp::GetFileAccessProgress)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(
             &mut state.file_access_progress,
             Ok(FileProgressRaw {
@@ -695,9 +865,10 @@ impl Driver for MockDriver {
     }
 
     fn map_depth_to_point_cloud(&self, _: ImageInput<'_>) -> DriverResult<FrameRecord> {
+        let _call = self.enter(FfiOp::MapDepthToPointCloud);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::MapDepthToPointCloud);
-        return_injected_failure(&mut state, FfiOp::MapDepthToPointCloud)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(
             &mut state.map_depth_to_point_cloud,
             Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
@@ -705,9 +876,10 @@ impl Driver for MockDriver {
     }
 
     fn map_depth_to_point_cloud_round(&self, _: &[ImageInput<'_>]) -> DriverResult<FrameRecord> {
+        let _call = self.enter(FfiOp::MapDepthToPointCloudRound);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::MapDepthToPointCloudRound);
-        return_injected_failure(&mut state, FfiOp::MapDepthToPointCloudRound)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(
             &mut state.map_depth_to_point_cloud_round,
             Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
@@ -715,9 +887,10 @@ impl Driver for MockDriver {
     }
 
     fn convert_image(&self, _: ImageInput<'_>, _: ImageTypeRecord) -> DriverResult<FrameRecord> {
+        let _call = self.enter(FfiOp::ImageConvert);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::ImageConvert);
-        return_injected_failure(&mut state, FfiOp::ImageConvert)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(
             &mut state.convert_image,
             Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
@@ -725,9 +898,10 @@ impl Driver for MockDriver {
     }
 
     fn mosaic_depth(&self, _: &[ImageInput<'_>]) -> DriverResult<FrameRecord> {
+        let _call = self.enter(FfiOp::DepthMosaic);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::DepthMosaic);
-        return_injected_failure(&mut state, FfiOp::DepthMosaic)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(
             &mut state.mosaic_depth,
             Err(crate::driver::DriverError::Status(0x8006_0001_u32 as i32)),
@@ -740,9 +914,10 @@ impl Driver for MockDriver {
         _: ImageFileFormatRecord,
         _: &CStr,
     ) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::SaveImage);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::SaveImage);
-        return_injected_failure(&mut state, FfiOp::SaveImage)?;
+        record_call(&mut state, &_call);
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.save_image, Ok(()))
     }
 
@@ -753,52 +928,58 @@ impl Driver for MockDriver {
         window: NonZeroIsize,
         range: DisplayRangeRecord,
     ) -> DriverResult<()> {
+        let _call = self.enter(FfiOp::DisplayImage);
         let mut state = self.state();
-        record_call(&mut state, FfiOp::DisplayImage);
+        record_call(&mut state, &_call);
         state.display_calls.push(DisplayCall { window, range });
-        return_injected_failure(&mut state, FfiOp::DisplayImage)?;
+        return_injected_failure(&mut state, &_call)?;
         pop_or(&mut state.display_image, Ok(()))
     }
 }
 
 impl MockDriver {
-    fn open(&self, operation: FfiOp, output: &mut Option<Handle>) -> DriverResult<()> {
-        let mut state = self.state();
-        record_call(&mut state, operation);
-        return_injected_failure(&mut state, operation)?;
+    fn open(&self, call: &CallGuard<'_>, output: &mut Option<Handle>) -> DriverResult<()> {
+        let operation = call.operation();
+        let (handle, result) = {
+            let mut state = self.state();
+            record_call(&mut state, call);
+            return_injected_failure(&mut state, call)?;
 
-        let configured = match operation {
-            FfiOp::OpenDeviceByIp => state.open_by_ip.pop_front(),
-            FfiOp::OpenDeviceBySerial => state.open_by_serial.pop_front(),
-            _ => unreachable!("only open operations use MockDriver::open"),
-        };
-        let reply = configured.unwrap_or_else(|| {
-            let handle = mock_handle(state.next_handle);
-            state.next_handle = state
-                .next_handle
-                .checked_add(1)
-                .expect("mock handle sequence exhausted");
-            OpenReply {
-                handle: Some(handle),
-                result: Ok(()),
+            let configured = match operation {
+                FfiOp::OpenDeviceByIp => state.open_by_ip.pop_front(),
+                FfiOp::OpenDeviceBySerial => state.open_by_serial.pop_front(),
+                _ => unreachable!("only open operations use MockDriver::open"),
+            };
+            let reply = configured.unwrap_or_else(|| {
+                let handle = MockHandleId::new(state.next_handle);
+                state.next_handle = state
+                    .next_handle
+                    .checked_add(1)
+                    .expect("mock handle sequence exhausted");
+                OpenReply {
+                    handle: Some(handle),
+                    result: Ok(()),
+                }
+            });
+            if let Some(handle) = reply.handle {
+                state.opened_handles.push((operation, handle.address()));
             }
-        });
-        if let Some(handle) = reply.handle {
-            state
-                .opened_handles
-                .push((operation, handle.as_ptr().addr()));
-        }
-        *output = reply.handle;
-        reply.result
+            (reply.handle, reply.result)
+        };
+
+        *output = handle.map(MockHandleId::into_handle);
+        result
     }
 }
 
-fn record_call(state: &mut MockState, operation: FfiOp) {
+fn record_call(state: &mut MockState, call: &CallGuard<'_>) {
+    let operation = call.operation();
     state.log.push(operation.driver_method());
     state.operations.push(operation);
 }
 
-fn return_injected_failure(state: &mut MockState, operation: FfiOp) -> DriverResult<()> {
+fn return_injected_failure(state: &mut MockState, call: &CallGuard<'_>) -> DriverResult<()> {
+    let operation = call.operation();
     let error = state
         .injected_failures
         .get_mut(&operation)
@@ -816,4 +997,98 @@ fn pop_or<T>(queue: &mut VecDeque<DriverResult<T>>, default: DriverResult<T>) ->
 pub(crate) fn mock_handle(address: usize) -> Handle {
     Handle::from_ptr(address as *mut std::ffi::c_void)
         .expect("a mock handle address must be non-zero")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+
+    #[derive(Default)]
+    struct Rendezvous {
+        arrived: Mutex<usize>,
+        ready: Condvar,
+    }
+
+    impl Rendezvous {
+        fn wait_for_two(&self) {
+            let mut arrived = self.arrived.lock().unwrap();
+            *arrived += 1;
+            self.ready.notify_all();
+            let (arrived, timeout) = self
+                .ready
+                .wait_timeout_while(arrived, Duration::from_secs(5), |arrived| *arrived < 2)
+                .unwrap();
+            assert!(
+                !timeout.timed_out() || *arrived >= 2,
+                "mock calls failed to rendezvous before the ledger lock"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_state_and_driver_have_the_required_auto_traits() {
+        assert_send::<MockState>();
+        assert_send::<MockDriver>();
+        assert_sync::<MockDriver>();
+    }
+
+    #[test]
+    fn probe_observes_concurrency_and_consumes_one_failure_exactly_once() {
+        let mock = Arc::new(MockDriver::new());
+        let injected = DriverError::Status(0x8006_0001_u32 as i32);
+        mock.fail_next(FfiOp::GetVersion, injected.clone());
+        let rendezvous = Arc::new(Rendezvous::default());
+        let hook_rendezvous = Arc::clone(&rendezvous);
+        mock.hook_next_calls(
+            FfiOp::GetVersion,
+            2,
+            Arc::new(move || hook_rendezvous.wait_for_two()),
+        );
+
+        let first_mock = Arc::clone(&mock);
+        let first = thread::spawn(move || first_mock.version());
+        let second_mock = Arc::clone(&mock);
+        let second = thread::spawn(move || second_mock.version());
+
+        let outcomes = [first.join().unwrap(), second.join().unwrap()];
+        assert!(outcomes.contains(&Ok(b"1.3.3.3".to_vec())));
+        assert!(outcomes.contains(&Err(injected)));
+        assert!(mock.maximum_in_flight() >= 2);
+        assert_eq!(mock.in_flight(), 0);
+        mock.assert_no_pending_failures();
+        assert_eq!(
+            mock.operations(),
+            vec![FfiOp::GetVersion, FfiOp::GetVersion]
+        );
+    }
+
+    #[test]
+    fn probe_balances_a_panic_and_the_poisoned_ledger_recovers() {
+        let mock = MockDriver::new();
+        mock.set_next_handle(usize::MAX);
+        let ip = c"127.0.0.1";
+
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            let mut output = None;
+            let _ = mock.open_by_ip(ip, &mut output);
+        }));
+
+        assert!(panic.is_err());
+        assert_eq!(mock.in_flight(), 0);
+        assert_eq!(mock.poison_recoveries(), 1);
+        assert_eq!(mock.version(), Ok(b"1.3.3.3".to_vec()));
+        assert_eq!(mock.poison_recoveries(), 1);
+        assert_eq!(
+            mock.operations(),
+            vec![FfiOp::OpenDeviceByIp, FfiOp::GetVersion]
+        );
+    }
 }

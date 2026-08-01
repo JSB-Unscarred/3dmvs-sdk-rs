@@ -4,7 +4,7 @@ use crate::driver::DriverError;
 use crate::error::{ContractViolation, Error};
 use crate::opened_device::DeviceState;
 
-use super::mock_driver::{MockDriver, active_runtime, mock_handle};
+use super::mock_driver::{MockDriver, active_runtime};
 
 #[test]
 fn start_and_stop_update_state_only_after_success() {
@@ -65,10 +65,7 @@ fn successful_open_with_a_null_handle_is_a_contract_violation() {
 #[test]
 fn handle_returned_on_open_failure_is_never_treated_as_valid() {
     let mock = MockDriver::new();
-    mock.configure_open_by_ip(
-        Some(mock_handle(2)),
-        Err(DriverError::Status(0x8006_0005_u32 as i32)),
-    );
+    mock.configure_open_by_ip(Some(2), Err(DriverError::Status(0x8006_0005_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
 
     assert!(matches!(

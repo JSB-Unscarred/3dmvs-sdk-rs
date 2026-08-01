@@ -63,6 +63,8 @@ fn every_driver_operation_consumes_the_shared_failure_injector() {
 
         assert_eq!(exercise(&mock, operation), Err(injected));
         assert_eq!(mock.operations(), [operation]);
+        assert_eq!(mock.in_flight(), 0);
+        assert_eq!(mock.maximum_in_flight(), 1);
         mock.assert_no_pending_failures();
     }
 }
