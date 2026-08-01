@@ -65,8 +65,8 @@ impl<'sdk> FileTransfer<'sdk> {
     /// Polls until completion or until `timeout` elapses.
     ///
     /// `Ok(None)` means the timeout elapsed while the transfer was still running. Completed
-    /// transfers return their cached final progress without another SDK call, while faulted
-    /// transfers return immediately.
+    /// transfers return their cached final progress without another SDK call. A polling error
+    /// ends only the current call, so callers may retry.
     pub fn wait_timeout(
         &mut self,
         poll_interval: Duration,

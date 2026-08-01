@@ -135,7 +135,7 @@ fn running_completed_cache_wait_and_device_recovery_form_one_state_machine() {
 }
 
 #[test]
-fn wait_timeout_preserves_running_and_returns_locally_once_faulted() {
+fn wait_timeout_can_retry_after_progress_diagnostic() {
     let mock = MockDriver::new();
     mock.push_file_access_progress(Ok(FileProgressRaw {
         completed: 0,
@@ -143,6 +143,10 @@ fn wait_timeout_preserves_running_and_returns_locally_once_faulted() {
     }));
     mock.push_file_access_progress(Ok(FileProgressRaw {
         completed: -1,
+        total: 10,
+    }));
+    mock.push_file_access_progress(Ok(FileProgressRaw {
+        completed: 10,
         total: 10,
     }));
     let (runtime, _) = active_runtime(&mock);
@@ -166,26 +170,18 @@ fn wait_timeout_preserves_running_and_returns_locally_once_faulted() {
             ..
         })
     ));
-    let progress_calls = operation_count(&mock, FfiOp::GetFileAccessProgress);
+    assert!(names.upgrade().is_some());
     assert!(matches!(
         transfer.wait_timeout(Duration::ZERO, Duration::ZERO),
-        Err(Error::InvalidState {
-            state: "faulted file transfer",
-            ..
-        })
+        Ok(Some(progress)) if progress.completed == 10 && progress.total == 10
     ));
-    assert_eq!(
-        operation_count(&mock, FfiOp::GetFileAccessProgress),
-        progress_calls,
-        "faulted wait_timeout must not re-enter the Driver"
-    );
-
-    let transfer = match transfer.try_into_device() {
-        Ok(_) => panic!("a faulted transfer returned its device"),
-        Err(transfer) => transfer,
+    let (device, _) = match transfer.try_into_device() {
+        Ok(recovered) => recovered,
+        Err(_) => panic!("a completed retry did not return its device"),
     };
-    transfer.close().unwrap();
+    device.close().unwrap();
     assert!(names.upgrade().is_none());
+    assert_eq!(operation_count(&mock, FfiOp::GetFileAccessProgress), 3);
     assert_eq!(operation_count(&mock, FfiOp::StopMeasure), 0);
     runtime.shutdown().unwrap();
 }
@@ -220,45 +216,42 @@ fn ordinary_sdk_progress_error_is_retryable() {
 }
 
 #[test]
-fn every_progress_contract_violation_is_irreversibly_faulted() {
+fn progress_contract_violations_are_retryable() {
     let cases = [
         (
-            vec![FileProgressRaw {
+            vec![],
+            FileProgressRaw {
                 completed: 11,
                 total: 10,
-            }],
+            },
             ContractViolation::FileProgressExceedsTotal {
                 completed: 11,
                 total: 10,
             },
         ),
         (
-            vec![
-                FileProgressRaw {
-                    completed: 4,
-                    total: 10,
-                },
-                FileProgressRaw {
-                    completed: 3,
-                    total: 10,
-                },
-            ],
+            vec![FileProgressRaw {
+                completed: 4,
+                total: 10,
+            }],
+            FileProgressRaw {
+                completed: 3,
+                total: 10,
+            },
             ContractViolation::FileProgressRegressed {
                 previous: 4,
                 current: 3,
             },
         ),
         (
-            vec![
-                FileProgressRaw {
-                    completed: 4,
-                    total: 10,
-                },
-                FileProgressRaw {
-                    completed: 4,
-                    total: 4,
-                },
-            ],
+            vec![FileProgressRaw {
+                completed: 4,
+                total: 10,
+            }],
+            FileProgressRaw {
+                completed: 4,
+                total: 4,
+            },
             ContractViolation::FileProgressTotalChanged {
                 previous: 10,
                 current: 4,
@@ -266,17 +259,22 @@ fn every_progress_contract_violation_is_irreversibly_faulted() {
         ),
     ];
 
-    for (samples, expected) in cases {
+    for (prefix, invalid, expected) in cases {
         let mock = MockDriver::new();
-        for sample in &samples {
+        for sample in &prefix {
             mock.push_file_access_progress(Ok(*sample));
         }
+        mock.push_file_access_progress(Ok(invalid));
+        mock.push_file_access_progress(Ok(FileProgressRaw {
+            completed: 10,
+            total: 10,
+        }));
         let (runtime, _) = active_runtime(&mock);
         let device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
         let mut transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
         let names = take_only_file_name_lifetime();
 
-        for _ in 1..samples.len() {
+        for _ in &prefix {
             assert!(matches!(
                 transfer.progress().unwrap(),
                 FileTransferStatus::Running(_)
@@ -289,25 +287,22 @@ fn every_progress_contract_violation_is_irreversibly_faulted() {
                 kind: expected,
             }
         );
-        let progress_calls = operation_count(&mock, FfiOp::GetFileAccessProgress);
+        assert!(names.upgrade().is_some());
         assert!(matches!(
-            transfer.progress(),
-            Err(Error::InvalidState {
-                state: "faulted file transfer",
-                ..
-            })
+            transfer.progress().unwrap(),
+            FileTransferStatus::Completed(progress)
+                if progress.completed == 10 && progress.total == 10
         ));
+        let (device, _) = match transfer.try_into_device() {
+            Ok(recovered) => recovered,
+            Err(_) => panic!("a completed retry did not return its device"),
+        };
+        device.close().unwrap();
+        assert!(names.upgrade().is_none());
         assert_eq!(
             operation_count(&mock, FfiOp::GetFileAccessProgress),
-            progress_calls
+            prefix.len() + 2
         );
-
-        let transfer = match transfer.try_into_device() {
-            Ok(_) => panic!("a contract-faulted transfer returned its device"),
-            Err(transfer) => transfer,
-        };
-        transfer.close().unwrap();
-        assert!(names.upgrade().is_none());
         assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 1);
         assert_eq!(operation_count(&mock, FfiOp::StopMeasure), 0);
         runtime.shutdown().unwrap();
@@ -508,7 +503,7 @@ fn post_entry_start_and_close_failures_are_aggregated_and_names_are_leaked() {
 enum CleanupPath {
     DropRunning,
     DropCompleted,
-    DropFaulted,
+    DropAfterProgressError,
     CloseRunning,
 }
 
@@ -517,7 +512,7 @@ fn transfer_drop_and_close_paths_close_once_without_stop() {
     for path in [
         CleanupPath::DropRunning,
         CleanupPath::DropCompleted,
-        CleanupPath::DropFaulted,
+        CleanupPath::DropAfterProgressError,
         CleanupPath::CloseRunning,
     ] {
         let mock = MockDriver::new();
@@ -528,7 +523,7 @@ fn transfer_drop_and_close_paths_close_once_without_stop() {
                     total: 1,
                 }));
             }
-            CleanupPath::DropFaulted => {
+            CleanupPath::DropAfterProgressError => {
                 mock.push_file_access_progress(Ok(FileProgressRaw {
                     completed: -1,
                     total: 1,
@@ -551,7 +546,7 @@ fn transfer_drop_and_close_paths_close_once_without_stop() {
                 ));
                 drop(transfer);
             }
-            CleanupPath::DropFaulted => {
+            CleanupPath::DropAfterProgressError => {
                 assert!(transfer.progress().is_err());
                 drop(transfer);
             }

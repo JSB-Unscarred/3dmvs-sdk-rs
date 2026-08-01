@@ -54,7 +54,7 @@ impl<'sdk> Device<'sdk> {
 
     /// Starts acquisition and returns an exclusive measurement guard.
     ///
-    /// A failed start leaves the device faulted so only cleanup remains valid.
+    /// A failed start leaves the device open so callers may retry.
     pub fn start(&mut self) -> Result<Measurement<'_>> {
         self.inner
             .start()

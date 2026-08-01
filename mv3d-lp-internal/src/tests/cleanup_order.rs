@@ -171,7 +171,7 @@ fn implicit_drop_has_one_exact_stop_close_finalize_sequence() {
 }
 
 #[test]
-fn failed_start_is_conservatively_stopped_then_closed_before_finalize() {
+fn failed_start_closes_without_stop_before_finalize() {
     let mock = MockDriver::new();
     mock.fail_next(
         FfiOp::StartMeasure,
@@ -189,7 +189,6 @@ fn failed_start_is_conservatively_stopped_then_closed_before_finalize() {
         [
             FfiOp::OpenDeviceByIp,
             FfiOp::StartMeasure,
-            FfiOp::StopMeasure,
             FfiOp::CloseDevice,
             FfiOp::Finalize,
         ]

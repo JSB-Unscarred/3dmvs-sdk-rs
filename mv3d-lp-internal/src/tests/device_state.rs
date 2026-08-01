@@ -32,18 +32,16 @@ fn start_and_stop_update_state_only_after_success() {
 }
 
 #[test]
-fn failed_transition_faults_the_device() {
+fn failed_start_leaves_device_open_and_is_retryable() {
     let mock = MockDriver::new();
     mock.push_start(Err(DriverError::Status(0x8006_0003_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
     assert!(matches!(device.start(), Err(Error::Sdk { .. })));
-    assert_eq!(device.state(), DeviceState::Faulted);
-    assert!(matches!(
-        device.clear_buffer(),
-        Err(Error::InvalidState { .. })
-    ));
+    assert_eq!(device.state(), DeviceState::Open);
+    device.clear_buffer().unwrap();
+    device.start().unwrap().stop().unwrap();
     device.close().unwrap();
 }
 

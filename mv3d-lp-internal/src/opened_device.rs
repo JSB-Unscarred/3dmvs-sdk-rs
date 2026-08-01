@@ -105,26 +105,17 @@ impl<'runtime> Device<'runtime> {
 
     pub fn start(&mut self) -> Result<Measurement<'_>, Error> {
         self.require_state("MV3D_LP_StartMeasure", &[DeviceState::Open])?;
-        let result = self
-            .runtime
-            .call("MV3D_LP_StartMeasure", |driver| driver.start(self.handle()));
-        match result {
-            Ok(()) => {
-                self.state = DeviceState::Measuring;
-                let handle = self.handle();
-                Ok(Measurement {
-                    runtime: self.runtime,
-                    handle,
-                    state: &mut self.state,
-                    active: true,
-                    _not_sync: PhantomData,
-                })
-            }
-            Err(error) => {
-                self.state = DeviceState::Faulted;
-                Err(error)
-            }
-        }
+        self.runtime
+            .call("MV3D_LP_StartMeasure", |driver| driver.start(self.handle()))?;
+        self.state = DeviceState::Measuring;
+        let handle = self.handle();
+        Ok(Measurement {
+            runtime: self.runtime,
+            handle,
+            state: &mut self.state,
+            active: true,
+            _not_sync: PhantomData,
+        })
     }
 
     pub fn start_callback(
@@ -572,7 +563,6 @@ pub(crate) fn take_file_name_lifetimes_for_test() -> Vec<Weak<()>> {
 enum FileTransferState {
     Running,
     Completed(FileProgress),
-    Faulted,
 }
 
 /// An asynchronous file transfer that owns its device.
@@ -595,26 +585,14 @@ impl<'runtime> FileTransfer<'runtime> {
 
     pub fn progress(&mut self) -> Result<FileTransferStatus, Error> {
         match self.state {
-            FileTransferState::Running => match self.device.file_transfer_progress() {
-                Ok(status) => {
-                    if let FileTransferStatus::Completed(progress) = status {
-                        self.state = FileTransferState::Completed(progress);
-                    }
-                    Ok(status)
+            FileTransferState::Running => {
+                let status = self.device.file_transfer_progress()?;
+                if let FileTransferStatus::Completed(progress) = status {
+                    self.state = FileTransferState::Completed(progress);
                 }
-                Err(error) => {
-                    if !matches!(error, Error::Sdk { .. }) {
-                        self.device.state = DeviceState::Faulted;
-                        self.state = FileTransferState::Faulted;
-                    }
-                    Err(error)
-                }
-            },
+                Ok(status)
+            }
             FileTransferState::Completed(progress) => Ok(FileTransferStatus::Completed(progress)),
-            FileTransferState::Faulted => Err(Error::InvalidState {
-                operation: "MV3D_LP_GetFileAccessProgress",
-                state: "faulted file transfer",
-            }),
         }
     }
 
