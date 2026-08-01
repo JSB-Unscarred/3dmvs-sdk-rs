@@ -5,7 +5,8 @@
 ## 支持与安装
 
 - 原生目标：`x86_64-pc-windows-msvc`
-- 已审计的 LPSDK 运行时：`1.3.3.3`
+- 绑定与 strict 模式基线：LPSDK `1.3.3.3`
+- 默认 ABI 兼容范围：`>=1.3.3.3, <1.3.4.0`
 - MSRV：Rust `1.85`
 - 默认 feature 集为空；构建和测试不需要厂商 SDK
 - `native` 启用原生后端；`display-windows` 同时启用 `native` 和 Win32 图像显示
@@ -23,7 +24,7 @@ mv3d-lp = { git = "https://github.com/JSB-Unscarred/3dmvs-sdk-rs.git", features 
 C:\Program Files (x86)\3DMVS\Development
 ```
 
-脚本会校验公开头文件和 `Libraries\win64\Mv3dLp.lib`，但只链接导入库，不复制厂商文件或配置运行时环境。DLL 或 GenTL 加载失败时，请检查 `PATH`、`GENICAM_GENTL64_PATH`，并确保下列 x64 目录优先于 `Win32_i86`：
+脚本只校验并链接 `Libraries\win64\Mv3dLp.lib`；checked-in bindings 不在构建时重新生成，也不要求公开头文件存在。脚本不会复制厂商文件或配置运行时环境。DLL 或 GenTL 加载失败时，请检查 `PATH`、`GENICAM_GENTL64_PATH`，并确保下列 x64 目录优先于 `Win32_i86`：
 
 ```text
 C:\Program Files (x86)\Common Files\Mv3dLpSDK\Runtime\Win64_x64
@@ -119,7 +120,7 @@ fn receive_one_frame(device: &mut Device<'_>) -> Result<()> {
 
 ## 原生契约假设
 
-安全 API 依赖闭源 LPSDK `1.3.3.3` 的下列行为。公开头文件、官方多线程示例和唯一所有权模型支持当前 `Send + !Sync` 契约；锁定版本的跨线程 handoff、析构和 callback drain 实机测试仍作为发布前运行验证，不作为 public auto trait 的启用门槛。
+安全 API 的 bindings 基于闭源 LPSDK `1.3.3.3` 审计，默认接受 `>=1.3.3.3, <1.3.4.0` 的同 ABI 修订；`Sdk::initialize_strict()` 可要求精确基线。公开头文件、官方多线程示例和唯一所有权模型支持当前 `Send + !Sync` 契约；基线版本的跨线程 handoff、析构和 callback drain 实机测试仍作为发布前运行验证，不作为 public auto trait 的启用门槛。
 
 | 区域 | 必要的原生行为 | Rust 侧缓解 |
 | --- | --- | --- |

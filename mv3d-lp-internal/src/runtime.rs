@@ -16,11 +16,47 @@ use crate::error::{ContractViolation, Error, InvalidInput};
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::opened_device::Device;
 
-const EXPECTED_VERSION: &[u8] = b"1.3.3.3";
+const AUDITED_VERSION_TEXT: &[u8] = b"1.3.3.3";
+const MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE_TEXT: &[u8] = b"1.3.4.0";
+const AUDITED_VERSION: SdkVersion = SdkVersion::new(1, 3, 3, 3);
+const MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE: SdkVersion = SdkVersion::new(1, 3, 4, 0);
 const MAX_DEVICE_COUNT: usize = 256;
 const DISCOVERY_ATTEMPTS: usize = 3;
 const STATUS_BUFFER_FULL: i32 = 0x8006_0002_u32 as i32;
 const STATUS_INSUFFICIENT_BUFFER: i32 = 0x8006_0009_u32 as i32;
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SdkVersion([u32; 4]);
+
+impl SdkVersion {
+    const fn new(major: u32, minor: u32, patch: u32, build: u32) -> Self {
+        Self([major, minor, patch, build])
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VersionPolicy {
+    Compatible,
+    Strict,
+}
+
+impl VersionPolicy {
+    fn accepts(self, version: SdkVersion) -> bool {
+        match self {
+            Self::Compatible => {
+                (AUDITED_VERSION..MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE).contains(&version)
+            }
+            Self::Strict => version == AUDITED_VERSION,
+        }
+    }
+
+    const fn maximum_exclusive(self) -> Option<&'static [u8]> {
+        match self {
+            Self::Compatible => Some(MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE_TEXT),
+            Self::Strict => None,
+        }
+    }
+}
 
 /// Process-wide native LPSDK session state shared by every `Runtime` instance.
 ///
@@ -173,6 +209,14 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn initialize() -> Result<Self, Error> {
+        Self::initialize_native(VersionPolicy::Compatible)
+    }
+
+    pub fn initialize_strict() -> Result<Self, Error> {
+        Self::initialize_native(VersionPolicy::Strict)
+    }
+
+    fn initialize_native(policy: VersionPolicy) -> Result<Self, Error> {
         #[cfg(all(
             feature = "native",
             target_os = "windows",
@@ -182,7 +226,7 @@ impl Runtime {
         {
             static GATE: OnceLock<Arc<Gate>> = OnceLock::new();
             let gate = Arc::clone(GATE.get_or_init(|| Arc::new(Gate::new())));
-            Self::initialize_with(Box::new(crate::ffi::NativeDriver), gate)
+            Self::initialize_with_policy(Box::new(crate::ffi::NativeDriver), gate, policy)
         }
 
         #[cfg(not(all(
@@ -192,12 +236,29 @@ impl Runtime {
             target_env = "msvc"
         )))]
         {
-            let _ = OnceLock::<Arc<Gate>>::new();
+            let _ = (OnceLock::<Arc<Gate>>::new(), policy);
             Err(Error::UnsupportedPlatform)
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn initialize_with(driver: Box<dyn Driver>, gate: Arc<Gate>) -> Result<Self, Error> {
+        Self::initialize_with_policy(driver, gate, VersionPolicy::Compatible)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn initialize_with_strict(
+        driver: Box<dyn Driver>,
+        gate: Arc<Gate>,
+    ) -> Result<Self, Error> {
+        Self::initialize_with_policy(driver, gate, VersionPolicy::Strict)
+    }
+
+    fn initialize_with_policy(
+        driver: Box<dyn Driver>,
+        gate: Arc<Gate>,
+        policy: VersionPolicy,
+    ) -> Result<Self, Error> {
         let mut state = gate.lock();
         match *state {
             ProcessSdkState::Fresh => {}
@@ -209,9 +270,11 @@ impl Runtime {
             Ok(version) => version,
             Err(error) => return Err(map_driver_error("MV3D_LP_GetVersion", error)),
         };
-        if version.as_slice() != EXPECTED_VERSION {
+        let parsed_version = parse_sdk_version(&version);
+        if !parsed_version.is_some_and(|version| policy.accepts(version)) {
             return Err(Error::IncompatibleSdkVersion {
-                expected: EXPECTED_VERSION,
+                minimum: AUDITED_VERSION_TEXT,
+                maximum_exclusive: policy.maximum_exclusive(),
                 actual: version,
             });
         }
@@ -470,6 +533,18 @@ impl Drop for Runtime {
             let _ = self.finish();
         }
     }
+}
+
+fn parse_sdk_version(bytes: &[u8]) -> Option<SdkVersion> {
+    let mut components = std::str::from_utf8(bytes).ok()?.split('.');
+    let major = components.next()?.parse().ok()?;
+    let minor = components.next()?.parse().ok()?;
+    let patch = components.next()?.parse().ok()?;
+    let build = components.next()?.parse().ok()?;
+    if components.next().is_some() {
+        return None;
+    }
+    Some(SdkVersion::new(major, minor, patch, build))
 }
 
 fn map_driver_error(operation: &'static str, error: DriverError) -> Error {

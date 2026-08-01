@@ -75,13 +75,48 @@ fn initialization_cleanup_failure_degrades_the_process_sdk_state() {
 }
 
 #[test]
-fn incompatible_version_prevents_sdk_initialization_without_poisoning_the_gate() {
+fn compatible_build_version_initializes_by_default() {
+    let mock = MockDriver::new();
+    mock.set_version(Ok(b"1.3.3.4".to_vec()));
+    let gate = Arc::new(Gate::new());
+
+    let runtime = Runtime::initialize_with(Box::new(mock.clone()), gate).unwrap();
+
+    assert_eq!(runtime.version_bytes(), b"1.3.3.4");
+    runtime.shutdown().unwrap();
+    assert_eq!(mock.logs(), ["version", "initialize", "finalize"]);
+}
+
+#[test]
+fn version_below_compatible_range_is_rejected_before_initialization() {
+    let mock = MockDriver::new();
+    mock.set_version(Ok(b"1.3.3.2".to_vec()));
+    let gate = Arc::new(Gate::new());
+
+    let result = Runtime::initialize_with(Box::new(mock.clone()), gate);
+
+    assert!(matches!(result, Err(Error::IncompatibleSdkVersion { .. })));
+    assert_eq!(mock.logs(), ["version"]);
+}
+
+#[test]
+fn compatible_upper_bound_prevents_initialization_without_poisoning_the_gate() {
     let mock = MockDriver::new();
     mock.set_version(Ok(b"1.3.4.0".to_vec()));
     let gate = Arc::new(Gate::new());
     let result = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate));
 
-    assert!(matches!(result, Err(Error::IncompatibleSdkVersion { .. })));
+    let Err(Error::IncompatibleSdkVersion {
+        minimum,
+        maximum_exclusive,
+        actual,
+    }) = result
+    else {
+        panic!("the upper bound must be rejected before SDK initialization");
+    };
+    assert_eq!(minimum, b"1.3.3.3");
+    assert_eq!(maximum_exclusive, Some(b"1.3.4.0".as_slice()));
+    assert_eq!(actual, b"1.3.4.0");
     mock.set_version(Ok(b"1.3.3.3".to_vec()));
     let retry = Runtime::initialize_with(Box::new(mock.clone()), gate).unwrap();
     retry.shutdown().unwrap();
@@ -89,6 +124,47 @@ fn incompatible_version_prevents_sdk_initialization_without_poisoning_the_gate()
         mock.logs(),
         ["version", "version", "initialize", "finalize"]
     );
+}
+
+#[test]
+fn strict_version_rejects_compatible_build_and_leaves_the_gate_fresh() {
+    let mock = MockDriver::new();
+    mock.set_version(Ok(b"1.3.3.4".to_vec()));
+    let gate = Arc::new(Gate::new());
+    let result = Runtime::initialize_with_strict(Box::new(mock.clone()), Arc::clone(&gate));
+
+    let Err(Error::IncompatibleSdkVersion {
+        minimum,
+        maximum_exclusive,
+        actual,
+    }) = result
+    else {
+        panic!("strict initialization must reject a non-audited compatible build");
+    };
+    assert_eq!(minimum, b"1.3.3.3");
+    assert_eq!(maximum_exclusive, None);
+    assert_eq!(actual, b"1.3.3.4");
+
+    mock.set_version(Ok(b"1.3.3.3".to_vec()));
+    let retry = Runtime::initialize_with_strict(Box::new(mock.clone()), gate).unwrap();
+    retry.shutdown().unwrap();
+    assert_eq!(
+        mock.logs(),
+        ["version", "version", "initialize", "finalize"]
+    );
+}
+
+#[test]
+fn strict_version_comparison_is_numeric() {
+    let mock = MockDriver::new();
+    mock.set_version(Ok(b"01.03.003.0003".to_vec()));
+    let gate = Arc::new(Gate::new());
+
+    let runtime = Runtime::initialize_with_strict(Box::new(mock.clone()), gate).unwrap();
+
+    assert_eq!(runtime.version_bytes(), b"01.03.003.0003");
+    runtime.shutdown().unwrap();
+    assert_eq!(mock.logs(), ["version", "initialize", "finalize"]);
 }
 
 #[test]

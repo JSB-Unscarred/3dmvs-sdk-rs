@@ -1,5 +1,6 @@
 mod abi_contract;
 mod auto_traits;
+mod build_script_contract;
 mod callbacks;
 mod cleanup_order;
 mod device_conversion;

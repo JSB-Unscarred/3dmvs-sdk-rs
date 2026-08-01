@@ -29,20 +29,6 @@ fn main() {
 }
 
 fn configure_native_link(development_root: &Path) {
-    if !development_root.is_dir() {
-        panic!(
-            "3DMVS development root does not exist: {}. \
-             Install the 3DMVS SDK or set MV3DLP_DEV_ENV to its Development directory",
-            development_root.display()
-        );
-    }
-
-    let include_dir = development_root.join("Includes");
-    let required_headers = ["Mv3dLpApi.h", "Mv3dLpDefine.h", "Mv3dLpImgProc.h"];
-    for header in required_headers {
-        require_file(&include_dir.join(header), "3DMVS public header");
-    }
-
     let library_dir = development_root.join("Libraries").join("win64");
     let import_library = library_dir.join("Mv3dLp.lib");
     require_file(&import_library, "3DMVS x64 import library");

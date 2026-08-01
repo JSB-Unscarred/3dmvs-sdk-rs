@@ -27,8 +27,20 @@ pub struct Sdk {
 }
 
 impl Sdk {
+    /// Initializes the process-wide SDK using the default compatible ABI version range.
     pub fn initialize() -> Result<Self> {
         let inner = mv3d_lp_internal::Runtime::initialize().map_err(Error::from)?;
+        Self::from_internal(inner)
+    }
+
+    /// Initializes the process-wide SDK only when its version exactly matches the audited
+    /// bindings baseline.
+    pub fn initialize_strict() -> Result<Self> {
+        let inner = mv3d_lp_internal::Runtime::initialize_strict().map_err(Error::from)?;
+        Self::from_internal(inner)
+    }
+
+    fn from_internal(inner: mv3d_lp_internal::Runtime) -> Result<Self> {
         let version = std::str::from_utf8(inner.version_bytes())
             .ok()
             .and_then(|text| text.parse().ok())

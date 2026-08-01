@@ -106,7 +106,8 @@ pub enum Error {
     RuntimeTerminal,
     RuntimeDegraded,
     IncompatibleSdkVersion {
-        expected: &'static [u8],
+        minimum: &'static [u8],
+        maximum_exclusive: Option<&'static [u8]>,
         actual: Vec<u8>,
     },
     Sdk {
@@ -155,12 +156,25 @@ impl fmt::Display for Error {
             Self::RuntimeDegraded => f.write_str(
                 "the process-wide 3DMVS SDK session is degraded and cannot open devices, finalize, or initialize another runtime",
             ),
-            Self::IncompatibleSdkVersion { expected, actual } => write!(
-                f,
-                "incompatible 3DMVS runtime version: expected {}, got {}",
-                String::from_utf8_lossy(expected),
-                String::from_utf8_lossy(actual)
-            ),
+            Self::IncompatibleSdkVersion {
+                minimum,
+                maximum_exclusive,
+                actual,
+            } => match maximum_exclusive {
+                Some(maximum_exclusive) => write!(
+                    f,
+                    "incompatible 3DMVS runtime version: expected >= {} and < {}, got {}",
+                    String::from_utf8_lossy(minimum),
+                    String::from_utf8_lossy(maximum_exclusive),
+                    String::from_utf8_lossy(actual)
+                ),
+                None => write!(
+                    f,
+                    "incompatible 3DMVS runtime version: expected exactly {}, got {}",
+                    String::from_utf8_lossy(minimum),
+                    String::from_utf8_lossy(actual)
+                ),
+            },
             Self::Sdk { operation, status } => {
                 write!(
                     f,

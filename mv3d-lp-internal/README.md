@@ -16,7 +16,9 @@ on `mv3d-lp`, and no compatibility promise is made for direct use of `mv3d-lp-in
 
 The default feature set is empty and requires no vendor SDK. Native linking is
 available only through the explicit `native` feature on
-`x86_64-pc-windows-msvc`, with the audited LPSDK runtime version `1.3.3.3`.
+`x86_64-pc-windows-msvc`. The bindings and strict-mode baseline are LPSDK
+`1.3.3.3`; normal initialization accepts the ABI-compatible range
+`>=1.3.3.3, <1.3.4.0`.
 The vendor SDK, headers, import libraries, DLLs, and installers are not included
 or redistributed.
 

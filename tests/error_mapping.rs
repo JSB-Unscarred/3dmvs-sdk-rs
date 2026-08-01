@@ -3,6 +3,11 @@ use mv3d_lp::{
 };
 
 #[test]
+fn strict_initializer_is_public() {
+    let _: fn() -> mv3d_lp::Result<mv3d_lp::Sdk> = mv3d_lp::Sdk::initialize_strict;
+}
+
+#[test]
 fn degraded_process_sdk_state_has_a_distinct_public_error() {
     let error: Error = mv3d_lp_internal::Error::RuntimeDegraded.into();
 
@@ -48,31 +53,58 @@ fn get_image_operation_uses_the_vendor_symbol() {
 }
 
 #[test]
-fn incompatible_version_retains_the_original_sdk_text() {
+fn incompatible_version_range_retains_the_original_sdk_text() {
     let error: Error = mv3d_lp_internal::Error::IncompatibleSdkVersion {
-        expected: b"1.3.3.3",
-        actual: b"01.3.3.3".to_vec(),
+        minimum: b"1.3.3.3",
+        maximum_exclusive: Some(b"1.4.0.0"),
+        actual: b"01.4.0.0".to_vec(),
     }
     .into();
 
     assert_eq!(
         error,
         Error::IncompatibleSdkVersion {
-            expected: SdkVersion::new(1, 3, 3, 3),
-            actual: SdkVersion::new(1, 3, 3, 3),
-            actual_text: SdkText::new("01.3.3.3").unwrap(),
+            minimum: SdkVersion::new(1, 3, 3, 3),
+            maximum_exclusive: Some(SdkVersion::new(1, 4, 0, 0)),
+            actual: SdkVersion::new(1, 4, 0, 0),
+            actual_text: SdkText::new("01.4.0.0").unwrap(),
         }
     );
     assert_eq!(
         error.to_string(),
-        "incompatible SDK runtime version 01.3.3.3; expected 1.3.3.3"
+        "incompatible SDK runtime version 01.4.0.0; expected a version in [1.3.3.3, 1.4.0.0)"
+    );
+}
+
+#[test]
+fn strict_incompatible_version_reports_the_exact_requirement() {
+    let error: Error = mv3d_lp_internal::Error::IncompatibleSdkVersion {
+        minimum: b"1.3.3.3",
+        maximum_exclusive: None,
+        actual: b"1.3.3.4".to_vec(),
+    }
+    .into();
+
+    assert_eq!(
+        error,
+        Error::IncompatibleSdkVersion {
+            minimum: SdkVersion::new(1, 3, 3, 3),
+            maximum_exclusive: None,
+            actual: SdkVersion::new(1, 3, 3, 4),
+            actual_text: SdkText::new("1.3.3.4").unwrap(),
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "incompatible SDK runtime version 1.3.3.4; expected exactly 1.3.3.3"
     );
 }
 
 #[test]
 fn malformed_incompatible_version_maps_without_panicking() {
     let error: Error = mv3d_lp_internal::Error::IncompatibleSdkVersion {
-        expected: b"1.3.3.3",
+        minimum: b"1.3.3.3",
+        maximum_exclusive: Some(b"1.4.0.0"),
         actual: format!("{}1.3.3.3", "0".repeat(SdkText::MAX_LEN)).into_bytes(),
     }
     .into();

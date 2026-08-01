@@ -44,7 +44,10 @@ fn run_contract() -> TestResult {
     let device_file = required_ascii_env(DEVICE_FILE_ENV, None)?;
     let mut scratch = ScratchDirectory::from_env()?;
 
-    let runtime = sdk("initialize the LPSDK runtime", Runtime::initialize())?;
+    let runtime = sdk(
+        "strictly initialize the LPSDK runtime",
+        Runtime::initialize_strict(),
+    )?;
     let version_matches = runtime.version_bytes() == EXPECTED_VERSION;
     let contract = if version_matches {
         run_scenarios(&runtime, &serial, &device_file, &mut scratch)
