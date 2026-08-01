@@ -147,7 +147,7 @@ impl Driver for NativeDriver {
     }
 
     fn finalize(&self) -> DriverResult<()> {
-        // SAFETY: Runtime calls Finalize once, after all borrowing Camera values are gone.
+        // SAFETY: Runtime calls Finalize once, after all borrowing Device values are gone.
         status_result(unsafe { bindings::MV3D_LP_Finalize() })
     }
 
@@ -222,35 +222,35 @@ impl Driver for NativeDriver {
 
     fn close(&self, handle: Handle) -> DriverResult<()> {
         let mut raw = handle.as_ptr();
-        // SAFETY: handle originated from a successful SDK open call. Camera removes it from its
+        // SAFETY: handle originated from a successful SDK open call. Device removes it from its
         // state before entering this method, so Rust never calls CloseDevice twice for it.
         status_result(unsafe { bindings::MV3D_LP_CloseDevice(&mut raw) })
     }
 
     fn start(&self, handle: Handle) -> DriverResult<()> {
-        // SAFETY: Camera validates the state and owns this live SDK handle.
+        // SAFETY: Device validates the state and owns this live SDK handle.
         status_result(unsafe { bindings::MV3D_LP_StartMeasure(handle.as_ptr()) })
     }
 
     fn stop(&self, handle: Handle) -> DriverResult<()> {
-        // SAFETY: Camera owns this live SDK handle; cleanup may conservatively call Stop after a
+        // SAFETY: Device owns this live SDK handle; cleanup may conservatively call Stop after a
         // failed transition because the vendor does not define the partial state.
         status_result(unsafe { bindings::MV3D_LP_StopMeasure(handle.as_ptr()) })
     }
 
     fn soft_trigger(&self, handle: Handle) -> DriverResult<()> {
-        // SAFETY: Camera validates Measuring state and owns this live SDK handle.
+        // SAFETY: Device validates Measuring state and owns this live SDK handle.
         status_result(unsafe { bindings::MV3D_LP_SoftTrigger(handle.as_ptr()) })
     }
 
     fn clear_buffer(&self, handle: Handle) -> DriverResult<()> {
-        // SAFETY: Camera owns the handle; the safe facade exposes only owned copies of SDK buffers.
+        // SAFETY: Device owns the handle; the safe facade exposes only owned copies of SDK buffers.
         status_result(unsafe { bindings::MV3D_LP_ClearDataBuffer(handle.as_ptr()) })
     }
 
     fn get_image(&self, handle: Handle, timeout_ms: u32) -> DriverResult<FrameRecord> {
         let mut image = zeroed_image();
-        // SAFETY: image is a fully zeroed writable SDK output, Camera owns the live handle, and
+        // SAFETY: image is a fully zeroed writable SDK output, Device owns the live handle, and
         // Runtime keeps the process-wide SDK gate locked until this method and its copies finish.
         let status = unsafe { bindings::MV3D_LP_GetImage(handle.as_ptr(), &mut image, timeout_ms) };
         // A failed SDK call does not initialize a trustworthy output descriptor. In particular,
@@ -281,7 +281,7 @@ impl Driver for NativeDriver {
         cookie: CallbackCookie,
     ) -> DriverResult<()> {
         // SAFETY: the same static-trampoline and opaque-cookie guarantees as the image callback
-        // apply. Camera owns the live handle for this serialized registration call.
+        // apply. Device owns the live handle for this serialized registration call.
         status_result(unsafe {
             bindings::MV3D_LP_RegisterExceptionCallBack(
                 handle.as_ptr(),
@@ -316,7 +316,7 @@ impl Driver for NativeDriver {
     }
 
     fn execute(&self, handle: Handle, key: &CStr) -> DriverResult<()> {
-        // SAFETY: Camera owns this live handle and key is NUL-terminated for the call.
+        // SAFETY: Device owns this live handle and key is NUL-terminated for the call.
         status_result(unsafe { bindings::MV3D_LP_Execute(handle.as_ptr(), key.as_ptr()) })
     }
 
@@ -331,7 +331,7 @@ impl Driver for NativeDriver {
             pDevFileName: device_file_name.as_ptr(),
             nReserved: [0; 32],
         };
-        // SAFETY: Camera owns the handle and retains both C strings until progress reaches a
+        // SAFETY: Device owns the handle and retains both C strings until progress reaches a
         // terminal state or CloseDevice succeeds. The descriptor is initialized and writable.
         status_result(unsafe { bindings::MV3D_LP_FileAccessRead(handle.as_ptr(), &mut access) })
     }
@@ -357,7 +357,7 @@ impl Driver for NativeDriver {
             nTotal: 0,
             nReserved: [0; 32],
         };
-        // SAFETY: Camera owns the live handle and progress is a fully initialized writable output.
+        // SAFETY: Device owns the live handle and progress is a fully initialized writable output.
         status_result(unsafe {
             bindings::MV3D_LP_GetFileAccessProgress(handle.as_ptr(), &mut progress)
         })?;

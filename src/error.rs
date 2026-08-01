@@ -517,7 +517,7 @@ impl fmt::Display for Error {
                 actual,
             } => write!(
                 formatter,
-                "{operation} requires state {expected}, but the camera is {actual}"
+                "{operation} requires state {expected}, but the device is {actual}"
             ),
             Self::ContractViolation {
                 operation,

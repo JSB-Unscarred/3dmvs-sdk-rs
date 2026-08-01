@@ -25,7 +25,7 @@ pub(crate) struct MockDriver {
 /// The post-FFI operation surface exercised by [`MockDriver`].
 ///
 /// This is deliberately a Driver-layer ledger: injecting one of these failures tests Runtime and
-/// Camera behavior after the native boundary has already converted raw outputs. Raw pointer,
+/// Device behavior after the native boundary has already converted raw outputs. Raw pointer,
 /// union, and status-before-output behavior remains covered by the focused `ffi` conversion tests.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum FfiOp {

@@ -7,12 +7,12 @@ use crate::error::Error;
 use super::mock_driver::{FfiOp, MockDriver, active_runtime};
 
 #[test]
-fn drop_stops_before_closing_a_measuring_camera() {
+fn drop_stops_before_closing_a_measuring_device() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     {
-        let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-        let measurement = camera.start().unwrap();
+        let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+        let measurement = device.start().unwrap();
         drop(measurement);
     }
 
@@ -27,11 +27,11 @@ fn close_is_attempted_even_when_cleanup_stop_fails() {
     mock.push_stop(Err(DriverError::Status(0x8006_0003_u32 as i32)));
     mock.push_close(Err(DriverError::Status(0x8006_0000_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    let measurement = camera.start().unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let measurement = device.start().unwrap();
     std::mem::forget(measurement);
 
-    let error = camera.close().unwrap_err();
+    let error = device.close().unwrap_err();
     assert!(error.stop.is_some());
     assert!(error.close.is_some());
     let log = mock.logs();
@@ -54,8 +54,8 @@ fn close_is_attempted_even_when_cleanup_stop_fails() {
 fn explicit_close_is_not_repeated_by_drop() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
-    let camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    camera.close().unwrap();
+    let device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    device.close().unwrap();
     runtime.shutdown().unwrap();
 
     assert_eq!(
@@ -75,11 +75,11 @@ fn explicit_close_is_not_repeated_by_drop() {
 }
 
 #[test]
-fn forgotten_camera_prevents_finalize() {
+fn forgotten_device_prevents_finalize() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
-    let camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    std::mem::forget(camera);
+    let device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    std::mem::forget(device);
 
     assert!(matches!(
         runtime.shutdown(),
@@ -95,9 +95,9 @@ fn forgotten_camera_prevents_finalize() {
 fn implicit_drop_has_one_exact_stop_close_finalize_sequence() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    drop(camera.start().unwrap());
-    drop(camera);
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    drop(device.start().unwrap());
+    drop(device);
     drop(runtime);
 
     assert_eq!(
@@ -122,10 +122,10 @@ fn failed_start_is_conservatively_stopped_then_closed_before_finalize() {
         DriverError::Status(0x8006_0003_u32 as i32),
     );
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
-    assert!(camera.start().is_err());
-    camera.close().unwrap();
+    assert!(device.start().is_err());
+    device.close().unwrap();
     runtime.shutdown().unwrap();
 
     assert_eq!(
@@ -145,15 +145,15 @@ fn failed_start_is_conservatively_stopped_then_closed_before_finalize() {
 fn failed_cleanup_stop_still_closes_and_a_successful_close_allows_finalize() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    let measurement = camera.start().unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let measurement = device.start().unwrap();
     std::mem::forget(measurement);
     mock.fail_next(
         FfiOp::StopMeasure,
         DriverError::Status(0x8006_0003_u32 as i32),
     );
 
-    let error = camera.close().unwrap_err();
+    let error = device.close().unwrap_err();
     assert!(error.stop.is_some());
     assert!(error.close.is_none());
     runtime.shutdown().unwrap();
@@ -178,9 +178,9 @@ fn failed_close_is_consumed_once_and_permanently_suppresses_finalize() {
         DriverError::Status(0x8006_0000_u32 as i32),
     );
     let (runtime, _) = active_runtime(&mock);
-    let camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
-    let error = camera.close().unwrap_err();
+    let error = device.close().unwrap_err();
     assert!(error.stop.is_none());
     assert!(error.close.is_some());
     assert!(matches!(
@@ -203,7 +203,7 @@ fn failed_close_is_consumed_once_and_permanently_suppresses_finalize() {
 }
 
 #[test]
-fn finalize_waits_for_every_distinct_camera_close() {
+fn finalize_waits_for_every_distinct_device_close() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     let first = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
@@ -246,10 +246,10 @@ fn cleanup_status_failures_never_unwind_from_drop() {
 
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         let (runtime, _) = active_runtime(&mock);
-        let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-        let measurement = camera.start().unwrap();
+        let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+        let measurement = device.start().unwrap();
         std::mem::forget(measurement);
-        drop(camera);
+        drop(device);
         drop(runtime);
     }));
 

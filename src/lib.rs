@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 
 mod callback;
-mod camera;
 mod device;
 #[cfg(all(windows, feature = "display-windows"))]
 mod display_windows;
@@ -9,6 +8,7 @@ mod error;
 mod file_transfer;
 mod frame;
 mod image_processor;
+mod opened_device;
 mod parameter;
 mod sdk;
 mod text;
@@ -18,7 +18,6 @@ pub use callback::{
     CallbackOptions, CallbackStats, CallbackWorker, CallbackWorkerExit, DeviceException,
     DeviceExceptionType,
 };
-pub use camera::{CallbackMeasurement, Camera, CameraState, Measurement};
 pub use device::{DeviceInfo, IpConfiguration, IpConfigurationMode};
 #[cfg(all(windows, feature = "display-windows"))]
 pub use display_windows::DisplayRange;
@@ -28,6 +27,7 @@ pub use error::{
 pub use file_transfer::{FileProgress, FileTransfer, FileTransferDirection, FileTransferStatus};
 pub use frame::{ImageCalibration, ImageRef, ImageType, OwnedFrame, OwnedImage};
 pub use image_processor::{ImageFileFormat, ImageProcessor};
+pub use opened_device::{CallbackMeasurement, Device, DeviceState, Measurement};
 pub use parameter::{Parameter, ParameterKind, ParameterValue};
 pub use sdk::Sdk;
 pub use text::{CommandKey, ParamKey, SdkText, SerialNumber};

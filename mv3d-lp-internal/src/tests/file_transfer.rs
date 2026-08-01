@@ -1,7 +1,7 @@
-use crate::camera::CameraState;
 use crate::driver::DriverError;
 use crate::error::{ContractViolation, Error, InvalidInput};
 use crate::file_transfer::{FileProgressRaw, FileTransferDirection, FileTransferStatus};
+use crate::opened_device::DeviceState;
 
 use super::mock_driver::{MockDriver, active_runtime};
 
@@ -17,9 +17,9 @@ fn transfer_names_survive_guard_drop_and_polling_can_resume() {
         total: 8,
     }));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
 
-    let transfer = camera.download_file(b"device.cfg", b"host.cfg").unwrap();
+    let transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
     assert_eq!(transfer.direction(), FileTransferDirection::DeviceToHost);
     let calls = mock.file_access_calls();
     assert_eq!(calls.len(), 1);
@@ -29,9 +29,9 @@ fn transfer_names_survive_guard_drop_and_polling_can_resume() {
     assert_ne!(calls[0].user_file_name_address, 0);
     assert_ne!(calls[0].device_file_name_address, 0);
     drop(transfer);
-    assert_eq!(camera.state(), CameraState::Transferring);
+    assert_eq!(device.state(), DeviceState::Transferring);
 
-    let mut resumed = camera.active_file_transfer().unwrap();
+    let mut resumed = device.active_file_transfer().unwrap();
     assert!(matches!(
         resumed.progress().unwrap(),
         FileTransferStatus::Running(progress) if progress.completed == 0 && progress.total == 0
@@ -41,7 +41,7 @@ fn transfer_names_survive_guard_drop_and_polling_can_resume() {
         FileTransferStatus::Completed(progress) if progress.completed == 8 && progress.total == 8
     ));
     drop(resumed);
-    assert_eq!(camera.state(), CameraState::Open);
+    assert_eq!(device.state(), DeviceState::Open);
 }
 
 #[test]
@@ -57,8 +57,8 @@ fn malformed_or_regressing_progress_keeps_transfer_active() {
         total: 10,
     }));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-    let mut transfer = camera.upload_file(b"host.cfg", b"device.cfg").unwrap();
+    let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    let mut transfer = device.upload_file(b"host.cfg", b"device.cfg").unwrap();
     let calls = mock.file_access_calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].operation, "file_access_write");
@@ -80,7 +80,7 @@ fn malformed_or_regressing_progress_keeps_transfer_active() {
         })
     ));
     drop(transfer);
-    assert_eq!(camera.state(), CameraState::Transferring);
+    assert_eq!(device.state(), DeviceState::Transferring);
 }
 
 #[test]
@@ -99,8 +99,8 @@ fn changing_a_nonzero_total_cannot_end_the_transfer_early() {
         total: 10,
     }));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-    let mut transfer = camera.download_file(b"device.cfg", b"host.cfg").unwrap();
+    let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    let mut transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
 
     assert!(matches!(
         transfer.progress().unwrap(),
@@ -123,7 +123,7 @@ fn changing_a_nonzero_total_cannot_end_the_transfer_early() {
 }
 
 #[test]
-fn progress_errors_never_release_names_or_unlock_camera_operations() {
+fn progress_errors_never_release_names_or_unlock_device_operations() {
     let mock = MockDriver::new();
     mock.push_file_access_progress(Ok(FileProgressRaw {
         completed: -1,
@@ -139,22 +139,22 @@ fn progress_errors_never_release_names_or_unlock_camera_operations() {
         total: 10,
     }));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
 
-    let mut transfer = camera.download_file(b"device.cfg", b"host.cfg").unwrap();
+    let mut transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
     assert!(transfer.progress().is_err());
     assert!(transfer.progress().is_err());
     assert!(transfer.progress().is_err());
     drop(transfer);
-    assert_eq!(camera.state(), CameraState::Transferring);
-    assert!(camera.start().is_err());
+    assert_eq!(device.state(), DeviceState::Transferring);
+    assert!(device.start().is_err());
     assert!(
-        camera
+        device
             .download_file(b"other.cfg", b"other-host.cfg")
             .is_err()
     );
 
-    let mut resumed = camera.active_file_transfer().unwrap();
+    let mut resumed = device.active_file_transfer().unwrap();
     assert!(matches!(
         resumed.progress().unwrap(),
         FileTransferStatus::Completed(_)
@@ -165,10 +165,10 @@ fn progress_errors_never_release_names_or_unlock_camera_operations() {
 fn closing_an_active_transfer_does_not_stop_measurement() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-    drop(camera.download_file(b"device.cfg", b"host.cfg").unwrap());
+    let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    drop(device.download_file(b"device.cfg", b"host.cfg").unwrap());
 
-    camera.close().unwrap();
+    device.close().unwrap();
     let logs = mock.logs();
     assert!(logs.contains(&"close"));
     assert!(!logs.contains(&"stop"));
@@ -178,17 +178,17 @@ fn closing_an_active_transfer_does_not_stop_measurement() {
 fn invalid_names_are_rejected_before_the_driver_call() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
 
     assert!(matches!(
-        camera.download_file(b"", b"host.cfg"),
+        device.download_file(b"", b"host.cfg"),
         Err(Error::InvalidInput {
             kind: InvalidInput::Empty,
             ..
         })
     ));
     assert!(matches!(
-        camera.upload_file(b"bad\0name", b"device.cfg"),
+        device.upload_file(b"bad\0name", b"device.cfg"),
         Err(Error::InvalidInput {
             kind: InvalidInput::InteriorNul,
             ..
@@ -203,11 +203,11 @@ fn failed_start_is_faulted_and_close_is_the_only_cleanup_call() {
     let mock = MockDriver::new();
     mock.push_file_access_read(Err(DriverError::Status(0x8006_0005_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
 
-    assert!(camera.download_file(b"device.cfg", b"host.cfg").is_err());
-    assert_eq!(camera.state(), CameraState::Faulted);
-    camera.close().unwrap();
+    assert!(device.download_file(b"device.cfg", b"host.cfg").is_err());
+    assert_eq!(device.state(), DeviceState::Faulted);
+    device.close().unwrap();
     let logs = mock.logs();
     assert!(logs.contains(&"close"));
     assert!(!logs.contains(&"stop"));

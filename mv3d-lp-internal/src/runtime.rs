@@ -9,13 +9,13 @@ use std::num::NonZeroIsize;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use crate::camera::Camera;
 use crate::device::{DeviceRecord, IpConfigRaw, IpConfiguration};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
 use crate::driver::{Driver, DriverError, DriverResult, Handle};
 use crate::error::{ContractViolation, Error, InvalidInput};
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
+use crate::opened_device::Device;
 
 const EXPECTED_VERSION: &[u8] = b"1.3.3.3";
 const MAX_DEVICE_COUNT: usize = 256;
@@ -206,20 +206,20 @@ impl Runtime {
         })
     }
 
-    pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Camera<'_>, Error> {
+    pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device<'_>, Error> {
         let address = CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
         let handle = self.open("MV3D_LP_OpenDeviceByIP", |driver, output| {
             driver.open_by_ip(&address, output)
         })?;
-        Ok(Camera::new(self, handle))
+        Ok(Device::new(self, handle))
     }
 
-    pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Camera<'_>, Error> {
+    pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device<'_>, Error> {
         let serial = validated_c_string("MV3D_LP_OpenDeviceBySN", serial_number, 16, false)?;
         let handle = self.open("MV3D_LP_OpenDeviceBySN", |driver, output| {
             driver.open_by_serial(&serial, output)
         })?;
-        Ok(Camera::new(self, handle))
+        Ok(Device::new(self, handle))
     }
 
     pub fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> Result<FrameRecord, Error> {

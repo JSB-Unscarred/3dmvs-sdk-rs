@@ -165,7 +165,7 @@ impl fmt::Display for Error {
                 )
             }
             Self::InvalidState { operation, state } => {
-                write!(f, "{operation} is not valid while the camera is {state}")
+                write!(f, "{operation} is not valid while the device is {state}")
             }
             Self::InvalidInput { operation, kind } => {
                 write!(f, "invalid input for {operation}: {kind:?}")

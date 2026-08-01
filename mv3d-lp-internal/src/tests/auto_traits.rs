@@ -1,5 +1,5 @@
 use crate::{
-    CallbackMeasurement, Camera, DeviceRecord, ExceptionRecord, FileTransfer, FrameRecord,
+    CallbackMeasurement, Device, DeviceRecord, ExceptionRecord, FileTransfer, FrameRecord,
     IpConfiguration, Measurement, ParameterRecord, ParameterValueRecord, Runtime,
 };
 
@@ -22,8 +22,8 @@ macro_rules! assert_not_impl {
 
 assert_not_impl!(Runtime: Send);
 assert_not_impl!(Runtime: Sync);
-assert_not_impl!(Camera<'static>: Send);
-assert_not_impl!(Camera<'static>: Sync);
+assert_not_impl!(Device<'static>: Send);
+assert_not_impl!(Device<'static>: Sync);
 assert_not_impl!(Measurement<'static>: Send);
 assert_not_impl!(Measurement<'static>: Sync);
 assert_not_impl!(CallbackMeasurement<'static>: Send);

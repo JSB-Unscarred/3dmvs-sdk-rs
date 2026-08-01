@@ -73,10 +73,10 @@ fn owned_parameter_record_crosses_the_mock_boundary_without_raw_union_data() {
         increment: 1,
     }));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(std::net::Ipv4Addr::LOCALHOST).unwrap();
+    let mut device = runtime.open_by_ip(std::net::Ipv4Addr::LOCALHOST).unwrap();
 
     assert_eq!(
-        camera.get_parameter(b"Width").unwrap(),
+        device.get_parameter(b"Width").unwrap(),
         ParameterRecord::Integer {
             value: 8,
             minimum: 1,

@@ -242,7 +242,7 @@ impl fmt::Display for ImageType {
 ///
 /// Every buffer is copied before this value crosses the FFI boundary. The
 /// frame therefore remains valid after another image is acquired or the
-/// camera is stopped, cleared, or closed.
+/// device is stopped, cleared, or closed.
 #[non_exhaustive]
 pub struct OwnedFrame {
     pub image_type: ImageType,

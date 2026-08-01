@@ -73,8 +73,8 @@ fn fake_backend_exercises_drop_cleanup_without_native_ffi() {
     let (runtime, _) = active_runtime(&mock);
 
     {
-        let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-        let measurement = camera.start().unwrap();
+        let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+        let measurement = device.start().unwrap();
         drop(measurement);
     }
     runtime.shutdown().unwrap();

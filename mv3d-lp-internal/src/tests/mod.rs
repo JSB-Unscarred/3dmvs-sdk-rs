@@ -1,10 +1,10 @@
 mod abi_contract;
 mod auto_traits;
 mod callbacks;
-mod camera_state;
 mod cleanup_order;
 mod device_conversion;
 mod device_enumeration;
+mod device_state;
 mod ffi_failpoints;
 mod file_transfer;
 mod image_conversion;

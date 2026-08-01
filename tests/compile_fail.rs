@@ -24,8 +24,8 @@ const CASES: &[CompileFailCase] = &[
         error_code: "E0521",
     },
     CompileFailCase {
-        bin: "camera_outlives_sdk",
-        source: include_str!("compile_fail_cases/lifecycle/camera_outlives_sdk.rs"),
+        bin: "device_outlives_sdk",
+        source: include_str!("compile_fail_cases/lifecycle/device_outlives_sdk.rs"),
         error_code: "E0515",
     },
     CompileFailCase {
@@ -39,18 +39,18 @@ const CASES: &[CompileFailCase] = &[
         error_code: "E0515",
     },
     CompileFailCase {
-        bin: "reborrow_camera_while_measuring",
-        source: include_str!("compile_fail_cases/lifecycle/reborrow_camera_while_measuring.rs"),
+        bin: "reborrow_device_while_measuring",
+        source: include_str!("compile_fail_cases/lifecycle/reborrow_device_while_measuring.rs"),
         error_code: "E0499",
     },
     CompileFailCase {
-        bin: "reborrow_camera_while_transferring",
-        source: include_str!("compile_fail_cases/lifecycle/reborrow_camera_while_transferring.rs"),
+        bin: "reborrow_device_while_transferring",
+        source: include_str!("compile_fail_cases/lifecycle/reborrow_device_while_transferring.rs"),
         error_code: "E0499",
     },
     CompileFailCase {
-        bin: "shutdown_while_camera_borrowed",
-        source: include_str!("compile_fail_cases/lifecycle/shutdown_while_camera_borrowed.rs"),
+        bin: "shutdown_while_device_borrowed",
+        source: include_str!("compile_fail_cases/lifecycle/shutdown_while_device_borrowed.rs"),
         error_code: "E0505",
     },
 ];

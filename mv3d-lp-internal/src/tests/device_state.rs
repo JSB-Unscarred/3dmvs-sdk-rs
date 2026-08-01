@@ -1,8 +1,8 @@
 use std::net::Ipv4Addr;
 
-use crate::camera::CameraState;
 use crate::driver::DriverError;
 use crate::error::{ContractViolation, Error};
+use crate::opened_device::DeviceState;
 
 use super::mock_driver::{MockDriver, active_runtime, mock_handle};
 
@@ -10,14 +10,14 @@ use super::mock_driver::{MockDriver, active_runtime, mock_handle};
 fn start_and_stop_update_state_only_after_success() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
-    assert_eq!(camera.state(), CameraState::Open);
-    let measurement = camera.start().unwrap();
-    assert_eq!(measurement.state(), CameraState::Measuring);
+    assert_eq!(device.state(), DeviceState::Open);
+    let measurement = device.start().unwrap();
+    assert_eq!(measurement.state(), DeviceState::Measuring);
     measurement.stop().unwrap();
-    assert_eq!(camera.state(), CameraState::Open);
-    camera.close().unwrap();
+    assert_eq!(device.state(), DeviceState::Open);
+    device.close().unwrap();
     assert_eq!(
         mock.logs(),
         vec![
@@ -32,19 +32,19 @@ fn start_and_stop_update_state_only_after_success() {
 }
 
 #[test]
-fn failed_transition_faults_the_camera() {
+fn failed_transition_faults_the_device() {
     let mock = MockDriver::new();
     mock.push_start(Err(DriverError::Status(0x8006_0003_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
-    assert!(matches!(camera.start(), Err(Error::Sdk { .. })));
-    assert_eq!(camera.state(), CameraState::Faulted);
+    assert!(matches!(device.start(), Err(Error::Sdk { .. })));
+    assert_eq!(device.state(), DeviceState::Faulted);
     assert!(matches!(
-        camera.clear_buffer(),
+        device.clear_buffer(),
         Err(Error::InvalidState { .. })
     ));
-    camera.close().unwrap();
+    device.close().unwrap();
 }
 
 #[test]

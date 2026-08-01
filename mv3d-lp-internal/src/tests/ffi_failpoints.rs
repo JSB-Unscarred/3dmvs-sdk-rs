@@ -89,10 +89,10 @@ fn previously_missing_control_failures_are_observable_without_poisoning_the_runt
         })
     ));
 
-    let mut camera = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
     mock.push_set_parameter(Err(DriverError::Status(INJECTED_STATUS)));
     assert!(matches!(
-        camera.set_parameter(b"Enabled", &ParameterValueRecord::Bool(true)),
+        device.set_parameter(b"Enabled", &ParameterValueRecord::Bool(true)),
         Err(Error::Sdk {
             operation: "MV3D_LP_SetParam",
             status: INJECTED_STATUS,
@@ -100,14 +100,14 @@ fn previously_missing_control_failures_are_observable_without_poisoning_the_runt
     ));
     mock.push_execute(Err(DriverError::Status(INJECTED_STATUS)));
     assert!(matches!(
-        camera.execute(b"Reset"),
+        device.execute(b"Reset"),
         Err(Error::Sdk {
             operation: "MV3D_LP_Execute",
             status: INJECTED_STATUS,
         })
     ));
 
-    camera.close().unwrap();
+    device.close().unwrap();
     runtime.shutdown().unwrap();
     assert_eq!(
         mock.operations(),

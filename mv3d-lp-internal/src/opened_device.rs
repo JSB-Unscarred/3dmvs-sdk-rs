@@ -13,7 +13,7 @@ use crate::parameter::{ParameterRecord, ParameterValueRecord};
 use crate::runtime::Runtime;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CameraState {
+pub enum DeviceState {
     Open,
     Measuring,
     CallbackMeasuring,
@@ -22,7 +22,7 @@ pub enum CameraState {
     CallbackRetired,
 }
 
-impl CameraState {
+impl DeviceState {
     fn as_str(self) -> &'static str {
         match self {
             Self::Open => "open",
@@ -36,15 +36,15 @@ impl CameraState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CleanupError {
+pub struct DeviceCleanupError {
     pub stop: Option<Box<Error>>,
     pub close: Option<Box<Error>>,
 }
 
-pub struct Camera<'runtime> {
+pub struct Device<'runtime> {
     runtime: &'runtime Runtime,
     handle: Option<Handle>,
-    state: CameraState,
+    state: DeviceState,
     pending_transfer: Option<ActiveFileTransfer>,
     image_registration: Option<CallbackRegistration>,
     exception_registration: Option<CallbackRegistration>,
@@ -53,12 +53,12 @@ pub struct Camera<'runtime> {
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
-impl<'runtime> Camera<'runtime> {
+impl<'runtime> Device<'runtime> {
     pub(crate) fn new(runtime: &'runtime Runtime, handle: Handle) -> Self {
         Self {
             runtime,
             handle: Some(handle),
-            state: CameraState::Open,
+            state: DeviceState::Open,
             pending_transfer: None,
             image_registration: None,
             exception_registration: None,
@@ -68,18 +68,18 @@ impl<'runtime> Camera<'runtime> {
         }
     }
 
-    pub fn state(&self) -> CameraState {
+    pub fn state(&self) -> DeviceState {
         self.state
     }
 
     pub fn start(&mut self) -> Result<Measurement<'_>, Error> {
-        self.require_state("MV3D_LP_StartMeasure", &[CameraState::Open])?;
+        self.require_state("MV3D_LP_StartMeasure", &[DeviceState::Open])?;
         let result = self
             .runtime
             .call("MV3D_LP_StartMeasure", |driver| driver.start(self.handle()));
         match result {
             Ok(()) => {
-                self.state = CameraState::Measuring;
+                self.state = DeviceState::Measuring;
                 let handle = self.handle();
                 Ok(Measurement {
                     runtime: self.runtime,
@@ -90,7 +90,7 @@ impl<'runtime> Camera<'runtime> {
                 })
             }
             Err(error) => {
-                self.state = CameraState::Faulted;
+                self.state = DeviceState::Faulted;
                 Err(error)
             }
         }
@@ -101,7 +101,7 @@ impl<'runtime> Camera<'runtime> {
         sink: FrameCallbackSink,
     ) -> Result<CallbackMeasurement<'_>, Error> {
         const OPERATION: &str = "MV3D_LP_RegisterImageDataCallBack";
-        self.require_state(OPERATION, &[CameraState::Open])?;
+        self.require_state(OPERATION, &[DeviceState::Open])?;
         if self.image_callback_attempted {
             return Err(Error::InvalidState {
                 operation: OPERATION,
@@ -116,7 +116,7 @@ impl<'runtime> Camera<'runtime> {
         });
         if let Err(error) = register {
             registration.deactivate();
-            self.state = CameraState::Faulted;
+            self.state = DeviceState::Faulted;
             return Err(error);
         }
 
@@ -125,7 +125,7 @@ impl<'runtime> Camera<'runtime> {
             .call("MV3D_LP_StartMeasure", |driver| driver.start(self.handle()));
         match start {
             Ok(()) => {
-                self.state = CameraState::CallbackMeasuring;
+                self.state = DeviceState::CallbackMeasuring;
                 let handle = self.handle();
                 self.image_registration = Some(registration);
                 Ok(CallbackMeasurement {
@@ -139,7 +139,7 @@ impl<'runtime> Camera<'runtime> {
             }
             Err(error) => {
                 registration.deactivate();
-                self.state = CameraState::Faulted;
+                self.state = DeviceState::Faulted;
                 Err(error)
             }
         }
@@ -150,7 +150,7 @@ impl<'runtime> Camera<'runtime> {
         sink: ExceptionCallbackSink,
     ) -> Result<(), Error> {
         const OPERATION: &str = "MV3D_LP_RegisterExceptionCallBack";
-        self.require_state(OPERATION, &[CameraState::Open])?;
+        self.require_state(OPERATION, &[DeviceState::Open])?;
         if self.exception_callback_attempted {
             return Err(Error::InvalidState {
                 operation: OPERATION,
@@ -170,7 +170,7 @@ impl<'runtime> Camera<'runtime> {
             }
             Err(error) => {
                 registration.deactivate();
-                self.state = CameraState::Faulted;
+                self.state = DeviceState::Faulted;
                 Err(error)
             }
         }
@@ -185,7 +185,7 @@ impl<'runtime> Camera<'runtime> {
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
         self.require_state(
             "MV3D_LP_ClearDataBuffer",
-            &[CameraState::Open, CameraState::Measuring],
+            &[DeviceState::Open, DeviceState::Measuring],
         )?;
         self.runtime.call("MV3D_LP_ClearDataBuffer", |driver| {
             driver.clear_buffer(self.handle())
@@ -233,11 +233,11 @@ impl<'runtime> Camera<'runtime> {
         })
     }
 
-    pub fn download_file<'camera>(
-        &'camera mut self,
+    pub fn download_file<'device>(
+        &'device mut self,
         device_file_name: &[u8],
         user_file_name: &[u8],
-    ) -> Result<FileTransfer<'camera, 'runtime>, Error> {
+    ) -> Result<FileTransfer<'device, 'runtime>, Error> {
         self.begin_file_transfer(
             "MV3D_LP_FileAccessRead",
             FileTransferDirection::DeviceToHost,
@@ -246,11 +246,11 @@ impl<'runtime> Camera<'runtime> {
         )
     }
 
-    pub fn upload_file<'camera>(
-        &'camera mut self,
+    pub fn upload_file<'device>(
+        &'device mut self,
         user_file_name: &[u8],
         device_file_name: &[u8],
-    ) -> Result<FileTransfer<'camera, 'runtime>, Error> {
+    ) -> Result<FileTransfer<'device, 'runtime>, Error> {
         self.begin_file_transfer(
             "MV3D_LP_FileAccessWrite",
             FileTransferDirection::HostToDevice,
@@ -260,14 +260,14 @@ impl<'runtime> Camera<'runtime> {
     }
 
     pub fn active_file_transfer(&mut self) -> Option<FileTransfer<'_, 'runtime>> {
-        if self.state == CameraState::Transferring && self.pending_transfer.is_some() {
+        if self.state == DeviceState::Transferring && self.pending_transfer.is_some() {
             let direction = self
                 .pending_transfer
                 .as_ref()
                 .expect("checked above")
                 .direction;
             Some(FileTransfer {
-                camera: self,
+                device: self,
                 direction,
             })
         } else {
@@ -275,14 +275,14 @@ impl<'runtime> Camera<'runtime> {
         }
     }
 
-    fn begin_file_transfer<'camera>(
-        &'camera mut self,
+    fn begin_file_transfer<'device>(
+        &'device mut self,
         operation: &'static str,
         direction: FileTransferDirection,
         user_file_name: &[u8],
         device_file_name: &[u8],
-    ) -> Result<FileTransfer<'camera, 'runtime>, Error> {
-        self.require_state(operation, &[CameraState::Open])?;
+    ) -> Result<FileTransfer<'device, 'runtime>, Error> {
+        self.require_state(operation, &[DeviceState::Open])?;
         let user_file_name = validated_file_name(operation, user_file_name)?;
         let device_file_name = validated_file_name(operation, device_file_name)?;
         self.pending_transfer = Some(ActiveFileTransfer {
@@ -312,16 +312,16 @@ impl<'runtime> Camera<'runtime> {
 
         match result {
             Ok(()) => {
-                self.state = CameraState::Transferring;
+                self.state = DeviceState::Transferring;
                 Ok(FileTransfer {
-                    camera: self,
+                    device: self,
                     direction,
                 })
             }
             Err(error) => {
                 // A failed asynchronous start has undocumented partial-state semantics. Retain
                 // both names and allow only CloseDevice, mirroring failed measurement starts.
-                self.state = CameraState::Faulted;
+                self.state = DeviceState::Faulted;
                 Err(error)
             }
         }
@@ -330,7 +330,7 @@ impl<'runtime> Camera<'runtime> {
     fn file_transfer_progress(&mut self) -> Result<FileTransferStatus, Error> {
         self.require_state(
             "MV3D_LP_GetFileAccessProgress",
-            &[CameraState::Transferring],
+            &[DeviceState::Transferring],
         )?;
         let raw = self
             .runtime
@@ -401,18 +401,18 @@ impl<'runtime> Camera<'runtime> {
 
         if progress.total > 0 && progress.completed == progress.total {
             self.pending_transfer.take();
-            self.state = CameraState::Open;
+            self.state = DeviceState::Open;
             Ok(FileTransferStatus::Completed(progress))
         } else {
             Ok(FileTransferStatus::Running(progress))
         }
     }
 
-    pub fn close(mut self) -> Result<(), CleanupError> {
+    pub fn close(mut self) -> Result<(), DeviceCleanupError> {
         self.cleanup()
     }
 
-    fn cleanup(&mut self) -> Result<(), CleanupError> {
+    fn cleanup(&mut self) -> Result<(), DeviceCleanupError> {
         if let Some(mut registration) = self.image_registration.take() {
             registration.deactivate();
         }
@@ -425,8 +425,8 @@ impl<'runtime> Camera<'runtime> {
 
         let stop = if matches!(
             self.state,
-            CameraState::Measuring | CameraState::CallbackMeasuring
-        ) || (self.state == CameraState::Faulted && self.pending_transfer.is_none())
+            DeviceState::Measuring | DeviceState::CallbackMeasuring
+        ) || (self.state == DeviceState::Faulted && self.pending_transfer.is_none())
         {
             self.runtime
                 .cleanup_call("MV3D_LP_StopMeasure", |driver| driver.stop(handle))
@@ -453,19 +453,19 @@ impl<'runtime> Camera<'runtime> {
         if stop.is_none() && close.is_none() {
             Ok(())
         } else {
-            Err(CleanupError { stop, close })
+            Err(DeviceCleanupError { stop, close })
         }
     }
 
     fn handle(&self) -> Handle {
-        self.handle.expect("a live camera always has a handle")
+        self.handle.expect("a live device always has a handle")
     }
 
     fn require_usable(&self, operation: &'static str) -> Result<(), Error> {
-        self.require_state(operation, &[CameraState::Open, CameraState::Measuring])
+        self.require_state(operation, &[DeviceState::Open, DeviceState::Measuring])
     }
 
-    fn require_state(&self, operation: &'static str, allowed: &[CameraState]) -> Result<(), Error> {
+    fn require_state(&self, operation: &'static str, allowed: &[DeviceState]) -> Result<(), Error> {
         if allowed.contains(&self.state) {
             Ok(())
         } else {
@@ -485,13 +485,13 @@ struct ActiveFileTransfer {
     last_total: Option<u64>,
 }
 
-/// An asynchronous file transfer borrowing its camera exclusively.
+/// An asynchronous file transfer borrowing its device exclusively.
 ///
-/// Dropping this guard does not cancel the transfer. The camera retains both
-/// filenames, and [`Camera::active_file_transfer`] can resume progress polling.
+/// Dropping this guard does not cancel the transfer. The device retains both
+/// filenames, and [`Device::active_file_transfer`] can resume progress polling.
 #[must_use = "dropping FileTransfer does not cancel the device transfer"]
-pub struct FileTransfer<'camera, 'runtime> {
-    camera: &'camera mut Camera<'runtime>,
+pub struct FileTransfer<'device, 'runtime> {
+    device: &'device mut Device<'runtime>,
     direction: FileTransferDirection,
 }
 
@@ -501,7 +501,7 @@ impl FileTransfer<'_, '_> {
     }
 
     pub fn progress(&mut self) -> Result<FileTransferStatus, Error> {
-        self.camera.file_transfer_progress()
+        self.device.file_transfer_progress()
     }
 }
 
@@ -522,17 +522,17 @@ fn validated_file_name(operation: &'static str, bytes: &[u8]) -> Result<CString,
 ///
 /// This guard deliberately does not expose pull acquisition or buffer clearing. Its callback
 /// registration is revoked and drained before `MV3D_LP_StopMeasure` is called.
-pub struct CallbackMeasurement<'camera> {
-    runtime: &'camera Runtime,
+pub struct CallbackMeasurement<'device> {
+    runtime: &'device Runtime,
     handle: Handle,
-    state: &'camera mut CameraState,
-    registration: &'camera mut Option<CallbackRegistration>,
+    state: &'device mut DeviceState,
+    registration: &'device mut Option<CallbackRegistration>,
     active: bool,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
 impl CallbackMeasurement<'_> {
-    pub fn state(&self) -> CameraState {
+    pub fn state(&self) -> DeviceState {
         *self.state
     }
 
@@ -568,11 +568,11 @@ impl CallbackMeasurement<'_> {
         };
         match result {
             Ok(()) => {
-                *self.state = CameraState::CallbackRetired;
+                *self.state = DeviceState::CallbackRetired;
                 Ok(())
             }
             Err(error) => {
-                *self.state = CameraState::Faulted;
+                *self.state = DeviceState::Faulted;
                 Err(error)
             }
         }
@@ -585,7 +585,7 @@ impl CallbackMeasurement<'_> {
     }
 
     fn require_measuring(&self, operation: &'static str) -> Result<(), Error> {
-        if *self.state == CameraState::CallbackMeasuring {
+        if *self.state == DeviceState::CallbackMeasuring {
             Ok(())
         } else {
             Err(Error::InvalidState {
@@ -607,19 +607,19 @@ impl Drop for CallbackMeasurement<'_> {
     }
 }
 
-/// A measuring session that exclusively borrows its camera state.
+/// A measuring session that exclusively borrows its device state.
 ///
 /// Dropping the value makes a best-effort call to `MV3D_LP_StopMeasure`.
-pub struct Measurement<'camera> {
-    runtime: &'camera Runtime,
+pub struct Measurement<'device> {
+    runtime: &'device Runtime,
     handle: Handle,
-    state: &'camera mut CameraState,
+    state: &'device mut DeviceState,
     active: bool,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
 impl Measurement<'_> {
-    pub fn state(&self) -> CameraState {
+    pub fn state(&self) -> DeviceState {
         *self.state
     }
 
@@ -695,18 +695,18 @@ impl Measurement<'_> {
         };
         match result {
             Ok(()) => {
-                *self.state = CameraState::Open;
+                *self.state = DeviceState::Open;
                 Ok(())
             }
             Err(error) => {
-                *self.state = CameraState::Faulted;
+                *self.state = DeviceState::Faulted;
                 Err(error)
             }
         }
     }
 
     fn require_measuring(&self, operation: &'static str) -> Result<(), Error> {
-        if *self.state == CameraState::Measuring {
+        if *self.state == DeviceState::Measuring {
             Ok(())
         } else {
             Err(Error::InvalidState {
@@ -750,7 +750,7 @@ fn validate_parameter_value(
     Ok(())
 }
 
-impl Drop for Camera<'_> {
+impl Drop for Device<'_> {
     fn drop(&mut self) {
         let _ = self.cleanup();
     }

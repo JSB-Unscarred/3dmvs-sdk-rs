@@ -160,7 +160,7 @@ pub enum CallbackWorkerExit {
 /// handler panic.
 ///
 /// Dropping this value detaches the thread. The detached thread owns only its
-/// receiver, handler, and already-owned events; it does not retain a camera,
+/// receiver, handler, and already-owned events; it does not retain a device,
 /// SDK handle, or native callback payload.
 #[must_use = "dropping CallbackWorker detaches its Rust worker thread"]
 pub struct CallbackWorker {

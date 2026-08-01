@@ -3,8 +3,8 @@ use std::num::NonZeroUsize;
 use std::sync::mpsc::Receiver;
 
 use mv3d_lp::{
-    CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Camera, CameraState,
-    DeviceException, DeviceExceptionType, DeviceInfo, ImageFileFormat, ImageProcessor, ImageType,
+    CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Device, DeviceException,
+    DeviceExceptionType, DeviceInfo, DeviceState, ImageFileFormat, ImageProcessor, ImageType,
     IpConfiguration, Measurement, OwnedFrame, OwnedImage, Result, Sdk, SdkText,
 };
 
@@ -12,34 +12,34 @@ use mv3d_lp::{
 #[allow(clippy::type_complexity)]
 fn public_lifecycle_and_control_methods_have_safe_signatures() {
     let _: fn() -> Result<Sdk> = Sdk::initialize;
-    let _: for<'sdk> fn(&'sdk Sdk, Ipv4Addr) -> Result<Camera<'sdk>> = Sdk::open_by_ip;
-    let _: for<'sdk> fn(&'sdk Sdk, &mv3d_lp::SerialNumber) -> Result<Camera<'sdk>> =
+    let _: for<'sdk> fn(&'sdk Sdk, Ipv4Addr) -> Result<Device<'sdk>> = Sdk::open_by_ip;
+    let _: for<'sdk> fn(&'sdk Sdk, &mv3d_lp::SerialNumber) -> Result<Device<'sdk>> =
         Sdk::open_by_serial;
     let _: fn(Sdk) -> Result<()> = Sdk::shutdown;
     let _: for<'sdk> fn(&'sdk Sdk) -> ImageProcessor<'sdk> = Sdk::image_processor;
-    let _ = Camera::start;
-    let _: for<'camera> fn(
-        &'camera mut Camera<'static>,
+    let _ = Device::start;
+    let _: for<'device> fn(
+        &'device mut Device<'static>,
         CallbackOptions,
-    ) -> Result<(CallbackMeasurement<'camera>, Receiver<OwnedFrame>)> =
-        Camera::<'static>::start_receiving;
-    let _: for<'camera> fn(
-        &'camera mut Camera<'static>,
+    ) -> Result<(CallbackMeasurement<'device>, Receiver<OwnedFrame>)> =
+        Device::<'static>::start_receiving;
+    let _: for<'device> fn(
+        &'device mut Device<'static>,
         CallbackOptions,
         fn(OwnedFrame),
-    ) -> Result<(CallbackMeasurement<'camera>, CallbackWorker)> =
-        Camera::<'static>::start_with_callback::<fn(OwnedFrame)>;
-    let _: for<'camera> fn(
-        &'camera mut Camera<'static>,
+    ) -> Result<(CallbackMeasurement<'device>, CallbackWorker)> =
+        Device::<'static>::start_with_callback::<fn(OwnedFrame)>;
+    let _: for<'device> fn(
+        &'device mut Device<'static>,
         CallbackOptions,
-    ) -> Result<Receiver<DeviceException>> = Camera::<'static>::exception_receiver;
-    let _: for<'camera> fn(
-        &'camera mut Camera<'static>,
+    ) -> Result<Receiver<DeviceException>> = Device::<'static>::exception_receiver;
+    let _: for<'device> fn(
+        &'device mut Device<'static>,
         CallbackOptions,
         fn(DeviceException),
-    ) -> Result<CallbackWorker> = Camera::<'static>::on_exception::<fn(DeviceException)>;
-    let _ = Camera::clear_buffer;
-    let _: fn(&CallbackMeasurement<'static>) -> CameraState = CallbackMeasurement::<'static>::state;
+    ) -> Result<CallbackWorker> = Device::<'static>::on_exception::<fn(DeviceException)>;
+    let _ = Device::clear_buffer;
+    let _: fn(&CallbackMeasurement<'static>) -> DeviceState = CallbackMeasurement::<'static>::state;
     let _: fn(&mut CallbackMeasurement<'static>) -> Result<()> =
         CallbackMeasurement::<'static>::soft_trigger;
     let _: fn(&CallbackMeasurement<'static>) -> CallbackStats =
@@ -49,9 +49,9 @@ fn public_lifecycle_and_control_methods_have_safe_signatures() {
     let _ = Measurement::soft_trigger;
     let _ = Measurement::clear_buffer;
     let _ = Measurement::stop;
-    let _ = Camera::download_file;
-    let _ = Camera::upload_file;
-    let _ = Camera::active_file_transfer;
+    let _ = Device::download_file;
+    let _ = Device::upload_file;
+    let _ = Device::active_file_transfer;
     let _ = ImageProcessor::depth_to_point_cloud;
     let _ = ImageProcessor::depth_to_round_point_cloud;
     let _ = ImageProcessor::convert;

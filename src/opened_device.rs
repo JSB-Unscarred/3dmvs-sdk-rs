@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum CameraState {
+pub enum DeviceState {
     Open,
     Measuring,
     CallbackMeasuring,
@@ -20,17 +20,17 @@ pub enum CameraState {
     CallbackRetired,
 }
 
-/// A borrowed device session. The camera cannot outlive its owning [`crate::Sdk`].
+/// An opened laser-profiler device borrowing its owning [`crate::Sdk`].
 ///
 /// It is intentionally neither `Send` nor `Sync`, and no native handle is
 /// exposed. All SDK calls remain serialized inside the private crate.
-pub struct Camera<'sdk> {
-    inner: mv3d_lp_internal::Camera<'sdk>,
+pub struct Device<'sdk> {
+    inner: mv3d_lp_internal::Device<'sdk>,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
-impl<'sdk> Camera<'sdk> {
-    pub(crate) fn from_internal(inner: mv3d_lp_internal::Camera<'sdk>) -> Self {
+impl<'sdk> Device<'sdk> {
+    pub(crate) fn from_internal(inner: mv3d_lp_internal::Device<'sdk>) -> Self {
         Self {
             inner,
             _not_send_or_sync: PhantomData,
@@ -38,20 +38,20 @@ impl<'sdk> Camera<'sdk> {
     }
 
     #[must_use]
-    pub fn state(&self) -> CameraState {
+    pub fn state(&self) -> DeviceState {
         match self.inner.state() {
-            mv3d_lp_internal::CameraState::Open => CameraState::Open,
-            mv3d_lp_internal::CameraState::Measuring => CameraState::Measuring,
-            mv3d_lp_internal::CameraState::CallbackMeasuring => CameraState::CallbackMeasuring,
-            mv3d_lp_internal::CameraState::Faulted => CameraState::Faulted,
-            mv3d_lp_internal::CameraState::Transferring => CameraState::Transferring,
-            mv3d_lp_internal::CameraState::CallbackRetired => CameraState::CallbackRetired,
+            mv3d_lp_internal::DeviceState::Open => DeviceState::Open,
+            mv3d_lp_internal::DeviceState::Measuring => DeviceState::Measuring,
+            mv3d_lp_internal::DeviceState::CallbackMeasuring => DeviceState::CallbackMeasuring,
+            mv3d_lp_internal::DeviceState::Faulted => DeviceState::Faulted,
+            mv3d_lp_internal::DeviceState::Transferring => DeviceState::Transferring,
+            mv3d_lp_internal::DeviceState::CallbackRetired => DeviceState::CallbackRetired,
         }
     }
 
     /// Starts acquisition and returns an exclusive measurement guard.
     ///
-    /// A failed start leaves the camera faulted so only cleanup remains valid.
+    /// A failed start leaves the device faulted so only cleanup remains valid.
     pub fn start(&mut self) -> Result<Measurement<'_>> {
         self.inner
             .start()
@@ -62,7 +62,7 @@ impl<'sdk> Camera<'sdk> {
     /// Registers native image delivery, starts measurement, and returns a bounded receiver.
     ///
     /// This is a one-shot mode for the current device handle. After the returned callback
-    /// measurement stops, close and reopen the camera before starting another acquisition.
+    /// measurement stops, close and reopen the device before starting another acquisition.
     ///
     /// # Native contract
     ///
@@ -83,7 +83,7 @@ impl<'sdk> Camera<'sdk> {
 
     /// Starts callback acquisition and invokes `handler` serially on a Rust worker thread.
     ///
-    /// Like [`Camera::start_receiving`], this is a one-shot image registration for the current
+    /// Like [`Device::start_receiving`], this is a one-shot image registration for the current
     /// device handle.
     pub fn start_with_callback<F>(
         &mut self,
@@ -102,9 +102,9 @@ impl<'sdk> Camera<'sdk> {
             .map_err(Error::from)
     }
 
-    /// Registers an owned exception-event receiver for the lifetime of this camera handle.
+    /// Registers an owned exception-event receiver for the lifetime of this device handle.
     ///
-    /// Exception registration is one-shot. This method and [`Camera::on_exception`] are mutually
+    /// Exception registration is one-shot. This method and [`Device::on_exception`] are mutually
     /// exclusive for a device handle, even if the receiver or worker is later dropped.
     /// The audited LPSDK 1.3.3.3 contract assumes that each exception descriptor remains readable
     /// until the native callback returns; the event is copied within that window, which is not a
@@ -123,7 +123,7 @@ impl<'sdk> Camera<'sdk> {
     /// Invokes an exception handler serially on a Rust worker thread.
     ///
     /// This consumes the same one-shot exception registration as
-    /// [`Camera::exception_receiver`].
+    /// [`Device::exception_receiver`].
     pub fn on_exception<F>(
         &mut self,
         options: CallbackOptions,
@@ -170,17 +170,17 @@ impl<'sdk> Camera<'sdk> {
         self.inner.execute(key.as_bytes()).map_err(Error::from)
     }
 
-    /// Starts copying a file from the camera to the host.
+    /// Starts copying a file from the device to the host.
     ///
     /// Names are passed as original narrow-string bytes because the vendor SDK
     /// does not document their encoding. The wrapper retains both names until the observed
-    /// terminal progress state or a successful camera close. Those termination semantics are an
+    /// terminal progress state or a successful device close. Those termination semantics are an
     /// audited LPSDK 1.3.3.3 assumption rather than a separate vendor guarantee.
-    pub fn download_file<'camera>(
-        &'camera mut self,
+    pub fn download_file<'device>(
+        &'device mut self,
         device_file_name: &[u8],
         local_file_name: &[u8],
-    ) -> Result<FileTransfer<'camera, 'sdk>> {
+    ) -> Result<FileTransfer<'device, 'sdk>> {
         self.inner
             .download_file(device_file_name, local_file_name)
             .map(|inner| FileTransfer {
@@ -190,15 +190,15 @@ impl<'sdk> Camera<'sdk> {
             .map_err(Error::from)
     }
 
-    /// Starts copying a host file into the camera.
+    /// Starts copying a host file into the device.
     ///
     /// This uses the same retained-name and native termination assumptions as
-    /// [`Camera::download_file`].
-    pub fn upload_file<'camera>(
-        &'camera mut self,
+    /// [`Device::download_file`].
+    pub fn upload_file<'device>(
+        &'device mut self,
         local_file_name: &[u8],
         device_file_name: &[u8],
-    ) -> Result<FileTransfer<'camera, 'sdk>> {
+    ) -> Result<FileTransfer<'device, 'sdk>> {
         self.inner
             .upload_file(local_file_name, device_file_name)
             .map(|inner| FileTransfer {
@@ -224,18 +224,18 @@ impl<'sdk> Camera<'sdk> {
     }
 }
 
-/// An active native-callback acquisition session borrowing its camera exclusively.
+/// An active native-callback acquisition session borrowing its device exclusively.
 ///
 /// The guard revokes and drains Rust callback dispatch before stopping the SDK. It intentionally
 /// exposes neither pull acquisition nor `clear_buffer`.
 #[must_use = "dropping CallbackMeasurement stops callback acquisition"]
-pub struct CallbackMeasurement<'camera> {
-    inner: mv3d_lp_internal::CallbackMeasurement<'camera>,
+pub struct CallbackMeasurement<'device> {
+    inner: mv3d_lp_internal::CallbackMeasurement<'device>,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
-impl<'camera> CallbackMeasurement<'camera> {
-    fn from_internal(inner: mv3d_lp_internal::CallbackMeasurement<'camera>) -> Self {
+impl<'device> CallbackMeasurement<'device> {
+    fn from_internal(inner: mv3d_lp_internal::CallbackMeasurement<'device>) -> Self {
         Self {
             inner,
             _not_send_or_sync: PhantomData,
@@ -243,14 +243,14 @@ impl<'camera> CallbackMeasurement<'camera> {
     }
 
     #[must_use]
-    pub fn state(&self) -> CameraState {
+    pub fn state(&self) -> DeviceState {
         match self.inner.state() {
-            mv3d_lp_internal::CameraState::Open => CameraState::Open,
-            mv3d_lp_internal::CameraState::Measuring => CameraState::Measuring,
-            mv3d_lp_internal::CameraState::CallbackMeasuring => CameraState::CallbackMeasuring,
-            mv3d_lp_internal::CameraState::Faulted => CameraState::Faulted,
-            mv3d_lp_internal::CameraState::Transferring => CameraState::Transferring,
-            mv3d_lp_internal::CameraState::CallbackRetired => CameraState::CallbackRetired,
+            mv3d_lp_internal::DeviceState::Open => DeviceState::Open,
+            mv3d_lp_internal::DeviceState::Measuring => DeviceState::Measuring,
+            mv3d_lp_internal::DeviceState::CallbackMeasuring => DeviceState::CallbackMeasuring,
+            mv3d_lp_internal::DeviceState::Faulted => DeviceState::Faulted,
+            mv3d_lp_internal::DeviceState::Transferring => DeviceState::Transferring,
+            mv3d_lp_internal::DeviceState::CallbackRetired => DeviceState::CallbackRetired,
         }
     }
 
@@ -321,18 +321,18 @@ fn delivery_from_try_send<T>(
     }
 }
 
-/// An active pull-acquisition session borrowing its camera exclusively.
+/// An active pull-acquisition session borrowing its device exclusively.
 ///
 /// Dropping this guard makes a best-effort attempt to stop measurement. Call
 /// [`Measurement::stop`] to observe a stop error explicitly.
 #[must_use = "dropping Measurement stops acquisition"]
-pub struct Measurement<'camera> {
-    inner: mv3d_lp_internal::Measurement<'camera>,
+pub struct Measurement<'device> {
+    inner: mv3d_lp_internal::Measurement<'device>,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
-impl<'camera> Measurement<'camera> {
-    fn from_internal(inner: mv3d_lp_internal::Measurement<'camera>) -> Self {
+impl<'device> Measurement<'device> {
+    fn from_internal(inner: mv3d_lp_internal::Measurement<'device>) -> Self {
         Self {
             inner,
             _not_send_or_sync: PhantomData,

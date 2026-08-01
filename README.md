@@ -44,17 +44,17 @@ fn main() -> Result<()> {
     let sdk = Sdk::initialize()?;
     println!("LPSDK {}", sdk.version());
 
-    for device in sdk.devices()? {
-        println!("{}", device.model_name.to_string_lossy());
+    for info in sdk.devices()? {
+        println!("{}", info.model_name.to_string_lossy());
     }
 
-    let mut camera = sdk.open_by_ip(Ipv4Addr::new(192, 168, 1, 100))?;
-    camera.set_parameter(
+    let mut device = sdk.open_by_ip(Ipv4Addr::new(192, 168, 1, 100))?;
+    device.set_parameter(
         &ParamKey::new("ExposureTime")?,
         ParameterValue::Float(1000.0),
     )?;
 
-    let mut measurement = camera.start()?;
+    let mut measurement = device.start()?;
     let frame = measurement.get_image(Duration::from_millis(100))?;
     println!(
         "frame {}: {}x{}, {} bytes",
@@ -64,22 +64,22 @@ fn main() -> Result<()> {
         frame.data.len()
     );
     measurement.stop()?;
-    camera.close()?;
+    device.close()?;
     sdk.shutdown()
 }
 ```
 
 也可使用 `SerialNumber` 和 `Sdk::open_by_serial`。SDK 返回的文本由 `SdkText` 保留原始有界字节；需要 UTF-8 时使用 `to_str()`，仅展示时可使用 `to_string_lossy()`。
 
-`Sdk` 和 `Camera` 均不是 `Send` 或 `Sync`。`Camera` 借用 `Sdk`，因此相机存活时不能关闭 SDK。原生 runtime 只允许一个活动实例；首次初始化失败或 `Finalize` 后进入终态，不能在同一进程中重试。
+`Sdk` 和 `Device` 均不是 `Send` 或 `Sync`。`Device` 借用 `Sdk`，因此设备存活时不能关闭 SDK。原生 runtime 只允许一个活动实例；首次初始化失败或 `Finalize` 后进入终态，不能在同一进程中重试。
 
 ### 回调采集
 
 ```rust,no_run
-use mv3d_lp::{CallbackOptions, Camera, Result};
+use mv3d_lp::{CallbackOptions, Device, Result};
 
-fn receive_one_frame(camera: &mut Camera<'_>) -> Result<()> {
-    let (measurement, frames) = camera.start_receiving(CallbackOptions::default())?;
+fn receive_one_frame(device: &mut Device<'_>) -> Result<()> {
+    let (measurement, frames) = device.start_receiving(CallbackOptions::default())?;
 
     if let Ok(frame) = frames.recv() {
         println!("callback frame {}, {} bytes", frame.frame_number, frame.data.len());
@@ -107,7 +107,7 @@ fn receive_one_frame(camera: &mut Camera<'_>) -> Result<()> {
 - 公共 crate 使用 `#![forbid(unsafe_code)]`，不公开厂商结构体、C union、裸指针或句柄。
 - 生产代码中的原生调用、C union 读取和裸指针解引用集中在私有 crate 的 [`ffi.rs`](mv3d-lp-internal/src/ffi.rs) 与 [`callback.rs`](mv3d-lp-internal/src/callback.rs)：前者负责原生调用和数据转换，后者负责 callback trampoline 与回调指针准入。`bindings.rs` 保存原始声明，`abi.rs` 校验布局和函数类型。
 - SDK 数据先校验适用的指针、长度、判别值和 checked arithmetic，再复制为 Rust 所有值；大型图像载荷另受聚合上限和可失败分配保护。
-- 生命周期和独占借用约束 SDK、相机、测量与文件传输的使用顺序；Start/Stop 失败后相机只允许清理。
+- 生命周期和独占借用约束 SDK、设备、测量与文件传输的使用顺序；Start/Stop 失败后设备只允许清理。
 - 回调 cookie 永不复用；晚到或已撤销的回调被忽略；公共 API 的用户 handler 不在原生回调线程执行，unwind panic 被隔离在原生 ABI 边界内。
 - 资源 `Drop` 做最佳努力清理；显式 `stop`、`close` 和 `shutdown` 返回清理错误。
 - 有活句柄或清理结果不确定时跳过 `Finalize`，原生会话保守地保留到进程退出。

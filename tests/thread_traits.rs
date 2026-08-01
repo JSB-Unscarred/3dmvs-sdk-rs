@@ -1,7 +1,7 @@
 use std::sync::mpsc::Receiver;
 
 use mv3d_lp::{
-    CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Camera, DeviceException,
+    CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Device, DeviceException,
     DeviceExceptionType, DeviceInfo, FileProgress, FileTransfer, ImageProcessor, ImageRef,
     IpConfiguration, Measurement, OwnedFrame, OwnedImage, Parameter, ParameterValue, Sdk, SdkText,
 };
@@ -25,8 +25,8 @@ macro_rules! assert_not_impl {
 
 assert_not_impl!(Sdk: Send);
 assert_not_impl!(Sdk: Sync);
-assert_not_impl!(Camera<'static>: Send);
-assert_not_impl!(Camera<'static>: Sync);
+assert_not_impl!(Device<'static>: Send);
+assert_not_impl!(Device<'static>: Sync);
 assert_not_impl!(Measurement<'static>: Send);
 assert_not_impl!(Measurement<'static>: Sync);
 assert_not_impl!(CallbackMeasurement<'static>: Send);
@@ -40,7 +40,7 @@ assert_not_impl!(OwnedImage: Clone);
 assert_not_impl!(Receiver<OwnedFrame>: Sync);
 
 #[test]
-fn sdk_and_camera_thread_traits_are_locked_at_compile_time() {}
+fn sdk_and_device_thread_traits_are_locked_at_compile_time() {}
 
 #[test]
 fn owned_frames_can_move_and_be_shared_between_threads() {

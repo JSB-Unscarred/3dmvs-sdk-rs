@@ -65,7 +65,7 @@ pub enum ImageFileFormatRecord {
 /// A completely owned copy of one image returned by the SDK.
 ///
 /// No field in this record borrows SDK memory, so it remains valid after later SDK calls and
-/// after the originating camera has been stopped or closed.
+/// after the originating device has been stopped or closed.
 #[derive(Debug, PartialEq)]
 pub struct FrameRecord {
     pub image_type: ImageTypeRecord,

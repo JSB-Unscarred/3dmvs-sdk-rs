@@ -1,9 +1,9 @@
-// Expected rustc error: E0505 (the camera is borrowed by the measurement).
-use mv3d_lp::Camera;
+// Expected rustc error: E0505 (the device is borrowed by the measurement).
+use mv3d_lp::Device;
 
-fn close_with_active_measurement(mut camera: Camera<'_>) {
-    let measurement = camera.start().unwrap();
-    camera.close().unwrap();
+fn close_with_active_measurement(mut device: Device<'_>) {
+    let measurement = device.start().unwrap();
+    device.close().unwrap();
     drop(measurement);
 }
 

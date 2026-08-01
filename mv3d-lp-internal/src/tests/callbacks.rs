@@ -365,7 +365,7 @@ fn failed_image_registration_retires_the_cookie_before_late_delivery() {
     let mock = MockDriver::new();
     mock.push_register_image_callback(Err(DriverError::Status(0x8006_0005_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let sink_calls = Arc::clone(&calls);
     let sink: FrameCallbackSink = Arc::new(move |_| {
@@ -374,14 +374,14 @@ fn failed_image_registration_retires_the_cookie_before_late_delivery() {
     });
 
     assert!(matches!(
-        camera.start_callback(sink),
+        device.start_callback(sink),
         Err(Error::Sdk { .. })
     ));
     let cookie = only_cookie(mock.image_callback_cookies());
     invoke_mono(cookie, 1, 1);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-    camera.close().unwrap();
+    device.close().unwrap();
     runtime.shutdown().unwrap();
 }
 
@@ -390,7 +390,7 @@ fn failed_exception_registration_retires_the_cookie_before_late_delivery() {
     let mock = MockDriver::new();
     mock.push_register_exception_callback(Err(DriverError::Status(0x8006_0005_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let sink_calls = Arc::clone(&calls);
     let sink: ExceptionCallbackSink = Arc::new(move |_| {
@@ -399,14 +399,14 @@ fn failed_exception_registration_retires_the_cookie_before_late_delivery() {
     });
 
     assert!(matches!(
-        camera.register_exception_callback(sink),
+        device.register_exception_callback(sink),
         Err(Error::Sdk { .. })
     ));
     let cookie = only_cookie(mock.exception_callback_cookies());
     invoke_disconnect(cookie);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-    camera.close().unwrap();
+    device.close().unwrap();
     runtime.shutdown().unwrap();
 }
 
@@ -417,12 +417,12 @@ fn callback_measurement_deactivates_before_explicit_and_drop_stop() {
 }
 
 #[test]
-fn camera_close_retires_the_cookie_of_a_forgotten_callback_measurement() {
+fn device_close_retires_the_cookie_of_a_forgotten_callback_measurement() {
     let mock = MockDriver::new();
     let stop_entered = Arc::new(AtomicBool::new(false));
     mock.set_stop_entered(Arc::clone(&stop_entered));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
     let sink_dropped = Arc::new(AtomicBool::new(false));
     let calls = Arc::new(AtomicUsize::new(0));
     let probe = DropBeforeDriverCall {
@@ -435,16 +435,16 @@ fn camera_close_retires_the_cookie_of_a_forgotten_callback_measurement() {
         sink_calls.fetch_add(1, Ordering::SeqCst);
         CallbackDelivery::Delivered
     });
-    let measurement = camera.start_callback(sink).unwrap();
+    let measurement = device.start_callback(sink).unwrap();
     let cookie = only_cookie(mock.image_callback_cookies());
 
     std::mem::forget(measurement);
     assert!(matches!(
-        camera.clear_buffer(),
+        device.clear_buffer(),
         Err(Error::InvalidState { .. })
     ));
     assert!(!mock.logs().contains(&"clear_buffer"));
-    camera.close().unwrap();
+    device.close().unwrap();
     assert!(sink_dropped.load(Ordering::SeqCst));
     assert!(stop_entered.load(Ordering::SeqCst));
 
@@ -471,7 +471,7 @@ fn assert_callback_stop_order(drop_measurement: bool) {
     let stop_entered = Arc::new(AtomicBool::new(false));
     mock.set_stop_entered(Arc::clone(&stop_entered));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
     let sink_dropped = Arc::new(AtomicBool::new(false));
     let calls = Arc::new(AtomicUsize::new(0));
     let probe = DropBeforeDriverCall {
@@ -484,7 +484,7 @@ fn assert_callback_stop_order(drop_measurement: bool) {
         sink_calls.fetch_add(1, Ordering::SeqCst);
         CallbackDelivery::Delivered
     });
-    let measurement = camera.start_callback(sink).unwrap();
+    let measurement = device.start_callback(sink).unwrap();
     let cookie = only_cookie(mock.image_callback_cookies());
     invoke_mono(cookie, 1, 1);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -504,7 +504,7 @@ fn assert_callback_stop_order(drop_measurement: bool) {
         1
     );
 
-    camera.close().unwrap();
+    device.close().unwrap();
     runtime.shutdown().unwrap();
 }
 
@@ -515,7 +515,7 @@ fn assert_exception_close_order(close_result: DriverResult<()>) {
     let close_entered = Arc::new(AtomicBool::new(false));
     mock.set_close_entered(Arc::clone(&close_entered));
     let (runtime, _) = active_runtime(&mock);
-    let mut camera = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
     let sink_dropped = Arc::new(AtomicBool::new(false));
     let calls = Arc::new(AtomicUsize::new(0));
     let probe = DropBeforeDriverCall {
@@ -528,12 +528,12 @@ fn assert_exception_close_order(close_result: DriverResult<()>) {
         sink_calls.fetch_add(1, Ordering::SeqCst);
         CallbackDelivery::Delivered
     });
-    camera.register_exception_callback(sink).unwrap();
+    device.register_exception_callback(sink).unwrap();
     let cookie = only_cookie(mock.exception_callback_cookies());
     invoke_disconnect(cookie);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    let close = camera.close();
+    let close = device.close();
     assert_eq!(close.is_ok(), close_succeeds);
     assert!(sink_dropped.load(Ordering::SeqCst));
     assert!(close_entered.load(Ordering::SeqCst));

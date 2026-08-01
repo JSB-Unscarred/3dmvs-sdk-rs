@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use std::rc::Rc;
 
 use crate::{
-    Camera, ContractViolation, DeviceInfo, Error, ImageProcessor, IpConfiguration,
+    ContractViolation, Device, DeviceInfo, Error, ImageProcessor, IpConfiguration,
     IpConfigurationMode, Operation, Result, SdkText, SdkVersion, SerialNumber,
 };
 
@@ -78,17 +78,17 @@ impl Sdk {
             .map_err(Error::from)
     }
 
-    pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Camera<'_>> {
+    pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device<'_>> {
         self.inner
             .open_by_ip(address)
-            .map(Camera::from_internal)
+            .map(Device::from_internal)
             .map_err(Error::from)
     }
 
-    pub fn open_by_serial(&self, serial_number: &SerialNumber) -> Result<Camera<'_>> {
+    pub fn open_by_serial(&self, serial_number: &SerialNumber) -> Result<Device<'_>> {
         self.inner
             .open_by_serial(serial_number.as_bytes())
-            .map(Camera::from_internal)
+            .map(Device::from_internal)
             .map_err(Error::from)
     }
 

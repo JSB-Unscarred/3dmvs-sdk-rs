@@ -22,13 +22,13 @@ pub enum FileTransferStatus {
     Completed(FileProgress),
 }
 
-/// An asynchronous camera file transfer.
+/// An asynchronous device file transfer.
 ///
-/// The camera retains both filename allocations even if this guard is dropped.
-/// Use [`crate::Camera::active_file_transfer`] to resume polling.
+/// The device retains both filename allocations even if this guard is dropped.
+/// Use [`crate::Device::active_file_transfer`] to resume polling.
 #[must_use = "dropping FileTransfer does not cancel the device transfer"]
-pub struct FileTransfer<'camera, 'sdk> {
-    pub(crate) inner: mv3d_lp_internal::FileTransfer<'camera, 'sdk>,
+pub struct FileTransfer<'device, 'sdk> {
+    pub(crate) inner: mv3d_lp_internal::FileTransfer<'device, 'sdk>,
     pub(crate) _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
