@@ -1,5 +1,5 @@
+use std::cell::Cell;
 use std::marker::PhantomData;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TrySendError, sync_channel};
 use std::time::Duration;
@@ -22,18 +22,21 @@ pub enum DeviceState {
 
 /// An opened laser-profiler device borrowing its owning [`crate::Sdk`].
 ///
-/// It is intentionally neither `Send` nor `Sync`, and no native handle is
-/// exposed. All SDK calls remain serialized inside the private crate.
+/// `Device` is `Send` but not `Sync`: unique ownership may be handed to another thread, but the
+/// device cannot be shared for concurrent calls. It continues to borrow its owning [`crate::Sdk`],
+/// so direct handoff normally uses [`std::thread::scope`]. For a long-lived owner thread, create
+/// both the SDK and device inside that thread. No native handle is exposed, and all SDK calls
+/// remain serialized inside the private crate.
 pub struct Device<'sdk> {
     inner: mv3d_lp_internal::Device<'sdk>,
-    _not_send_or_sync: PhantomData<Rc<()>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'sdk> Device<'sdk> {
     pub(crate) fn from_internal(inner: mv3d_lp_internal::Device<'sdk>) -> Self {
         Self {
             inner,
-            _not_send_or_sync: PhantomData,
+            _not_sync: PhantomData,
         }
     }
 
@@ -210,18 +213,19 @@ impl<'sdk> Device<'sdk> {
 /// An active native-callback acquisition session borrowing its device exclusively.
 ///
 /// The guard revokes and drains Rust callback dispatch before stopping the SDK. It intentionally
-/// exposes neither pull acquisition nor `clear_buffer`.
+/// exposes neither pull acquisition nor `clear_buffer`. Like [`Device`], unique ownership of the
+/// guard may be handed to another thread, but the guard cannot be shared between threads.
 #[must_use = "dropping CallbackMeasurement stops callback acquisition"]
 pub struct CallbackMeasurement<'device> {
     inner: mv3d_lp_internal::CallbackMeasurement<'device>,
-    _not_send_or_sync: PhantomData<Rc<()>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'device> CallbackMeasurement<'device> {
     fn from_internal(inner: mv3d_lp_internal::CallbackMeasurement<'device>) -> Self {
         Self {
             inner,
-            _not_send_or_sync: PhantomData,
+            _not_sync: PhantomData,
         }
     }
 
@@ -307,18 +311,19 @@ fn delivery_from_try_send<T>(
 /// An active pull-acquisition session borrowing its device exclusively.
 ///
 /// Dropping this guard makes a best-effort attempt to stop measurement. Call
-/// [`Measurement::stop`] to observe a stop error explicitly.
+/// [`Measurement::stop`] to observe a stop error explicitly. Like [`Device`], unique ownership of
+/// the guard may be handed to another thread, but the guard cannot be shared between threads.
 #[must_use = "dropping Measurement stops acquisition"]
 pub struct Measurement<'device> {
     inner: mv3d_lp_internal::Measurement<'device>,
-    _not_send_or_sync: PhantomData<Rc<()>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'device> Measurement<'device> {
     fn from_internal(inner: mv3d_lp_internal::Measurement<'device>) -> Self {
         Self {
             inner,
-            _not_send_or_sync: PhantomData,
+            _not_sync: PhantomData,
         }
     }
 

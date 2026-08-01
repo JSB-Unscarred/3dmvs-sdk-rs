@@ -53,6 +53,11 @@ const CASES: &[CompileFailCase] = &[
         source: include_str!("compile_fail_cases/lifecycle/shutdown_while_device_borrowed.rs"),
         error_code: "E0505",
     },
+    CompileFailCase {
+        bin: "file_transfer_not_send",
+        source: include_str!("compile_fail_cases/threading/file_transfer_not_send.rs"),
+        error_code: "E0277",
+    },
 ];
 
 #[test]

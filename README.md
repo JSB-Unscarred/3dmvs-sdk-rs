@@ -71,7 +71,9 @@ fn main() -> Result<()> {
 
 也可使用 `SerialNumber` 和 `Sdk::open_by_serial`。SDK 返回的文本由 `SdkText` 保留原始有界字节；需要 UTF-8 时使用 `to_str()`，仅展示时可使用 `to_string_lossy()`。
 
-`Sdk` 和 `Device` 均不是 `Send` 或 `Sync`。`Device` 借用 `Sdk`，因此设备存活时不能关闭 SDK。原生 runtime 只允许一个活动实例；首次初始化失败或 `Finalize` 后进入终态，不能在同一进程中重试。
+`Sdk` 有意保持 `!Send + !Sync`，初始化与 `Finalize` 必须留在 owner thread。`Device`、`Measurement` 和 `CallbackMeasurement` 是 `Send + !Sync`：`Send` 只允许把唯一所有权交给另一线程，不表示可以从多个线程并发调用同一句柄。
+
+`Device` 仍借用 `Sdk`，设备存活时不能关闭 SDK；这个借用通常也不满足普通 `std::thread::spawn` 所要求的 `'static`。短期直接 handoff 应使用 `std::thread::scope`，长期 owner thread 则应在线程内部创建并依次关闭 `Sdk`、`Device` 和采集会话。原生 runtime 只允许一个活动实例；首次初始化失败或 `Finalize` 后进入终态，不能在同一进程中重试。
 
 ### 回调采集
 
@@ -115,7 +117,7 @@ fn receive_one_frame(device: &mut Device<'_>) -> Result<()> {
 
 ## 原生契约假设
 
-安全 API 依赖闭源 LPSDK `1.3.3.3` 的下列行为。公开头文件、官方示例和本机观察与之相符，但这些行为没有独立的厂商书面保证。
+安全 API 依赖闭源 LPSDK `1.3.3.3` 的下列行为。公开头文件和官方示例与之相符，但这些行为没有独立的厂商书面保证；跨线程 handoff、析构和 callback drain 的锁定版本实机验收仍待完成，在通过前不得把 public auto trait 的编译能力视为已取得原生发布资格。
 
 | 区域 | 必要的原生行为 | Rust 侧缓解 |
 | --- | --- | --- |

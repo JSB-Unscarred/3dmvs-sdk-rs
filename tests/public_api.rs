@@ -81,6 +81,40 @@ fn public_lifecycle_and_control_methods_have_safe_signatures() {
 }
 
 #[test]
+fn public_device_and_sessions_support_scoped_thread_handoff() {
+    fn handoff_device(device: Device<'_>) {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || drop(device))
+                .join()
+                .expect("scoped device handoff thread should not panic");
+        });
+    }
+
+    fn handoff_measurement(measurement: Measurement<'_>) {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || drop(measurement))
+                .join()
+                .expect("scoped measurement handoff thread should not panic");
+        });
+    }
+
+    fn handoff_callback_measurement(measurement: CallbackMeasurement<'_>) {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || drop(measurement))
+                .join()
+                .expect("scoped callback measurement handoff thread should not panic");
+        });
+    }
+
+    let _: for<'sdk> fn(Device<'sdk>) = handoff_device;
+    let _: for<'device> fn(Measurement<'device>) = handoff_measurement;
+    let _: for<'device> fn(CallbackMeasurement<'device>) = handoff_callback_measurement;
+}
+
+#[test]
 fn owned_output_types_can_move_between_threads() {
     fn assert_send_sync<T: Send + Sync>() {}
 

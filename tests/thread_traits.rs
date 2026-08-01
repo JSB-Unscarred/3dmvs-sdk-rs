@@ -26,15 +26,11 @@ macro_rules! assert_not_impl {
 
 assert_not_impl!(Sdk: Send);
 assert_not_impl!(Sdk: Sync);
-assert_not_impl!(Device<'static>: Send);
 assert_not_impl!(Device<'static>: Sync);
-assert_not_impl!(Measurement<'static>: Send);
 assert_not_impl!(Measurement<'static>: Sync);
-assert_not_impl!(CallbackMeasurement<'static>: Send);
 assert_not_impl!(CallbackMeasurement<'static>: Sync);
 assert_not_impl!(FileTransfer<'static>: Send);
 assert_not_impl!(FileTransfer<'static>: Sync);
-assert_not_impl!(FileTransferStartError<'static>: Send);
 assert_not_impl!(FileTransferStartError<'static>: Sync);
 assert_not_impl!(ImageProcessor<'static>: Send);
 assert_not_impl!(ImageProcessor<'static>: Sync);
@@ -43,7 +39,14 @@ assert_not_impl!(OwnedImage: Clone);
 assert_not_impl!(Receiver<OwnedFrame>: Sync);
 
 #[test]
-fn sdk_and_device_thread_traits_are_locked_at_compile_time() {}
+fn public_device_owners_are_send_but_not_sync() {
+    fn assert_send<T: Send>() {}
+
+    assert_send::<Device<'static>>();
+    assert_send::<Measurement<'static>>();
+    assert_send::<CallbackMeasurement<'static>>();
+    assert_send::<FileTransferStartError<'static>>();
+}
 
 #[test]
 fn owned_frames_can_move_and_be_shared_between_threads() {
