@@ -27,6 +27,14 @@ pub(crate) type DriverResult<T> = Result<T, DriverError>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Handle(NonNull<std::ffi::c_void>);
 
+// SAFETY: Production handles are opaque values returned by successful device opens.
+// Rust never dereferences them, and the crate's safe public API does not expose the raw
+// value. `Device` retains exclusive logical ownership, remains `!Sync`, and all safe
+// native calls stay serialized by the process-wide Gate. Vendor evidence for moving
+// the handle between threads is recorded in `3dmvs_sdk_threading_model_conclusion.md`
+// sections 3.2 and 3.3.
+unsafe impl Send for Handle {}
+
 impl Handle {
     pub(crate) fn from_ptr(pointer: *mut std::ffi::c_void) -> Option<Self> {
         NonNull::new(pointer).map(Self)

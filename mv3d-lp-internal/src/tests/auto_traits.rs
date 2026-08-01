@@ -1,3 +1,4 @@
+use crate::driver::Handle;
 use crate::runtime::RuntimeInner;
 use crate::{
     CallbackMeasurement, Device, DeviceRecord, ExceptionRecord, FileTransfer, FrameRecord,
@@ -23,6 +24,7 @@ macro_rules! assert_not_impl {
 
 assert_not_impl!(Runtime: Send);
 assert_not_impl!(Runtime: Sync);
+assert_not_impl!(Handle: Sync);
 assert_not_impl!(Device<'static>: Send);
 assert_not_impl!(Device<'static>: Sync);
 assert_not_impl!(Measurement<'static>: Send);
@@ -34,6 +36,13 @@ assert_not_impl!(FileTransfer<'static, 'static>: Sync);
 
 #[test]
 fn internal_resource_guards_remain_thread_bound() {}
+
+#[test]
+fn opaque_handle_is_send_but_not_sync() {
+    fn assert_send<T: Send>() {}
+
+    assert_send::<Handle>();
+}
 
 #[test]
 fn records_crossing_the_safe_driver_boundary_are_send_and_sync() {
