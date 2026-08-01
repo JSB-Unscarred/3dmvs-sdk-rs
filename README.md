@@ -73,7 +73,9 @@ fn main() -> Result<()> {
 
 `Sdk` 有意保持 `!Send + !Sync`，初始化与 `Finalize` 必须留在 owner thread。`Device`、`Measurement`、`CallbackMeasurement` 和 `FileTransfer` 是 `Send + !Sync`：`Send` 只允许把唯一所有权交给另一线程，不表示可以从多个线程并发调用同一句柄。
 
-`Device` 仍借用 `Sdk`，设备存活时不能关闭 SDK；这个借用通常也不满足普通 `std::thread::spawn` 所要求的 `'static`。短期直接 handoff 应使用 `std::thread::scope`，长期 owner thread 则应在线程内部创建并依次关闭 `Sdk`、`Device` 和采集会话。原生 runtime 同一时刻只允许一个活动实例；版本查询/兼容性失败可直接重试，`Initialize` 失败在成功清理后可重试，成功 `Finalize` 后也可重新初始化。只有原生清理结果不确定时才会进入进程终态。
+`Device` 仍借用 `Sdk`，设备存活时不能关闭 SDK；这个借用通常也不满足普通 `std::thread::spawn` 所要求的 `'static`。短期直接 handoff 应使用 `std::thread::scope`，长期 owner thread 则应在线程内部创建并依次关闭 `Sdk`、`Device` 和采集会话。
+
+进程级 LPSDK 生命周期与单设备的 `DeviceState` 相互独立。内部 `ProcessSdkState` 只有 `Fresh`、`Active` 和 `Degraded` 三态：`Fresh` 允许创建一个 runtime，初始化成功后进入 `Active`；版本查询或兼容性检查失败仍为 `Fresh`，`Initialize` 失败且后续清理成功、以及成功 `Finalize` 后也会回到 `Fresh`。原生清理或 `Finalize` 的结果不确定，或者 runtime owner 在仍有 Rust 跟踪句柄时被终结，都会进入 `Degraded`。`Degraded` 表示进程级生命周期已不能安全扩张、收尾或重启；它不会使仍存活的设备、会话、文件传输或纯图像处理失效，但会永久拒绝新设备 open、`Finalize` 和后续 runtime 初始化。
 
 ### 回调采集
 
@@ -112,7 +114,7 @@ fn receive_one_frame(device: &mut Device<'_>) -> Result<()> {
 - 生命周期和所有权约束 SDK、设备、测量与文件传输的使用顺序；活动文件传输拥有设备，只有观察到完成后才能取回；Start/Stop 失败后设备只允许清理。
 - 回调 cookie 永不复用；晚到或已撤销的回调被忽略；公共 API 的用户 handler 不在原生回调线程执行，unwind panic 被隔离在原生 ABI 边界内。
 - 资源 `Drop` 做最佳努力清理；显式 `stop`、`close` 和 `shutdown` 返回清理错误。
-- 有活句柄或清理结果不确定时跳过 `Finalize`；单个设备 Close 结果不确定会阻止新设备和 `Finalize`，但不会使其他已打开设备的普通调用失效。
+- 有活句柄或清理结果不确定时跳过 `Finalize`；单个设备 Close 结果不确定会把进程级会话降级为 `Degraded`，阻止新设备、`Finalize` 和新 runtime，但不会改变其他设备各自的 `DeviceState`，也不会使它们的存量操作或纯图像处理失效。
 - 进程级互斥锁只保护 runtime 生命周期和设备 open/close 记账；不同设备的普通调用可以并行。无设备句柄隔离的 ImgProc/Save 调用使用独立互斥锁串行化。
 
 ## 原生契约假设

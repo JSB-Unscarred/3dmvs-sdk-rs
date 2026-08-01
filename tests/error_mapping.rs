@@ -3,6 +3,14 @@ use mv3d_lp::{
 };
 
 #[test]
+fn degraded_process_sdk_state_has_a_distinct_public_error() {
+    let error: Error = mv3d_lp_internal::Error::RuntimeDegraded.into();
+
+    assert_eq!(error, Error::RuntimeDegraded);
+    assert!(error.to_string().contains("cannot open devices"));
+}
+
+#[test]
 fn known_high_bit_status_preserves_its_exact_bits() {
     let status = StatusCode::from_raw(0x8006_000D_u32 as i32);
 

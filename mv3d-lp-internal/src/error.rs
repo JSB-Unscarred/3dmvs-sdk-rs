@@ -104,6 +104,7 @@ pub enum Error {
     UnsupportedPlatform,
     RuntimeAlreadyActive,
     RuntimeTerminal,
+    RuntimeDegraded,
     IncompatibleSdkVersion {
         expected: &'static [u8],
         actual: Vec<u8>,
@@ -150,6 +151,9 @@ impl fmt::Display for Error {
             Self::RuntimeAlreadyActive => f.write_str("the 3DMVS runtime is already active"),
             Self::RuntimeTerminal => f.write_str(
                 "the 3DMVS runtime cannot accept this operation in its current lifecycle state",
+            ),
+            Self::RuntimeDegraded => f.write_str(
+                "the process-wide 3DMVS SDK session is degraded and cannot open devices, finalize, or initialize another runtime",
             ),
             Self::IncompatibleSdkVersion { expected, actual } => write!(
                 f,

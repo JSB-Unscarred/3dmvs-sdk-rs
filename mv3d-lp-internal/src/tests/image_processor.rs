@@ -1,6 +1,7 @@
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
+use crate::{Error, driver::DriverError};
 
-use super::mock_driver::{MockDriver, active_runtime};
+use super::mock_driver::{FfiOp, MockDriver, active_runtime};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
 #[cfg(feature = "display-windows")]
@@ -78,6 +79,48 @@ fn runtime_routes_all_image_processing_operations() {
     ] {
         assert!(logs.contains(&operation));
     }
+}
+
+#[test]
+fn teardown_uncertainty_does_not_block_pure_image_processing() {
+    let mock = MockDriver::new();
+    mock.push_map_depth_to_point_cloud(Ok(output(0x0260_00C0, 48)));
+    let (runtime, _) = active_runtime(&mock);
+    let device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+
+    mock.push_close(Err(DriverError::Status(0x8006_0000_u32 as i32)));
+    assert!(device.close().is_err());
+
+    let depth = [0_u8; 8];
+    runtime.map_depth_to_point_cloud(input(&depth)).unwrap();
+    assert_eq!(
+        mock.operations()
+            .iter()
+            .filter(|operation| **operation == FfiOp::MapDepthToPointCloud)
+            .count(),
+        1
+    );
+
+    assert!(matches!(
+        runtime.open_by_serial(b"SECOND"),
+        Err(Error::RuntimeDegraded)
+    ));
+    assert_eq!(
+        mock.operations()
+            .iter()
+            .filter(|operation| **operation == FfiOp::OpenDeviceBySerial)
+            .count(),
+        0
+    );
+    assert!(matches!(
+        runtime.shutdown(),
+        Err(Error::UnclosedDevices {
+            live_handles: 0,
+            teardown_uncertain: true,
+        })
+    ));
+    assert!(!mock.operations().contains(&FfiOp::Finalize));
+    mock.assert_no_pending_failures();
 }
 
 #[cfg(feature = "display-windows")]

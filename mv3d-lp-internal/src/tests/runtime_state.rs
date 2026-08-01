@@ -55,7 +55,7 @@ fn initialization_failure_returns_the_gate_to_fresh_for_retry() {
 }
 
 #[test]
-fn initialization_cleanup_failure_makes_the_gate_terminal() {
+fn initialization_cleanup_failure_degrades_the_process_sdk_state() {
     let mock = MockDriver::new();
     mock.push_initialize(Err(DriverError::Status(0x8006_0005_u32 as i32)));
     mock.push_finalize(Err(DriverError::Status(0x8006_0000_u32 as i32)));
@@ -70,7 +70,7 @@ fn initialization_cleanup_failure_makes_the_gate_terminal() {
         })
     ));
     let retry = Runtime::initialize_with(Box::new(mock.clone()), gate);
-    assert!(matches!(retry, Err(Error::RuntimeTerminal)));
+    assert!(matches!(retry, Err(Error::RuntimeDegraded)));
     assert_eq!(mock.logs(), ["version", "initialize", "finalize"]);
 }
 
@@ -109,19 +109,21 @@ fn version_query_failure_returns_the_gate_to_fresh_for_retry() {
 }
 
 #[test]
-fn finalize_failure_still_makes_the_runtime_terminal() {
+fn finalize_failure_degrades_the_process_sdk_state() {
     let mock = MockDriver::new();
     mock.push_finalize(Err(DriverError::Status(0x8006_0005_u32 as i32)));
     let gate = Arc::new(Gate::new());
     let runtime = Runtime::initialize_with(Box::new(mock), Arc::clone(&gate)).unwrap();
 
     assert!(matches!(runtime.shutdown(), Err(Error::Sdk { .. })));
-    let retry = Runtime::initialize_with(Box::new(MockDriver::new()), gate);
-    assert!(matches!(retry, Err(Error::RuntimeTerminal)));
+    let retry_mock = MockDriver::new();
+    let retry = Runtime::initialize_with(Box::new(retry_mock.clone()), gate);
+    assert!(matches!(retry, Err(Error::RuntimeDegraded)));
+    assert!(retry_mock.operations().is_empty());
 }
 
 #[test]
-fn handle_count_overflow_after_open_fails_closed() {
+fn handle_count_overflow_degrades_the_process_sdk_state() {
     let mock = MockDriver::new();
     let gate = Arc::new(Gate::new());
     let runtime = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate)).unwrap();
@@ -137,7 +139,7 @@ fn handle_count_overflow_after_open_fails_closed() {
     assert_eq!(runtime.device_count_hint().unwrap(), 0);
     assert!(matches!(
         runtime.open_by_serial(b"SECOND"),
-        Err(Error::RuntimeTerminal)
+        Err(Error::RuntimeDegraded)
     ));
     assert!(matches!(
         runtime.shutdown(),
@@ -158,7 +160,7 @@ fn handle_count_overflow_after_open_fails_closed() {
 }
 
 #[test]
-fn handle_count_underflow_after_close_fails_closed() {
+fn handle_count_underflow_degrades_the_process_sdk_state() {
     let mock = MockDriver::new();
     let gate = Arc::new(Gate::new());
     let runtime = Runtime::initialize_with(Box::new(mock.clone()), gate).unwrap();
@@ -169,7 +171,7 @@ fn handle_count_underflow_after_close_fails_closed() {
     assert_eq!(runtime.device_count_hint().unwrap(), 0);
     assert!(matches!(
         runtime.open_by_serial(b"SECOND"),
-        Err(Error::RuntimeTerminal)
+        Err(Error::RuntimeDegraded)
     ));
     assert!(matches!(
         runtime.shutdown(),

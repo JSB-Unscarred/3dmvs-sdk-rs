@@ -57,13 +57,15 @@ fn failed_close_does_not_block_a_healthy_device() {
     let (runtime, _) = active_runtime(&mock);
     let first = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
     let mut second = runtime.open_by_serial(b"SECOND").unwrap();
+    let measurement = second.start().unwrap();
+    std::mem::forget(measurement);
 
     assert!(first.close().is_err());
     second.clear_buffer().unwrap();
     second.close().unwrap();
     assert!(matches!(
         runtime.open_by_serial(b"THIRD"),
-        Err(Error::RuntimeTerminal)
+        Err(Error::RuntimeDegraded)
     ));
     assert!(matches!(
         runtime.shutdown(),
@@ -81,6 +83,21 @@ fn failed_close_does_not_block_a_healthy_device() {
             .count(),
         1
     );
+    assert_eq!(
+        mock.operations()
+            .iter()
+            .filter(|operation| **operation == FfiOp::StopMeasure)
+            .count(),
+        1
+    );
+    assert_eq!(
+        mock.operations()
+            .iter()
+            .filter(|operation| **operation == FfiOp::OpenDeviceBySerial)
+            .count(),
+        1
+    );
+    assert!(!mock.operations().contains(&FfiOp::Finalize));
     mock.assert_no_pending_failures();
 }
 
@@ -111,7 +128,7 @@ fn explicit_close_is_not_repeated_by_drop() {
 #[test]
 fn forgotten_device_prevents_finalize() {
     let mock = MockDriver::new();
-    let (runtime, _) = active_runtime(&mock);
+    let (runtime, gate) = active_runtime(&mock);
     let device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
     std::mem::forget(device);
 
@@ -123,6 +140,11 @@ fn forgotten_device_prevents_finalize() {
         })
     ));
     assert!(!mock.logs().contains(&"finalize"));
+
+    let retry_mock = MockDriver::new();
+    let retry = crate::runtime::Runtime::initialize_with(Box::new(retry_mock.clone()), gate);
+    assert!(matches!(retry, Err(Error::RuntimeDegraded)));
+    assert!(retry_mock.operations().is_empty());
 }
 
 #[test]

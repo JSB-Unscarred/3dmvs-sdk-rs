@@ -22,36 +22,33 @@ const DISCOVERY_ATTEMPTS: usize = 3;
 const STATUS_BUFFER_FULL: i32 = 0x8006_0002_u32 as i32;
 const STATUS_INSUFFICIENT_BUFFER: i32 = 0x8006_0009_u32 as i32;
 
+/// Process-wide native LPSDK session state shared by every `Runtime` instance.
+///
+/// This is deliberately separate from a device's `DeviceState`. `Degraded` blocks lifecycle
+/// expansion and finalization, but existing Rust values remain usable until their owner is gone.
+/// `live_handles` counts handles still tracked by Rust; a degraded native session may additionally
+/// retain orphaned handles that cannot be counted safely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProcessState {
+pub(crate) enum ProcessSdkState {
     Fresh,
-    Active,
-    Terminal,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct GateState {
-    process: ProcessState,
-    live_handles: usize,
-    teardown_uncertain: bool,
+    Active { live_handles: usize },
+    Degraded { live_handles: usize },
 }
 
 pub(crate) struct Gate {
-    state: Mutex<GateState>,
+    // This state belongs to the process-wide native LPSDK session and survives individual
+    // Runtime values. Per-device lifecycle is tracked separately by DeviceState.
+    state: Mutex<ProcessSdkState>,
 }
 
 impl Gate {
     pub(crate) fn new() -> Self {
         Self {
-            state: Mutex::new(GateState {
-                process: ProcessState::Fresh,
-                live_handles: 0,
-                teardown_uncertain: false,
-            }),
+            state: Mutex::new(ProcessSdkState::Fresh),
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, GateState> {
+    fn lock(&self) -> MutexGuard<'_, ProcessSdkState> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -64,18 +61,15 @@ pub(crate) struct RuntimeInner {
     image_processing: Mutex<()>,
 }
 
-pub(crate) enum DriverEntry<T> {
-    NotEntered(Error),
-    Entered(Result<T, Error>),
-}
-
 impl RuntimeInner {
+    // RuntimeInner is created only after Initialize succeeds, and every value that can call these
+    // methods borrows it. Rust therefore prevents Finalize while an existing call-capable value
+    // is alive; ordinary and image calls do not need to consult the process lifecycle gate.
     pub(crate) fn call<T>(
         &self,
         operation: &'static str,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
-        self.ensure_active()?;
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
     }
 
@@ -84,20 +78,7 @@ impl RuntimeInner {
         operation: &'static str,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
-        self.ensure_active()?;
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
-    }
-
-    pub(crate) fn call_with_entry<T>(
-        &self,
-        operation: &'static str,
-        call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
-    ) -> DriverEntry<T> {
-        if let Err(error) = self.ensure_active() {
-            return DriverEntry::NotEntered(error);
-        }
-        let result = call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error));
-        DriverEntry::Entered(result)
     }
 
     fn image_call<T>(
@@ -105,21 +86,11 @@ impl RuntimeInner {
         operation: &'static str,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
-        self.ensure_active()?;
         let _image_processing = self
             .image_processing
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
-    }
-
-    fn ensure_active(&self) -> Result<(), Error> {
-        let state = self.gate.lock();
-        if state.process == ProcessState::Active {
-            Ok(())
-        } else {
-            Err(Error::RuntimeTerminal)
-        }
     }
 
     pub(crate) fn open_handle(
@@ -128,9 +99,11 @@ impl RuntimeInner {
         open: impl FnOnce(&dyn Driver, &mut Option<Handle>) -> DriverResult<()>,
     ) -> Result<Handle, Error> {
         let mut state = self.gate.lock();
-        if state.process != ProcessState::Active || state.teardown_uncertain {
-            return Err(Error::RuntimeTerminal);
-        }
+        let live_handles = match *state {
+            ProcessSdkState::Active { live_handles } => live_handles,
+            ProcessSdkState::Degraded { .. } => return Err(Error::RuntimeDegraded),
+            ProcessSdkState::Fresh => return Err(Error::RuntimeTerminal),
+        };
 
         let mut handle = None;
         match open(self.driver.as_ref(), &mut handle) {
@@ -139,18 +112,18 @@ impl RuntimeInner {
                     operation,
                     kind: ContractViolation::NullHandleOnSuccess,
                 })?;
-                let Some(live_handles) = state.live_handles.checked_add(1) else {
-                    state.teardown_uncertain = true;
+                let Some(live_handles) = live_handles.checked_add(1) else {
+                    *state = ProcessSdkState::Degraded { live_handles };
                     return Err(Error::ContractViolation {
                         operation,
                         kind: ContractViolation::HandleCountOverflow,
                     });
                 };
-                state.live_handles = live_handles;
+                *state = ProcessSdkState::Active { live_handles };
                 Ok(handle)
             }
             Err(error) if handle.is_some() => {
-                state.teardown_uncertain = true;
+                *state = ProcessSdkState::Degraded { live_handles };
                 Err(map_driver_error(
                     operation,
                     DriverError::OrphanedHandle(Box::new(error)),
@@ -164,21 +137,25 @@ impl RuntimeInner {
         const OPERATION: &str = "MV3D_LP_CloseDevice";
 
         let mut state = self.gate.lock();
-        if state.process != ProcessState::Active {
-            return Err(Error::RuntimeTerminal);
-        }
+        let (live_handles, was_degraded) = match *state {
+            ProcessSdkState::Active { live_handles } => (live_handles, false),
+            ProcessSdkState::Degraded { live_handles } => (live_handles, true),
+            ProcessSdkState::Fresh => return Err(Error::RuntimeTerminal),
+        };
 
         let result = self
             .driver
             .close(handle)
             .map_err(|error| map_driver_error(OPERATION, error));
-        match state.live_handles.checked_sub(1) {
-            Some(live_handles) => state.live_handles = live_handles,
-            None => state.teardown_uncertain = true,
-        }
-        if result.is_err() {
-            state.teardown_uncertain = true;
-        }
+        let (live_handles, ledger_uncertain) = match live_handles.checked_sub(1) {
+            Some(live_handles) => (live_handles, false),
+            None => (live_handles, true),
+        };
+        *state = if was_degraded || ledger_uncertain || result.is_err() {
+            ProcessSdkState::Degraded { live_handles }
+        } else {
+            ProcessSdkState::Active { live_handles }
+        };
         result
     }
 
@@ -222,10 +199,10 @@ impl Runtime {
 
     pub(crate) fn initialize_with(driver: Box<dyn Driver>, gate: Arc<Gate>) -> Result<Self, Error> {
         let mut state = gate.lock();
-        match state.process {
-            ProcessState::Fresh => {}
-            ProcessState::Active => return Err(Error::RuntimeAlreadyActive),
-            ProcessState::Terminal => return Err(Error::RuntimeTerminal),
+        match *state {
+            ProcessSdkState::Fresh => {}
+            ProcessSdkState::Active { .. } => return Err(Error::RuntimeAlreadyActive),
+            ProcessSdkState::Degraded { .. } => return Err(Error::RuntimeDegraded),
         }
 
         let version = match driver.version() {
@@ -241,15 +218,15 @@ impl Runtime {
 
         if let Err(error) = driver.initialize() {
             let initialize = map_driver_error("MV3D_LP_Initialize", error);
-            // Preserve the primary Initialize error; the Gate records whether cleanup made a
-            // later attempt safe.
+            // Initialize may have partially established process-wide native state. Preserve its
+            // primary error, but only leave the session Fresh when compensating cleanup succeeds.
             if driver.finalize().is_err() {
-                state.process = ProcessState::Terminal;
+                *state = ProcessSdkState::Degraded { live_handles: 0 };
             }
             return Err(initialize);
         }
 
-        state.process = ProcessState::Active;
+        *state = ProcessSdkState::Active { live_handles: 0 };
         drop(state);
         Ok(Self {
             inner: RuntimeInner {
@@ -269,7 +246,16 @@ impl Runtime {
 
     #[cfg(test)]
     pub(crate) fn set_live_handles_for_test(&self, live_handles: usize) {
-        self.inner.gate.lock().live_handles = live_handles;
+        let mut state = self.inner.gate.lock();
+        match &mut *state {
+            ProcessSdkState::Active {
+                live_handles: current,
+            }
+            | ProcessSdkState::Degraded {
+                live_handles: current,
+            } => *current = live_handles,
+            ProcessSdkState::Fresh => panic!("an initialized Runtime cannot have a Fresh gate"),
+        }
     }
 
     pub fn device_count_hint(&self) -> Result<u32, Error> {
@@ -448,30 +434,30 @@ impl Runtime {
         }
         self.finished = true;
         let mut state = self.inner.gate.lock();
-        if state.process != ProcessState::Active {
-            state.process = ProcessState::Terminal;
-            return Err(Error::RuntimeTerminal);
-        }
-        let live_handles = state.live_handles;
-        let teardown_uncertain = state.teardown_uncertain;
-        if live_handles != 0 || teardown_uncertain {
-            state.process = ProcessState::Terminal;
-            return Err(Error::UnclosedDevices {
-                live_handles,
-                teardown_uncertain,
-            });
+        match *state {
+            ProcessSdkState::Fresh => return Err(Error::RuntimeTerminal),
+            ProcessSdkState::Active { live_handles: 0 } => {}
+            ProcessSdkState::Active { live_handles } => {
+                *state = ProcessSdkState::Degraded { live_handles };
+                return Err(Error::UnclosedDevices {
+                    live_handles,
+                    teardown_uncertain: false,
+                });
+            }
+            ProcessSdkState::Degraded { live_handles } => {
+                return Err(Error::UnclosedDevices {
+                    live_handles,
+                    teardown_uncertain: true,
+                });
+            }
         }
         match self.inner.driver.finalize() {
             Ok(()) => {
-                *state = GateState {
-                    process: ProcessState::Fresh,
-                    live_handles: 0,
-                    teardown_uncertain: false,
-                };
+                *state = ProcessSdkState::Fresh;
                 Ok(())
             }
             Err(error) => {
-                state.process = ProcessState::Terminal;
+                *state = ProcessSdkState::Degraded { live_handles: 0 };
                 Err(map_driver_error("MV3D_LP_Finalize", error))
             }
         }

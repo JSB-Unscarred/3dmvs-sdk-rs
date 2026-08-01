@@ -16,7 +16,7 @@ use crate::error::{Error, InvalidInput};
 use crate::file_transfer::{FileProgress, FileTransferDirection, FileTransferStatus};
 use crate::frame::FrameRecord;
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
-use crate::runtime::{DriverEntry, RuntimeInner};
+use crate::runtime::RuntimeInner;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceState {
@@ -315,27 +315,21 @@ impl<'runtime> Device<'runtime> {
             .as_ref()
             .expect("the transfer names were stored before the SDK call");
         let handle = self.handle();
-        let result = self
-            .runtime
-            .call_with_entry(operation, |driver| match direction {
-                FileTransferDirection::DeviceToHost => driver.file_access_read(
-                    handle,
-                    &pending.names.user_file_name,
-                    &pending.names.device_file_name,
-                ),
-                FileTransferDirection::HostToDevice => driver.file_access_write(
-                    handle,
-                    &pending.names.user_file_name,
-                    &pending.names.device_file_name,
-                ),
-            });
+        let result = self.runtime.call(operation, |driver| match direction {
+            FileTransferDirection::DeviceToHost => driver.file_access_read(
+                handle,
+                &pending.names.user_file_name,
+                &pending.names.device_file_name,
+            ),
+            FileTransferDirection::HostToDevice => driver.file_access_write(
+                handle,
+                &pending.names.user_file_name,
+                &pending.names.device_file_name,
+            ),
+        });
 
         match result {
-            DriverEntry::NotEntered(source) => {
-                self.pending_transfer.take();
-                Err(FileTransferStartError::rejected(source, self))
-            }
-            DriverEntry::Entered(Ok(())) => {
+            Ok(()) => {
                 self.state = DeviceState::Transferring;
                 Ok(FileTransfer {
                     device: self,
@@ -344,7 +338,7 @@ impl<'runtime> Device<'runtime> {
                     _not_sync: PhantomData,
                 })
             }
-            DriverEntry::Entered(Err(start)) => {
+            Err(start) => {
                 self.state = DeviceState::Faulted;
                 let cleanup = self.cleanup().err();
                 Err(FileTransferStartError::failed(start, cleanup))

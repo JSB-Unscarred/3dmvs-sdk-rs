@@ -87,7 +87,7 @@ fn handle_returned_on_open_failure_is_never_treated_as_valid() {
     assert_eq!(runtime.device_count_hint().unwrap(), 0);
     assert!(matches!(
         runtime.open_by_serial(b"SECOND"),
-        Err(Error::RuntimeTerminal)
+        Err(Error::RuntimeDegraded)
     ));
     assert!(matches!(
         runtime.shutdown(),

@@ -9,10 +9,17 @@ use crate::{
 
 /// The process-wide 3DMVS SDK session.
 ///
-/// A process can have one active SDK session at a time. Version checks are retryable, an
-/// initialization failure is retryable after successful cleanup, and a successful shutdown
-/// permits a later session. Cleanup or Finalize uncertainty leaves the process terminal. `Sdk` is
-/// intentionally neither `Send` nor `Sync`.
+/// Its process-wide lifecycle is separate from each device's [`crate::DeviceState`] and has three
+/// states: `Fresh`, `Active`, and `Degraded`. `Fresh` permits one runtime to initialize; successful
+/// initialization enters `Active`. Pre-initialization version failures leave it `Fresh`, while a
+/// failed initialization returns to `Fresh` only after successful cleanup. Successful `Finalize`
+/// also returns it to `Fresh`.
+///
+/// Uncertain device teardown or `Finalize`, or ending the runtime owner with tracked handles still
+/// live, moves the process lifecycle to `Degraded`. The process lifecycle can no longer expand,
+/// finalize, or restart safely. This does not fault existing devices, sessions, file transfers, or
+/// pure image processing, but it permanently rejects new device opens, `Finalize`, and later
+/// runtime initialization. `Sdk` is intentionally neither `Send` nor `Sync`.
 pub struct Sdk {
     inner: mv3d_lp_internal::Runtime,
     version: SdkVersion,

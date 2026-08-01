@@ -488,6 +488,7 @@ pub enum Error {
     },
     RuntimeAlreadyActive,
     RuntimeTerminal,
+    RuntimeDegraded,
     AllocationFailed {
         operation: Operation,
     },
@@ -547,6 +548,9 @@ impl fmt::Display for Error {
             }
             Self::RuntimeTerminal => formatter.write_str(
                 "the process-wide 3DMVS SDK runtime cannot accept this operation in its current lifecycle state",
+            ),
+            Self::RuntimeDegraded => formatter.write_str(
+                "the process-wide 3DMVS SDK session is degraded and cannot open devices, finalize, or initialize another runtime",
             ),
             Self::AllocationFailed { operation } => {
                 write!(
@@ -617,6 +621,7 @@ impl From<mv3d_lp_internal::Error> for Error {
             InternalError::UnsupportedPlatform => Self::UnsupportedPlatform,
             InternalError::RuntimeAlreadyActive => Self::RuntimeAlreadyActive,
             InternalError::RuntimeTerminal => Self::RuntimeTerminal,
+            InternalError::RuntimeDegraded => Self::RuntimeDegraded,
             InternalError::IncompatibleSdkVersion { expected, actual } => {
                 let expected = parse_version_bytes(expected);
                 let actual = SdkText::try_from(actual).ok().and_then(|actual_text| {
