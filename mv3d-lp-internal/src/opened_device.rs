@@ -10,7 +10,7 @@ use crate::error::{Error, InvalidInput};
 use crate::file_transfer::{FileProgress, FileTransferDirection, FileTransferStatus};
 use crate::frame::FrameRecord;
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
-use crate::runtime::Runtime;
+use crate::runtime::RuntimeInner;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceState {
@@ -42,7 +42,7 @@ pub struct DeviceCleanupError {
 }
 
 pub struct Device<'runtime> {
-    runtime: &'runtime Runtime,
+    runtime: &'runtime RuntimeInner,
     handle: Option<Handle>,
     state: DeviceState,
     pending_transfer: Option<ActiveFileTransfer>,
@@ -54,7 +54,7 @@ pub struct Device<'runtime> {
 }
 
 impl<'runtime> Device<'runtime> {
-    pub(crate) fn new(runtime: &'runtime Runtime, handle: Handle) -> Self {
+    pub(crate) fn new(runtime: &'runtime RuntimeInner, handle: Handle) -> Self {
         Self {
             runtime,
             handle: Some(handle),
@@ -194,7 +194,7 @@ impl<'runtime> Device<'runtime> {
 
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<ParameterRecord, Error> {
         self.require_usable("MV3D_LP_GetParam")?;
-        let key = Runtime::parameter_key("MV3D_LP_GetParam", key)?;
+        let key = RuntimeInner::parameter_key("MV3D_LP_GetParam", key)?;
         self.runtime.call("MV3D_LP_GetParam", |driver| {
             driver.get_parameter(self.handle(), &key)
         })
@@ -219,7 +219,7 @@ impl<'runtime> Device<'runtime> {
                 });
             }
         }
-        let key = Runtime::parameter_key("MV3D_LP_SetParam", key)?;
+        let key = RuntimeInner::parameter_key("MV3D_LP_SetParam", key)?;
         self.runtime.call("MV3D_LP_SetParam", |driver| {
             driver.set_parameter(self.handle(), &key, value)
         })
@@ -227,7 +227,7 @@ impl<'runtime> Device<'runtime> {
 
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
         self.require_usable("MV3D_LP_Execute")?;
-        let key = Runtime::parameter_key("MV3D_LP_Execute", key)?;
+        let key = RuntimeInner::parameter_key("MV3D_LP_Execute", key)?;
         self.runtime.call("MV3D_LP_Execute", |driver| {
             driver.execute(self.handle(), &key)
         })
@@ -437,10 +437,9 @@ impl<'runtime> Device<'runtime> {
         };
         let close = self
             .runtime
-            .cleanup_call("MV3D_LP_CloseDevice", |driver| driver.close(handle))
+            .cleanup_close_handle(handle)
             .err()
             .map(Box::new);
-        self.runtime.record_close_result(close.is_none());
 
         if close.is_none() {
             self.pending_transfer.take();
@@ -523,7 +522,7 @@ fn validated_file_name(operation: &'static str, bytes: &[u8]) -> Result<CString,
 /// This guard deliberately does not expose pull acquisition or buffer clearing. Its callback
 /// registration is revoked and drained before `MV3D_LP_StopMeasure` is called.
 pub struct CallbackMeasurement<'device> {
-    runtime: &'device Runtime,
+    runtime: &'device RuntimeInner,
     handle: Handle,
     state: &'device mut DeviceState,
     registration: &'device mut Option<CallbackRegistration>,
@@ -611,7 +610,7 @@ impl Drop for CallbackMeasurement<'_> {
 ///
 /// Dropping the value makes a best-effort call to `MV3D_LP_StopMeasure`.
 pub struct Measurement<'device> {
-    runtime: &'device Runtime,
+    runtime: &'device RuntimeInner,
     handle: Handle,
     state: &'device mut DeviceState,
     active: bool,
@@ -655,7 +654,7 @@ impl Measurement<'_> {
 
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<ParameterRecord, Error> {
         self.require_measuring("MV3D_LP_GetParam")?;
-        let key = Runtime::parameter_key("MV3D_LP_GetParam", key)?;
+        let key = RuntimeInner::parameter_key("MV3D_LP_GetParam", key)?;
         self.runtime.call("MV3D_LP_GetParam", |driver| {
             driver.get_parameter(self.handle, &key)
         })
@@ -664,7 +663,7 @@ impl Measurement<'_> {
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValueRecord) -> Result<(), Error> {
         self.require_measuring("MV3D_LP_SetParam")?;
         validate_parameter_value("MV3D_LP_SetParam", value)?;
-        let key = Runtime::parameter_key("MV3D_LP_SetParam", key)?;
+        let key = RuntimeInner::parameter_key("MV3D_LP_SetParam", key)?;
         self.runtime.call("MV3D_LP_SetParam", |driver| {
             driver.set_parameter(self.handle, &key, value)
         })
@@ -672,7 +671,7 @@ impl Measurement<'_> {
 
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
         self.require_measuring("MV3D_LP_Execute")?;
-        let key = Runtime::parameter_key("MV3D_LP_Execute", key)?;
+        let key = RuntimeInner::parameter_key("MV3D_LP_Execute", key)?;
         self.runtime.call("MV3D_LP_Execute", |driver| {
             driver.execute(self.handle, &key)
         })

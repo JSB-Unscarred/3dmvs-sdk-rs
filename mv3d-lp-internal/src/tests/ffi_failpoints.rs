@@ -35,7 +35,7 @@ fn driver_failpoint_ledger_is_complete_and_has_unique_vendor_names() {
 
     let source = include_str!("../driver.rs");
     let trait_body = source
-        .split_once("pub(crate) trait Driver {")
+        .split_once("pub(crate) trait Driver: Sync {")
         .expect("Driver trait declaration exists")
         .1
         .split_once("\n}")

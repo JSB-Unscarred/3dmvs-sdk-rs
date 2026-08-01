@@ -1,6 +1,5 @@
 #![cfg_attr(not(feature = "native"), allow(dead_code))]
 
-use std::cell::Cell;
 use std::ffi::CString;
 use std::marker::PhantomData;
 use std::net::Ipv4Addr;
@@ -30,31 +29,134 @@ pub(crate) enum ProcessState {
     Terminal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GateState {
+    process: ProcessState,
+    live_handles: usize,
+    teardown_uncertain: bool,
+}
+
 pub(crate) struct Gate {
-    state: Mutex<ProcessState>,
+    state: Mutex<GateState>,
 }
 
 impl Gate {
     pub(crate) fn new() -> Self {
         Self {
-            state: Mutex::new(ProcessState::Fresh),
+            state: Mutex::new(GateState {
+                process: ProcessState::Fresh,
+                live_handles: 0,
+                teardown_uncertain: false,
+            }),
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, ProcessState> {
+    fn lock(&self) -> MutexGuard<'_, GateState> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
-pub struct Runtime {
+pub(crate) struct RuntimeInner {
     driver: Box<dyn Driver>,
     gate: Arc<Gate>,
+}
+
+impl RuntimeInner {
+    pub(crate) fn call<T>(
+        &self,
+        operation: &'static str,
+        call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
+    ) -> Result<T, Error> {
+        let state = self.gate.lock();
+        if state.process != ProcessState::Active || state.teardown_uncertain {
+            return Err(Error::RuntimeTerminal);
+        }
+        call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
+    }
+
+    pub(crate) fn cleanup_call<T>(
+        &self,
+        operation: &'static str,
+        call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
+    ) -> Result<T, Error> {
+        let state = self.gate.lock();
+        if state.process != ProcessState::Active {
+            return Err(Error::RuntimeTerminal);
+        }
+        call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
+    }
+
+    pub(crate) fn open_handle(
+        &self,
+        operation: &'static str,
+        open: impl FnOnce(&dyn Driver, &mut Option<Handle>) -> DriverResult<()>,
+    ) -> Result<Handle, Error> {
+        let mut state = self.gate.lock();
+        if state.process != ProcessState::Active || state.teardown_uncertain {
+            return Err(Error::RuntimeTerminal);
+        }
+
+        let mut handle = None;
+        match open(self.driver.as_ref(), &mut handle) {
+            Ok(()) => {
+                let handle = handle.ok_or(Error::ContractViolation {
+                    operation,
+                    kind: ContractViolation::NullHandleOnSuccess,
+                })?;
+                let Some(live_handles) = state.live_handles.checked_add(1) else {
+                    state.teardown_uncertain = true;
+                    return Err(Error::ContractViolation {
+                        operation,
+                        kind: ContractViolation::HandleCountOverflow,
+                    });
+                };
+                state.live_handles = live_handles;
+                Ok(handle)
+            }
+            Err(error) if handle.is_some() => {
+                state.teardown_uncertain = true;
+                Err(map_driver_error(
+                    operation,
+                    DriverError::OrphanedHandle(Box::new(error)),
+                ))
+            }
+            Err(error) => Err(map_driver_error(operation, error)),
+        }
+    }
+
+    pub(crate) fn cleanup_close_handle(&self, handle: Handle) -> Result<(), Error> {
+        const OPERATION: &str = "MV3D_LP_CloseDevice";
+
+        let mut state = self.gate.lock();
+        if state.process != ProcessState::Active {
+            return Err(Error::RuntimeTerminal);
+        }
+
+        let result = self
+            .driver
+            .close(handle)
+            .map_err(|error| map_driver_error(OPERATION, error));
+        match state.live_handles.checked_sub(1) {
+            Some(live_handles) => state.live_handles = live_handles,
+            None => state.teardown_uncertain = true,
+        }
+        if result.is_err() {
+            state.teardown_uncertain = true;
+        }
+        result
+    }
+
+    pub(crate) fn parameter_key(operation: &'static str, bytes: &[u8]) -> Result<CString, Error> {
+        validated_c_string(operation, bytes, 255, true)
+    }
+}
+
+pub struct Runtime {
+    inner: RuntimeInner,
     version: Vec<u8>,
     finished: bool,
-    live_handles: Cell<usize>,
-    teardown_uncertain: Cell<bool>,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -86,7 +188,7 @@ impl Runtime {
 
     pub(crate) fn initialize_with(driver: Box<dyn Driver>, gate: Arc<Gate>) -> Result<Self, Error> {
         let mut state = gate.lock();
-        match *state {
+        match state.process {
             ProcessState::Fresh => {}
             ProcessState::Active => return Err(Error::RuntimeAlreadyActive),
             ProcessState::Terminal => return Err(Error::RuntimeTerminal),
@@ -95,12 +197,12 @@ impl Runtime {
         let version = match driver.version() {
             Ok(version) => version,
             Err(error) => {
-                *state = ProcessState::Terminal;
+                state.process = ProcessState::Terminal;
                 return Err(map_driver_error("MV3D_LP_GetVersion", error));
             }
         };
         if version.as_slice() != EXPECTED_VERSION {
-            *state = ProcessState::Terminal;
+            state.process = ProcessState::Terminal;
             return Err(Error::IncompatibleSdkVersion {
                 expected: EXPECTED_VERSION,
                 actual: version,
@@ -108,25 +210,27 @@ impl Runtime {
         }
 
         if let Err(error) = driver.initialize() {
-            *state = ProcessState::Terminal;
+            state.process = ProcessState::Terminal;
             return Err(map_driver_error("MV3D_LP_Initialize", error));
         }
 
-        *state = ProcessState::Active;
+        state.process = ProcessState::Active;
         drop(state);
         Ok(Self {
-            driver,
-            gate,
+            inner: RuntimeInner { driver, gate },
             version,
             finished: false,
-            live_handles: Cell::new(0),
-            teardown_uncertain: Cell::new(false),
             _not_send_or_sync: PhantomData,
         })
     }
 
     pub fn version_bytes(&self) -> &[u8] {
         &self.version
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_live_handles_for_test(&self, live_handles: usize) {
+        self.inner.gate.lock().live_handles = live_handles;
     }
 
     pub fn device_count_hint(&self) -> Result<u32, Error> {
@@ -211,7 +315,7 @@ impl Runtime {
         let handle = self.open("MV3D_LP_OpenDeviceByIP", |driver, output| {
             driver.open_by_ip(&address, output)
         })?;
-        Ok(Device::new(self, handle))
+        Ok(Device::new(&self.inner, handle))
     }
 
     pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device<'_>, Error> {
@@ -219,7 +323,7 @@ impl Runtime {
         let handle = self.open("MV3D_LP_OpenDeviceBySN", |driver, output| {
             driver.open_by_serial(&serial, output)
         })?;
-        Ok(Device::new(self, handle))
+        Ok(Device::new(&self.inner, handle))
     }
 
     pub fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> Result<FrameRecord, Error> {
@@ -285,82 +389,15 @@ impl Runtime {
         operation: &'static str,
         open: impl FnOnce(&dyn Driver, &mut Option<Handle>) -> DriverResult<()>,
     ) -> Result<Handle, Error> {
-        let handle = self.call(operation, |driver| {
-            let mut handle = None;
-            match open(driver, &mut handle) {
-                Ok(()) => handle.ok_or(DriverError::Contract(
-                    ContractViolation::NullHandleOnSuccess,
-                )),
-                Err(error) => {
-                    if handle.is_some() {
-                        self.teardown_uncertain.set(true);
-                        Err(DriverError::OrphanedHandle(Box::new(error)))
-                    } else {
-                        Err(error)
-                    }
-                }
-            }
-        })?;
-        self.register_handle(operation)?;
-        Ok(handle)
+        self.inner.open_handle(operation, open)
     }
 
-    pub(crate) fn call<T>(
+    fn call<T>(
         &self,
         operation: &'static str,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
-        let state = self.gate.lock();
-        if *state != ProcessState::Active || self.teardown_uncertain.get() {
-            return Err(Error::RuntimeTerminal);
-        }
-        let result = call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error));
-        drop(state);
-        result
-    }
-
-    pub(crate) fn cleanup_call<T>(
-        &self,
-        operation: &'static str,
-        call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
-    ) -> Result<T, Error> {
-        let state = self.gate.lock();
-        if *state != ProcessState::Active {
-            return Err(Error::RuntimeTerminal);
-        }
-        let result = call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error));
-        drop(state);
-        result
-    }
-
-    pub(crate) fn parameter_key(operation: &'static str, bytes: &[u8]) -> Result<CString, Error> {
-        validated_c_string(operation, bytes, 255, true)
-    }
-
-    pub(crate) fn record_close_result(&self, close_succeeded: bool) {
-        match self.live_handles.get().checked_sub(1) {
-            Some(remaining) => self.live_handles.set(remaining),
-            None => self.teardown_uncertain.set(true),
-        }
-        if !close_succeeded {
-            self.teardown_uncertain.set(true);
-        }
-    }
-
-    fn register_handle(&self, operation: &'static str) -> Result<(), Error> {
-        match self.live_handles.get().checked_add(1) {
-            Some(count) => {
-                self.live_handles.set(count);
-                Ok(())
-            }
-            None => {
-                self.teardown_uncertain.set(true);
-                Err(Error::ContractViolation {
-                    operation,
-                    kind: ContractViolation::HandleCountOverflow,
-                })
-            }
-        }
+        self.inner.call(operation, call)
     }
 
     fn finish(&mut self) -> Result<(), Error> {
@@ -368,25 +405,26 @@ impl Runtime {
             return Err(Error::RuntimeTerminal);
         }
         self.finished = true;
-        let mut state = self.gate.lock();
-        if *state != ProcessState::Active {
-            *state = ProcessState::Terminal;
+        let mut state = self.inner.gate.lock();
+        if state.process != ProcessState::Active {
+            state.process = ProcessState::Terminal;
             return Err(Error::RuntimeTerminal);
         }
-        let live_handles = self.live_handles.get();
-        let teardown_uncertain = self.teardown_uncertain.get();
+        let live_handles = state.live_handles;
+        let teardown_uncertain = state.teardown_uncertain;
         if live_handles != 0 || teardown_uncertain {
-            *state = ProcessState::Terminal;
+            state.process = ProcessState::Terminal;
             return Err(Error::UnclosedDevices {
                 live_handles,
                 teardown_uncertain,
             });
         }
         let result = self
+            .inner
             .driver
             .finalize()
             .map_err(|error| map_driver_error("MV3D_LP_Finalize", error));
-        *state = ProcessState::Terminal;
+        state.process = ProcessState::Terminal;
         result
     }
 }

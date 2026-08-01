@@ -1,3 +1,4 @@
+use crate::runtime::RuntimeInner;
 use crate::{
     CallbackMeasurement, Device, DeviceRecord, ExceptionRecord, FileTransfer, FrameRecord,
     IpConfiguration, Measurement, ParameterRecord, ParameterValueRecord, Runtime,
@@ -44,4 +45,11 @@ fn records_crossing_the_safe_driver_boundary_are_send_and_sync() {
     assert_send_sync::<IpConfiguration>();
     assert_send_sync::<ParameterRecord>();
     assert_send_sync::<ParameterValueRecord>();
+}
+
+#[test]
+fn borrowed_runtime_inner_is_sync() {
+    fn assert_sync<T: Sync>() {}
+
+    assert_sync::<RuntimeInner>();
 }

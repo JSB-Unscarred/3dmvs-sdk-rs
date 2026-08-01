@@ -37,7 +37,7 @@ impl Handle {
     }
 }
 
-pub(crate) trait Driver {
+pub(crate) trait Driver: Sync {
     fn version(&self) -> DriverResult<Vec<u8>>;
     fn initialize(&self) -> DriverResult<()>;
     fn finalize(&self) -> DriverResult<()>;

@@ -60,6 +60,18 @@ fn successful_open_with_a_null_handle_is_a_contract_violation() {
             ..
         })
     ));
+    assert!(runtime.device_count_hint().is_ok());
+    runtime.shutdown().unwrap();
+    assert_eq!(
+        mock.logs(),
+        [
+            "version",
+            "initialize",
+            "open_by_ip",
+            "device_number",
+            "finalize"
+        ]
+    );
 }
 
 #[test]
