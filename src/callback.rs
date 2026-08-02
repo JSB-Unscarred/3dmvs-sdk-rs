@@ -185,12 +185,7 @@ impl CallbackWorker {
                 }));
                 match result {
                     Ok(()) => CallbackWorkerExit::ChannelClosed,
-                    Err(payload) => {
-                        // Keep a custom panic-payload destructor from turning an isolated handler
-                        // panic into a second worker-thread panic.
-                        std::mem::forget(payload);
-                        CallbackWorkerExit::HandlerPanicked
-                    }
+                    Err(_) => CallbackWorkerExit::HandlerPanicked,
                 }
             })?;
         Ok(Self {
@@ -209,6 +204,11 @@ impl CallbackWorker {
     ///
     /// This method should not be called while holding an SDK call lock. It can
     /// wait indefinitely when a user handler does not return.
+    ///
+    /// # Panics
+    ///
+    /// This method may panic if dropping a user-defined thread panic payload
+    /// itself panics. Panic payloads follow normal Rust drop semantics.
     #[must_use]
     pub fn join(mut self) -> CallbackWorkerExit {
         let Some(handle) = self.handle.take() else {
@@ -216,10 +216,7 @@ impl CallbackWorker {
         };
         match handle.join() {
             Ok(exit) => exit,
-            Err(payload) => {
-                std::mem::forget(payload);
-                CallbackWorkerExit::WorkerPanicked
-            }
+            Err(_) => CallbackWorkerExit::WorkerPanicked,
         }
     }
 }
@@ -237,7 +234,8 @@ impl fmt::Debug for CallbackWorker {
 mod tests {
     use std::num::NonZeroUsize;
     use std::panic::panic_any;
-    use std::sync::mpsc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
     use std::thread;
 
     use crate::SdkText;
@@ -245,6 +243,14 @@ mod tests {
     use super::{
         CallbackOptions, CallbackWorker, CallbackWorkerExit, DeviceException, DeviceExceptionType,
     };
+
+    struct DropProbe(Arc<AtomicUsize>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn callback_options_default_to_a_bounded_non_zero_queue() {
@@ -312,31 +318,32 @@ mod tests {
     }
 
     #[test]
-    fn worker_contains_a_handler_panic_with_a_panicking_payload_destructor() {
-        struct PanicOnDrop;
-        impl Drop for PanicOnDrop {
-            fn drop(&mut self) {
-                panic!("panic payload destructor");
-            }
-        }
-
+    fn worker_drops_handler_panic_payload() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let handler_drops = Arc::clone(&drops);
         let (sender, receiver) = mpsc::channel();
-        let worker = CallbackWorker::spawn(receiver, |_: ()| panic_any(PanicOnDrop)).unwrap();
+        let worker = CallbackWorker::spawn(receiver, move |_: ()| {
+            panic_any(DropProbe(Arc::clone(&handler_drops)));
+        })
+        .unwrap();
         sender.send(()).unwrap();
 
         assert_eq!(worker.join(), CallbackWorkerExit::HandlerPanicked);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn join_contains_a_panic_from_handler_destruction() {
-        struct PanicOnDrop;
-        impl Drop for PanicOnDrop {
+    fn join_drops_worker_panic_payload() {
+        struct PanicWithPayloadOnDrop(Arc<AtomicUsize>);
+
+        impl Drop for PanicWithPayloadOnDrop {
             fn drop(&mut self) {
-                panic!("handler capture destructor");
+                panic_any(DropProbe(Arc::clone(&self.0)));
             }
         }
 
-        let captured = PanicOnDrop;
+        let drops = Arc::new(AtomicUsize::new(0));
+        let captured = PanicWithPayloadOnDrop(Arc::clone(&drops));
         let (sender, receiver) = mpsc::channel::<()>();
         let worker = CallbackWorker::spawn(receiver, move |_| {
             let _keep_capture_alive = &captured;
@@ -345,5 +352,6 @@ mod tests {
         drop(sender);
 
         assert_eq!(worker.join(), CallbackWorkerExit::WorkerPanicked);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 }
