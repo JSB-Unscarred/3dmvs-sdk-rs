@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 
 use crate::driver::DriverError;
-use crate::error::{Error, InvalidInput};
+use crate::error::{Error, InvalidInput, Operation};
 use crate::frame::{FrameRecord, ImageTypeRecord};
 use crate::opened_device::DeviceState;
 
@@ -72,7 +72,7 @@ fn no_data_is_exact_and_the_measurement_can_retry() {
     assert!(matches!(
         measurement.get_image(5),
         Err(Error::Sdk {
-            operation: "MV3D_LP_GetImage",
+            operation: Operation::GetImage,
             status,
         }) if status as u32 == 0x8006_0006
     ));
@@ -94,7 +94,7 @@ fn disconnect_preserves_status_and_cleanup_still_runs() {
     assert!(matches!(
         measurement.get_image(25),
         Err(Error::Sdk {
-            operation: "MV3D_LP_GetImage",
+            operation: Operation::GetImage,
             status,
         }) if status as u32 == 0x8006_000D
     ));

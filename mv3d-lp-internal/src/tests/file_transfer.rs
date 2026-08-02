@@ -2,7 +2,7 @@ use std::sync::Weak;
 use std::time::Duration;
 
 use crate::driver::DriverError;
-use crate::error::{ContractViolation, Error, InvalidInput};
+use crate::error::{ContractViolation, Error, InvalidInput, Operation};
 use crate::file_transfer::{FileProgressRaw, FileTransferDirection, FileTransferStatus};
 use crate::opened_device::{DeviceState, take_file_name_lifetimes_for_test};
 
@@ -234,7 +234,7 @@ fn progress_contract_violations_are_retryable() {
         assert_eq!(
             transfer.progress().unwrap_err(),
             Error::ContractViolation {
-                operation: "MV3D_LP_GetFileAccessProgress",
+                operation: Operation::GetFileAccessProgress,
                 kind: expected,
             }
         );

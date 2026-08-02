@@ -12,7 +12,7 @@ use crate::device::{DeviceRecord, IpConfigRaw, IpConfiguration};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
 use crate::driver::{Driver, DriverError, DriverResult, Handle};
-use crate::error::{ContractViolation, Error, InvalidInput};
+use crate::error::{ContractViolation, Error, InvalidInput, Operation};
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::opened_device::Device;
 
@@ -103,7 +103,7 @@ impl RuntimeInner {
     // is alive; ordinary and image calls do not need to consult the process lifecycle gate.
     pub(crate) fn call<T>(
         &self,
-        operation: &'static str,
+        operation: Operation,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
@@ -111,7 +111,7 @@ impl RuntimeInner {
 
     pub(crate) fn cleanup_call<T>(
         &self,
-        operation: &'static str,
+        operation: Operation,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
@@ -119,7 +119,7 @@ impl RuntimeInner {
 
     fn image_call<T>(
         &self,
-        operation: &'static str,
+        operation: Operation,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
         let _image_processing = self
@@ -131,7 +131,7 @@ impl RuntimeInner {
 
     pub(crate) fn open_handle(
         &self,
-        operation: &'static str,
+        operation: Operation,
         open: impl FnOnce(&dyn Driver, &mut Option<Handle>) -> DriverResult<()>,
     ) -> Result<Handle, Error> {
         let mut state = self.gate.lock();
@@ -170,7 +170,7 @@ impl RuntimeInner {
     }
 
     pub(crate) fn cleanup_close_handle(&self, handle: Handle) -> Result<(), Error> {
-        const OPERATION: &str = "MV3D_LP_CloseDevice";
+        const OPERATION: Operation = Operation::CloseDevice;
 
         let mut state = self.gate.lock();
         let (live_handles, was_degraded) = match *state {
@@ -195,7 +195,7 @@ impl RuntimeInner {
         result
     }
 
-    pub(crate) fn parameter_key(operation: &'static str, bytes: &[u8]) -> Result<CString, Error> {
+    pub(crate) fn parameter_key(operation: Operation, bytes: &[u8]) -> Result<CString, Error> {
         validated_c_string(operation, bytes, 255, true)
     }
 }
@@ -268,7 +268,7 @@ impl Runtime {
 
         let version = match driver.version() {
             Ok(version) => version,
-            Err(error) => return Err(map_driver_error("MV3D_LP_GetVersion", error)),
+            Err(error) => return Err(map_driver_error(Operation::GetVersion, error)),
         };
         let parsed_version = parse_sdk_version(&version);
         if !parsed_version.is_some_and(|version| policy.accepts(version)) {
@@ -280,7 +280,7 @@ impl Runtime {
         }
 
         if let Err(error) = driver.initialize() {
-            let initialize = map_driver_error("MV3D_LP_Initialize", error);
+            let initialize = map_driver_error(Operation::Initialize, error);
             // Initialize may have partially established process-wide native state. Preserve its
             // primary error, but only leave the session Fresh when compensating cleanup succeeds.
             if driver.finalize().is_err() {
@@ -322,16 +322,16 @@ impl Runtime {
     }
 
     pub fn device_count_hint(&self) -> Result<u32, Error> {
-        self.call("MV3D_LP_GetDeviceNumber", |driver| driver.device_number())
+        self.call(Operation::GetDeviceNumber, |driver| driver.device_number())
     }
 
     pub fn devices(&self) -> Result<Vec<DeviceRecord>, Error> {
         let hint = self.device_count_hint()?;
-        validate_device_count("MV3D_LP_GetDeviceNumber", hint)?;
+        validate_device_count(Operation::GetDeviceNumber, hint)?;
         let mut capacity = usize::try_from(hint).unwrap_or(usize::MAX).max(1);
 
         for attempt in 1..=DISCOVERY_ATTEMPTS {
-            let list = self.call("MV3D_LP_GetDeviceList", |driver| {
+            let list = self.call(Operation::GetDeviceList, |driver| {
                 driver.device_list(capacity)
             });
 
@@ -344,14 +344,14 @@ impl Runtime {
                         break;
                     }
                     let refreshed = self.device_count_hint()?;
-                    validate_device_count("MV3D_LP_GetDeviceNumber", refreshed)?;
+                    validate_device_count(Operation::GetDeviceNumber, refreshed)?;
                     capacity = grow_capacity(capacity, refreshed)?;
                     continue;
                 }
                 Err(error) => return Err(error),
             };
 
-            validate_device_count("MV3D_LP_GetDeviceList", list.reported)?;
+            validate_device_count(Operation::GetDeviceList, list.reported)?;
             let reported = usize::try_from(list.reported).unwrap_or(usize::MAX);
             if reported > capacity {
                 if attempt == DISCOVERY_ATTEMPTS {
@@ -362,7 +362,7 @@ impl Runtime {
             }
             if list.records.len() != reported {
                 return Err(Error::ContractViolation {
-                    operation: "MV3D_LP_GetDeviceList",
+                    operation: Operation::GetDeviceList,
                     kind: ContractViolation::DeviceListCountMismatch {
                         reported: list.reported,
                         returned: list.records.len(),
@@ -374,7 +374,7 @@ impl Runtime {
             records
                 .try_reserve_exact(reported)
                 .map_err(|_| Error::AllocationFailed {
-                    operation: "MV3D_LP_GetDeviceList",
+                    operation: Operation::GetDeviceList,
                     requested: reported,
                 })?;
             records.extend(list.records.into_iter().map(DeviceRecord::from));
@@ -391,24 +391,24 @@ impl Runtime {
         serial_number: &[u8],
         configuration: &IpConfiguration,
     ) -> Result<(), Error> {
-        let serial = validated_c_string("MV3D_LP_SetIpConfig", serial_number, 16, false)?;
+        let serial = validated_c_string(Operation::SetIpConfig, serial_number, 16, false)?;
         let raw = IpConfigRaw::from(configuration);
-        self.call("MV3D_LP_SetIpConfig", |driver| {
+        self.call(Operation::SetIpConfig, |driver| {
             driver.set_ip_config(&serial, &raw)
         })
     }
 
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device<'_>, Error> {
         let address = CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
-        let handle = self.open("MV3D_LP_OpenDeviceByIP", |driver, output| {
+        let handle = self.open(Operation::OpenDeviceByIp, |driver, output| {
             driver.open_by_ip(&address, output)
         })?;
         Ok(Device::new(&self.inner, handle))
     }
 
     pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device<'_>, Error> {
-        let serial = validated_c_string("MV3D_LP_OpenDeviceBySN", serial_number, 16, false)?;
-        let handle = self.open("MV3D_LP_OpenDeviceBySN", |driver, output| {
+        let serial = validated_c_string(Operation::OpenDeviceBySn, serial_number, 16, false)?;
+        let handle = self.open(Operation::OpenDeviceBySn, |driver, output| {
             driver.open_by_serial(&serial, output)
         })?;
         Ok(Device::new(&self.inner, handle))
@@ -416,7 +416,7 @@ impl Runtime {
 
     pub fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> Result<FrameRecord, Error> {
         self.inner
-            .image_call("MV3D_LP_MapDepthToPointCloud", |driver| {
+            .image_call(Operation::MapDepthToPointCloud, |driver| {
                 driver.map_depth_to_point_cloud(input)
             })
     }
@@ -426,7 +426,7 @@ impl Runtime {
         inputs: &[ImageInput<'_>],
     ) -> Result<FrameRecord, Error> {
         self.inner
-            .image_call("MV3D_LP_MapDepthToPointCloudRound", |driver| {
+            .image_call(Operation::MapDepthToPointCloudRound, |driver| {
                 driver.map_depth_to_point_cloud_round(inputs)
             })
     }
@@ -436,14 +436,14 @@ impl Runtime {
         input: ImageInput<'_>,
         target: ImageTypeRecord,
     ) -> Result<FrameRecord, Error> {
-        self.inner.image_call("MV3D_LP_ImageConvert", |driver| {
+        self.inner.image_call(Operation::ImageConvert, |driver| {
             driver.convert_image(input, target)
         })
     }
 
     pub fn mosaic_depth(&self, inputs: &[ImageInput<'_>]) -> Result<FrameRecord, Error> {
         self.inner
-            .image_call("MV3D_LP_DepthMosaic", |driver| driver.mosaic_depth(inputs))
+            .image_call(Operation::DepthMosaic, |driver| driver.mosaic_depth(inputs))
     }
 
     pub fn save_image(
@@ -453,8 +453,8 @@ impl Runtime {
         file_name: &[u8],
     ) -> Result<(), Error> {
         let file_name =
-            validated_c_string("MV3D_LP_SaveImage", file_name, u32::MAX as usize, false)?;
-        self.inner.image_call("MV3D_LP_SaveImage", |driver| {
+            validated_c_string(Operation::SaveImage, file_name, u32::MAX as usize, false)?;
+        self.inner.image_call(Operation::SaveImage, |driver| {
             driver.save_image(input, format, &file_name)
         })
     }
@@ -466,7 +466,7 @@ impl Runtime {
         window: NonZeroIsize,
         range: DisplayRangeRecord,
     ) -> Result<(), Error> {
-        self.inner.image_call("MV3D_LP_DisplayImage", |driver| {
+        self.inner.image_call(Operation::DisplayImage, |driver| {
             driver.display_image(input, window, range)
         })
     }
@@ -477,7 +477,7 @@ impl Runtime {
 
     fn open(
         &self,
-        operation: &'static str,
+        operation: Operation,
         open: impl FnOnce(&dyn Driver, &mut Option<Handle>) -> DriverResult<()>,
     ) -> Result<Handle, Error> {
         self.inner.open_handle(operation, open)
@@ -485,7 +485,7 @@ impl Runtime {
 
     fn call<T>(
         &self,
-        operation: &'static str,
+        operation: Operation,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
         self.inner.call(operation, call)
@@ -521,7 +521,7 @@ impl Runtime {
             }
             Err(error) => {
                 *state = ProcessSdkState::Degraded { live_handles: 0 };
-                Err(map_driver_error("MV3D_LP_Finalize", error))
+                Err(map_driver_error(Operation::Finalize, error))
             }
         }
     }
@@ -547,7 +547,7 @@ fn parse_sdk_version(bytes: &[u8]) -> Option<SdkVersion> {
     Some(SdkVersion::new(major, minor, patch, build))
 }
 
-fn map_driver_error(operation: &'static str, error: DriverError) -> Error {
+fn map_driver_error(operation: Operation, error: DriverError) -> Error {
     match error {
         DriverError::Status(status) => Error::Sdk { operation, status },
         DriverError::Contract(kind) => Error::ContractViolation { operation, kind },
@@ -562,7 +562,7 @@ fn map_driver_error(operation: &'static str, error: DriverError) -> Error {
     }
 }
 
-fn validate_device_count(operation: &'static str, count: u32) -> Result<(), Error> {
+fn validate_device_count(operation: Operation, count: u32) -> Result<(), Error> {
     if usize::try_from(count).unwrap_or(usize::MAX) > MAX_DEVICE_COUNT {
         Err(Error::ContractViolation {
             operation,
@@ -577,13 +577,13 @@ fn validate_device_count(operation: &'static str, count: u32) -> Result<(), Erro
 }
 
 fn grow_capacity(current: usize, reported: u32) -> Result<usize, Error> {
-    validate_device_count("MV3D_LP_GetDeviceList", reported)?;
+    validate_device_count(Operation::GetDeviceList, reported)?;
     let reported = usize::try_from(reported).unwrap_or(usize::MAX);
     let doubled = current.saturating_mul(2).min(MAX_DEVICE_COUNT);
     let next = reported.max(doubled).max(current.saturating_add(1));
     if next > MAX_DEVICE_COUNT {
         return Err(Error::ContractViolation {
-            operation: "MV3D_LP_GetDeviceList",
+            operation: Operation::GetDeviceList,
             kind: ContractViolation::DeviceCountExceedsLimit {
                 reported: u32::try_from(next).unwrap_or(u32::MAX),
                 limit: MAX_DEVICE_COUNT,
@@ -594,7 +594,7 @@ fn grow_capacity(current: usize, reported: u32) -> Result<usize, Error> {
 }
 
 fn validated_c_string(
-    operation: &'static str,
+    operation: Operation,
     bytes: &[u8],
     maximum: usize,
     require_ascii: bool,

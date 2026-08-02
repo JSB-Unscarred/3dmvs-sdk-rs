@@ -10,11 +10,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 
 use crate::bindings;
 use crate::driver::{DriverError, DriverResult};
-use crate::error::{ContractViolation, Error};
+use crate::error::{ContractViolation, Error, Operation};
 use crate::frame::FrameRecord;
 
-const REGISTER_IMAGE_OPERATION: &str = "MV3D_LP_RegisterImageDataCallBack";
-const REGISTER_EXCEPTION_OPERATION: &str = "MV3D_LP_RegisterExceptionCallBack";
+const REGISTER_IMAGE_OPERATION: Operation = Operation::RegisterImageDataCallback;
+const REGISTER_EXCEPTION_OPERATION: Operation = Operation::RegisterExceptionCallback;
 const MAX_COOKIE: usize = isize::MAX as usize;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -325,7 +325,7 @@ impl CallbackRegistration {
         Self::new(REGISTER_EXCEPTION_OPERATION, CallbackSink::Exception(sink))
     }
 
-    fn new(operation: &'static str, sink: CallbackSink) -> Result<Self, Error> {
+    fn new(operation: Operation, sink: CallbackSink) -> Result<Self, Error> {
         let entry = Arc::new(CallbackEntry::new(sink));
         let cookie = registry()
             .insert(Arc::clone(&entry))

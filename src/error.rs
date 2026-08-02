@@ -1,86 +1,9 @@
 use crate::{SdkText, SdkVersion};
+pub use mv3d_lp_internal::Operation;
 use std::error::Error as StdError;
 use std::fmt;
 
 pub type Result<T> = std::result::Result<T, Error>;
-
-/// Identifies the SDK operation associated with an error.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub enum Operation {
-    GetVersion,
-    Initialize,
-    Finalize,
-    GetDeviceNumber,
-    GetDeviceList,
-    OpenDeviceByIp,
-    OpenDeviceBySn,
-    CloseDevice,
-    SetIpConfig,
-    StartMeasure,
-    StopMeasure,
-    SoftTrigger,
-    ClearDataBuffer,
-    GetImage,
-    RegisterImageDataCallback,
-    RegisterExceptionCallback,
-    GetParam,
-    SetParam,
-    Execute,
-    FileAccessRead,
-    FileAccessWrite,
-    GetFileAccessProgress,
-    MapDepthToPointCloud,
-    MapDepthToPointCloudRound,
-    ImageConvert,
-    DepthMosaic,
-    SaveImage,
-    #[cfg(feature = "display-windows")]
-    DisplayImage,
-}
-
-impl Operation {
-    #[must_use]
-    pub const fn sdk_name(self) -> &'static str {
-        match self {
-            Self::GetVersion => "MV3D_LP_GetVersion",
-            Self::Initialize => "MV3D_LP_Initialize",
-            Self::Finalize => "MV3D_LP_Finalize",
-            Self::GetDeviceNumber => "MV3D_LP_GetDeviceNumber",
-            Self::GetDeviceList => "MV3D_LP_GetDeviceList",
-            Self::OpenDeviceByIp => "MV3D_LP_OpenDeviceByIP",
-            Self::OpenDeviceBySn => "MV3D_LP_OpenDeviceBySN",
-            Self::CloseDevice => "MV3D_LP_CloseDevice",
-            Self::SetIpConfig => "MV3D_LP_SetIpConfig",
-            Self::StartMeasure => "MV3D_LP_StartMeasure",
-            Self::StopMeasure => "MV3D_LP_StopMeasure",
-            Self::SoftTrigger => "MV3D_LP_SoftTrigger",
-            Self::ClearDataBuffer => "MV3D_LP_ClearDataBuffer",
-            Self::GetImage => "MV3D_LP_GetImage",
-            Self::RegisterImageDataCallback => "MV3D_LP_RegisterImageDataCallBack",
-            Self::RegisterExceptionCallback => "MV3D_LP_RegisterExceptionCallBack",
-            Self::GetParam => "MV3D_LP_GetParam",
-            Self::SetParam => "MV3D_LP_SetParam",
-            Self::Execute => "MV3D_LP_Execute",
-            Self::FileAccessRead => "MV3D_LP_FileAccessRead",
-            Self::FileAccessWrite => "MV3D_LP_FileAccessWrite",
-            Self::GetFileAccessProgress => "MV3D_LP_GetFileAccessProgress",
-            Self::MapDepthToPointCloud => "MV3D_LP_MapDepthToPointCloud",
-            Self::MapDepthToPointCloudRound => "MV3D_LP_MapDepthToPointCloudRound",
-            Self::ImageConvert => "MV3D_LP_ImageConvert",
-            Self::DepthMosaic => "MV3D_LP_DepthMosaic",
-            Self::SaveImage => "MV3D_LP_SaveImage",
-            #[cfg(feature = "display-windows")]
-            Self::DisplayImage => "MV3D_LP_DisplayImage",
-        }
-    }
-}
-
-impl fmt::Display for Operation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.sdk_name())
-    }
-}
 
 /// A status returned by the SDK, stored as its exact 32-bit bit pattern.
 ///
@@ -656,12 +579,10 @@ impl From<mv3d_lp_internal::Error> for Error {
                     },
                 }
             }
-            InternalError::Sdk { operation, status } => Self::Sdk(SdkError::new(
-                operation_from_sdk_name(operation),
-                StatusCode::from_raw(status),
-            )),
+            InternalError::Sdk { operation, status } => {
+                Self::Sdk(SdkError::new(operation, StatusCode::from_raw(status)))
+            }
             InternalError::InvalidState { operation, state } => {
-                let operation = operation_from_sdk_name(operation);
                 let expected = match operation {
                     Operation::RegisterImageDataCallback | Operation::RegisterExceptionCallback => {
                         "open with no previous callback registration"
@@ -682,7 +603,7 @@ impl From<mv3d_lp_internal::Error> for Error {
                 }
             }
             InternalError::InvalidInput { operation, kind } => Self::InvalidInput {
-                field: operation,
+                field: operation.sdk_name(),
                 violation: match kind {
                     mv3d_lp_internal::InvalidInput::Empty => InputViolation::Empty,
                     mv3d_lp_internal::InvalidInput::InteriorNul => InputViolation::InteriorNul,
@@ -729,7 +650,6 @@ impl From<mv3d_lp_internal::Error> for Error {
                 },
             },
             InternalError::ContractViolation { operation, kind } => {
-                let operation = operation_from_sdk_name(operation);
                 let violation = match kind {
                     InternalContract::NullVersionPointer => ContractViolation::NullPointer {
                         field: "SDK version",
@@ -832,14 +752,14 @@ impl From<mv3d_lp_internal::Error> for Error {
             }
             InternalError::OpenFailedWithHandle { operation, source } => {
                 Self::OpenFailedWithHandle {
-                    operation: operation_from_sdk_name(operation),
+                    operation,
                     source: Box::new(Self::from(*source)),
                 }
             }
             InternalError::DiscoveryChanged { attempts } => Self::DiscoveryChanged { attempts },
-            InternalError::AllocationFailed { operation, .. } => Self::AllocationFailed {
-                operation: operation_from_sdk_name(operation),
-            },
+            InternalError::AllocationFailed { operation, .. } => {
+                Self::AllocationFailed { operation }
+            }
             InternalError::UnclosedDevices {
                 live_handles,
                 teardown_uncertain,
@@ -848,41 +768,6 @@ impl From<mv3d_lp_internal::Error> for Error {
                 teardown_uncertain,
             },
         }
-    }
-}
-
-pub(crate) fn operation_from_sdk_name(name: &'static str) -> Operation {
-    match name {
-        "MV3D_LP_GetVersion" => Operation::GetVersion,
-        "MV3D_LP_Initialize" => Operation::Initialize,
-        "MV3D_LP_Finalize" => Operation::Finalize,
-        "MV3D_LP_GetDeviceNumber" => Operation::GetDeviceNumber,
-        "MV3D_LP_GetDeviceList" => Operation::GetDeviceList,
-        "MV3D_LP_OpenDeviceByIP" => Operation::OpenDeviceByIp,
-        "MV3D_LP_OpenDeviceBySN" => Operation::OpenDeviceBySn,
-        "MV3D_LP_CloseDevice" => Operation::CloseDevice,
-        "MV3D_LP_SetIpConfig" => Operation::SetIpConfig,
-        "MV3D_LP_StartMeasure" => Operation::StartMeasure,
-        "MV3D_LP_StopMeasure" => Operation::StopMeasure,
-        "MV3D_LP_SoftTrigger" => Operation::SoftTrigger,
-        "MV3D_LP_ClearDataBuffer" => Operation::ClearDataBuffer,
-        "MV3D_LP_GetImage" => Operation::GetImage,
-        "MV3D_LP_RegisterImageDataCallBack" => Operation::RegisterImageDataCallback,
-        "MV3D_LP_RegisterExceptionCallBack" => Operation::RegisterExceptionCallback,
-        "MV3D_LP_GetParam" => Operation::GetParam,
-        "MV3D_LP_SetParam" => Operation::SetParam,
-        "MV3D_LP_Execute" => Operation::Execute,
-        "MV3D_LP_FileAccessRead" => Operation::FileAccessRead,
-        "MV3D_LP_FileAccessWrite" => Operation::FileAccessWrite,
-        "MV3D_LP_GetFileAccessProgress" => Operation::GetFileAccessProgress,
-        "MV3D_LP_MapDepthToPointCloud" => Operation::MapDepthToPointCloud,
-        "MV3D_LP_MapDepthToPointCloudRound" => Operation::MapDepthToPointCloudRound,
-        "MV3D_LP_ImageConvert" => Operation::ImageConvert,
-        "MV3D_LP_DepthMosaic" => Operation::DepthMosaic,
-        "MV3D_LP_SaveImage" => Operation::SaveImage,
-        #[cfg(feature = "display-windows")]
-        "MV3D_LP_DisplayImage" => Operation::DisplayImage,
-        _ => unreachable!("internal wrapper used an unknown operation name: {name}"),
     }
 }
 

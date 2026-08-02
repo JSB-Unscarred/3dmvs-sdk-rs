@@ -1,5 +1,83 @@
 use std::fmt;
 
+/// Identifies the SDK operation associated with an error.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum Operation {
+    GetVersion,
+    Initialize,
+    Finalize,
+    GetDeviceNumber,
+    GetDeviceList,
+    OpenDeviceByIp,
+    OpenDeviceBySn,
+    CloseDevice,
+    SetIpConfig,
+    StartMeasure,
+    StopMeasure,
+    SoftTrigger,
+    ClearDataBuffer,
+    GetImage,
+    RegisterImageDataCallback,
+    RegisterExceptionCallback,
+    GetParam,
+    SetParam,
+    Execute,
+    FileAccessRead,
+    FileAccessWrite,
+    GetFileAccessProgress,
+    MapDepthToPointCloud,
+    MapDepthToPointCloudRound,
+    ImageConvert,
+    DepthMosaic,
+    SaveImage,
+    #[cfg(feature = "display-windows")]
+    DisplayImage,
+}
+
+impl Operation {
+    #[must_use]
+    pub const fn sdk_name(self) -> &'static str {
+        match self {
+            Self::GetVersion => "MV3D_LP_GetVersion",
+            Self::Initialize => "MV3D_LP_Initialize",
+            Self::Finalize => "MV3D_LP_Finalize",
+            Self::GetDeviceNumber => "MV3D_LP_GetDeviceNumber",
+            Self::GetDeviceList => "MV3D_LP_GetDeviceList",
+            Self::OpenDeviceByIp => "MV3D_LP_OpenDeviceByIP",
+            Self::OpenDeviceBySn => "MV3D_LP_OpenDeviceBySN",
+            Self::CloseDevice => "MV3D_LP_CloseDevice",
+            Self::SetIpConfig => "MV3D_LP_SetIpConfig",
+            Self::StartMeasure => "MV3D_LP_StartMeasure",
+            Self::StopMeasure => "MV3D_LP_StopMeasure",
+            Self::SoftTrigger => "MV3D_LP_SoftTrigger",
+            Self::ClearDataBuffer => "MV3D_LP_ClearDataBuffer",
+            Self::GetImage => "MV3D_LP_GetImage",
+            Self::RegisterImageDataCallback => "MV3D_LP_RegisterImageDataCallBack",
+            Self::RegisterExceptionCallback => "MV3D_LP_RegisterExceptionCallBack",
+            Self::GetParam => "MV3D_LP_GetParam",
+            Self::SetParam => "MV3D_LP_SetParam",
+            Self::Execute => "MV3D_LP_Execute",
+            Self::FileAccessRead => "MV3D_LP_FileAccessRead",
+            Self::FileAccessWrite => "MV3D_LP_FileAccessWrite",
+            Self::GetFileAccessProgress => "MV3D_LP_GetFileAccessProgress",
+            Self::MapDepthToPointCloud => "MV3D_LP_MapDepthToPointCloud",
+            Self::MapDepthToPointCloudRound => "MV3D_LP_MapDepthToPointCloudRound",
+            Self::ImageConvert => "MV3D_LP_ImageConvert",
+            Self::DepthMosaic => "MV3D_LP_DepthMosaic",
+            Self::SaveImage => "MV3D_LP_SaveImage",
+            #[cfg(feature = "display-windows")]
+            Self::DisplayImage => "MV3D_LP_DisplayImage",
+        }
+    }
+}
+
+impl fmt::Display for Operation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.sdk_name())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContractViolation {
     NullVersionPointer,
@@ -111,30 +189,30 @@ pub enum Error {
         actual: Vec<u8>,
     },
     Sdk {
-        operation: &'static str,
+        operation: Operation,
         status: i32,
     },
     InvalidState {
-        operation: &'static str,
+        operation: Operation,
         state: &'static str,
     },
     InvalidInput {
-        operation: &'static str,
+        operation: Operation,
         kind: InvalidInput,
     },
     ContractViolation {
-        operation: &'static str,
+        operation: Operation,
         kind: ContractViolation,
     },
     OpenFailedWithHandle {
-        operation: &'static str,
+        operation: Operation,
         source: Box<Error>,
     },
     DiscoveryChanged {
         attempts: usize,
     },
     AllocationFailed {
-        operation: &'static str,
+        operation: Operation,
         requested: usize,
     },
     UnclosedDevices {

@@ -12,7 +12,7 @@ use crate::callback::{
     CallbackRegistration, CallbackStatsRecord, ExceptionCallbackSink, FrameCallbackSink,
 };
 use crate::driver::Handle;
-use crate::error::{Error, InvalidInput};
+use crate::error::{Error, InvalidInput, Operation};
 use crate::file_transfer::{FileProgress, FileTransferDirection, FileTransferStatus};
 use crate::frame::FrameRecord;
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
@@ -100,9 +100,10 @@ impl<'runtime> Device<'runtime> {
     }
 
     pub fn start(&mut self) -> Result<Measurement<'_>, Error> {
-        self.require_state("MV3D_LP_StartMeasure", &[DeviceState::Open])?;
-        self.runtime
-            .call("MV3D_LP_StartMeasure", |driver| driver.start(self.handle()))?;
+        self.require_state(Operation::StartMeasure, &[DeviceState::Open])?;
+        self.runtime.call(Operation::StartMeasure, |driver| {
+            driver.start(self.handle())
+        })?;
         self.state = DeviceState::Measuring;
         let handle = self.handle();
         Ok(Measurement {
@@ -118,7 +119,7 @@ impl<'runtime> Device<'runtime> {
         &mut self,
         sink: FrameCallbackSink,
     ) -> Result<CallbackMeasurement<'_>, Error> {
-        const OPERATION: &str = "MV3D_LP_RegisterImageDataCallBack";
+        const OPERATION: Operation = Operation::RegisterImageDataCallback;
         self.require_state(OPERATION, &[DeviceState::Open])?;
 
         let mut registration = CallbackRegistration::image(sink)?;
@@ -130,9 +131,9 @@ impl<'runtime> Device<'runtime> {
             return Err(error);
         }
 
-        let start = self
-            .runtime
-            .call("MV3D_LP_StartMeasure", |driver| driver.start(self.handle()));
+        let start = self.runtime.call(Operation::StartMeasure, |driver| {
+            driver.start(self.handle())
+        });
         match start {
             Ok(()) => {
                 self.state = DeviceState::CallbackMeasuring;
@@ -158,7 +159,7 @@ impl<'runtime> Device<'runtime> {
         &mut self,
         sink: ExceptionCallbackSink,
     ) -> Result<(), Error> {
-        const OPERATION: &str = "MV3D_LP_RegisterExceptionCallBack";
+        const OPERATION: Operation = Operation::RegisterExceptionCallback;
         self.require_state(OPERATION, &[DeviceState::Open])?;
 
         let mut registration = CallbackRegistration::exception(sink)?;
@@ -187,28 +188,28 @@ impl<'runtime> Device<'runtime> {
 
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
         self.require_state(
-            "MV3D_LP_ClearDataBuffer",
+            Operation::ClearDataBuffer,
             &[DeviceState::Open, DeviceState::Measuring],
         )?;
-        self.runtime.call("MV3D_LP_ClearDataBuffer", |driver| {
+        self.runtime.call(Operation::ClearDataBuffer, |driver| {
             driver.clear_buffer(self.handle())
         })
     }
 
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<ParameterRecord, Error> {
-        self.require_usable("MV3D_LP_GetParam")?;
-        let key = RuntimeInner::parameter_key("MV3D_LP_GetParam", key)?;
-        self.runtime.call("MV3D_LP_GetParam", |driver| {
+        self.require_usable(Operation::GetParam)?;
+        let key = RuntimeInner::parameter_key(Operation::GetParam, key)?;
+        self.runtime.call(Operation::GetParam, |driver| {
             driver.get_parameter(self.handle(), &key)
         })
     }
 
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValueRecord) -> Result<(), Error> {
-        self.require_usable("MV3D_LP_SetParam")?;
+        self.require_usable(Operation::SetParam)?;
         if let ParameterValueRecord::String(value) = value {
             if value.len() > 255 {
                 return Err(Error::InvalidInput {
-                    operation: "MV3D_LP_SetParam",
+                    operation: Operation::SetParam,
                     kind: InvalidInput::TooLong {
                         actual: value.len(),
                         maximum: 255,
@@ -217,21 +218,21 @@ impl<'runtime> Device<'runtime> {
             }
             if value.contains(&0) {
                 return Err(Error::InvalidInput {
-                    operation: "MV3D_LP_SetParam",
+                    operation: Operation::SetParam,
                     kind: InvalidInput::InteriorNul,
                 });
             }
         }
-        let key = RuntimeInner::parameter_key("MV3D_LP_SetParam", key)?;
-        self.runtime.call("MV3D_LP_SetParam", |driver| {
+        let key = RuntimeInner::parameter_key(Operation::SetParam, key)?;
+        self.runtime.call(Operation::SetParam, |driver| {
             driver.set_parameter(self.handle(), &key, value)
         })
     }
 
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
-        self.require_usable("MV3D_LP_Execute")?;
-        let key = RuntimeInner::parameter_key("MV3D_LP_Execute", key)?;
-        self.runtime.call("MV3D_LP_Execute", |driver| {
+        self.require_usable(Operation::Execute)?;
+        let key = RuntimeInner::parameter_key(Operation::Execute, key)?;
+        self.runtime.call(Operation::Execute, |driver| {
             driver.execute(self.handle(), &key)
         })
     }
@@ -242,7 +243,7 @@ impl<'runtime> Device<'runtime> {
         user_file_name: &[u8],
     ) -> Result<FileTransfer<'_>, Error> {
         self.begin_file_transfer(
-            "MV3D_LP_FileAccessRead",
+            Operation::FileAccessRead,
             FileTransferDirection::DeviceToHost,
             user_file_name,
             device_file_name,
@@ -255,7 +256,7 @@ impl<'runtime> Device<'runtime> {
         device_file_name: &[u8],
     ) -> Result<FileTransfer<'_>, Error> {
         self.begin_file_transfer(
-            "MV3D_LP_FileAccessWrite",
+            Operation::FileAccessWrite,
             FileTransferDirection::HostToDevice,
             user_file_name,
             device_file_name,
@@ -264,7 +265,7 @@ impl<'runtime> Device<'runtime> {
 
     fn begin_file_transfer(
         &mut self,
-        operation: &'static str,
+        operation: Operation,
         direction: FileTransferDirection,
         user_file_name: &[u8],
         device_file_name: &[u8],
@@ -361,7 +362,7 @@ impl<'runtime> Device<'runtime> {
         ) || (self.state == DeviceState::Faulted && self.pending_transfer.is_none())
         {
             self.runtime
-                .cleanup_call("MV3D_LP_StopMeasure", |driver| driver.stop(handle))
+                .cleanup_call(Operation::StopMeasure, |driver| driver.stop(handle))
                 .err()
                 .map(Box::new)
         } else {
@@ -386,11 +387,11 @@ impl<'runtime> Device<'runtime> {
         self.handle.expect("a live device always has a handle")
     }
 
-    fn require_usable(&self, operation: &'static str) -> Result<(), Error> {
+    fn require_usable(&self, operation: Operation) -> Result<(), Error> {
         self.require_state(operation, &[DeviceState::Open, DeviceState::Measuring])
     }
 
-    fn require_state(&self, operation: &'static str, allowed: &[DeviceState]) -> Result<(), Error> {
+    fn require_state(&self, operation: Operation, allowed: &[DeviceState]) -> Result<(), Error> {
         if allowed.contains(&self.state) {
             Ok(())
         } else {
@@ -490,7 +491,7 @@ impl FileTransfer<'_> {
     }
 
     pub fn progress(&mut self) -> Result<FileTransferStatus, Error> {
-        const OPERATION: &str = "MV3D_LP_GetFileAccessProgress";
+        const OPERATION: Operation = Operation::GetFileAccessProgress;
 
         if *self.state != DeviceState::Transferring {
             return Err(Error::InvalidState {
@@ -597,7 +598,7 @@ impl FileTransfer<'_> {
     }
 }
 
-fn validated_file_name(operation: &'static str, bytes: &[u8]) -> Result<CString, Error> {
+fn validated_file_name(operation: Operation, bytes: &[u8]) -> Result<CString, Error> {
     if bytes.is_empty() {
         return Err(Error::InvalidInput {
             operation,
@@ -629,8 +630,8 @@ impl CallbackMeasurement<'_> {
     }
 
     pub fn soft_trigger(&mut self) -> Result<(), Error> {
-        self.require_measuring("MV3D_LP_SoftTrigger")?;
-        self.runtime.call("MV3D_LP_SoftTrigger", |driver| {
+        self.require_measuring(Operation::SoftTrigger)?;
+        self.runtime.call(Operation::SoftTrigger, |driver| {
             driver.soft_trigger(self.handle)
         })
     }
@@ -650,13 +651,13 @@ impl CallbackMeasurement<'_> {
 
     fn stop_with(&mut self, cleanup: bool) -> Result<(), Error> {
         self.deactivate_callback();
-        self.require_measuring("MV3D_LP_StopMeasure")?;
+        self.require_measuring(Operation::StopMeasure)?;
         let result = if cleanup {
             self.runtime
-                .cleanup_call("MV3D_LP_StopMeasure", |driver| driver.stop(self.handle))
+                .cleanup_call(Operation::StopMeasure, |driver| driver.stop(self.handle))
         } else {
             self.runtime
-                .call("MV3D_LP_StopMeasure", |driver| driver.stop(self.handle))
+                .call(Operation::StopMeasure, |driver| driver.stop(self.handle))
         };
         match result {
             Ok(()) => {
@@ -676,7 +677,7 @@ impl CallbackMeasurement<'_> {
         }
     }
 
-    fn require_measuring(&self, operation: &'static str) -> Result<(), Error> {
+    fn require_measuring(&self, operation: Operation) -> Result<(), Error> {
         if *self.state == DeviceState::CallbackMeasuring {
             Ok(())
         } else {
@@ -716,56 +717,56 @@ impl Measurement<'_> {
     }
 
     pub fn soft_trigger(&mut self) -> Result<(), Error> {
-        self.require_measuring("MV3D_LP_SoftTrigger")?;
-        self.runtime.call("MV3D_LP_SoftTrigger", |driver| {
+        self.require_measuring(Operation::SoftTrigger)?;
+        self.runtime.call(Operation::SoftTrigger, |driver| {
             driver.soft_trigger(self.handle)
         })
     }
 
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
-        self.require_measuring("MV3D_LP_ClearDataBuffer")?;
-        self.runtime.call("MV3D_LP_ClearDataBuffer", |driver| {
+        self.require_measuring(Operation::ClearDataBuffer)?;
+        self.runtime.call(Operation::ClearDataBuffer, |driver| {
             driver.clear_buffer(self.handle)
         })
     }
 
     pub fn get_image(&mut self, timeout_ms: u32) -> Result<FrameRecord, Error> {
-        self.require_measuring("MV3D_LP_GetImage")?;
+        self.require_measuring(Operation::GetImage)?;
         if timeout_ms == u32::MAX {
             return Err(Error::InvalidInput {
-                operation: "MV3D_LP_GetImage",
+                operation: Operation::GetImage,
                 kind: InvalidInput::TimeoutTooLong {
                     maximum_millis: u32::MAX - 1,
                     actual_millis: u128::from(timeout_ms),
                 },
             });
         }
-        self.runtime.call("MV3D_LP_GetImage", |driver| {
+        self.runtime.call(Operation::GetImage, |driver| {
             driver.get_image(self.handle, timeout_ms)
         })
     }
 
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<ParameterRecord, Error> {
-        self.require_measuring("MV3D_LP_GetParam")?;
-        let key = RuntimeInner::parameter_key("MV3D_LP_GetParam", key)?;
-        self.runtime.call("MV3D_LP_GetParam", |driver| {
+        self.require_measuring(Operation::GetParam)?;
+        let key = RuntimeInner::parameter_key(Operation::GetParam, key)?;
+        self.runtime.call(Operation::GetParam, |driver| {
             driver.get_parameter(self.handle, &key)
         })
     }
 
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValueRecord) -> Result<(), Error> {
-        self.require_measuring("MV3D_LP_SetParam")?;
-        validate_parameter_value("MV3D_LP_SetParam", value)?;
-        let key = RuntimeInner::parameter_key("MV3D_LP_SetParam", key)?;
-        self.runtime.call("MV3D_LP_SetParam", |driver| {
+        self.require_measuring(Operation::SetParam)?;
+        validate_parameter_value(Operation::SetParam, value)?;
+        let key = RuntimeInner::parameter_key(Operation::SetParam, key)?;
+        self.runtime.call(Operation::SetParam, |driver| {
             driver.set_parameter(self.handle, &key, value)
         })
     }
 
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
-        self.require_measuring("MV3D_LP_Execute")?;
-        let key = RuntimeInner::parameter_key("MV3D_LP_Execute", key)?;
-        self.runtime.call("MV3D_LP_Execute", |driver| {
+        self.require_measuring(Operation::Execute)?;
+        let key = RuntimeInner::parameter_key(Operation::Execute, key)?;
+        self.runtime.call(Operation::Execute, |driver| {
             driver.execute(self.handle, &key)
         })
     }
@@ -777,13 +778,13 @@ impl Measurement<'_> {
     }
 
     fn stop_with(&mut self, cleanup: bool) -> Result<(), Error> {
-        self.require_measuring("MV3D_LP_StopMeasure")?;
+        self.require_measuring(Operation::StopMeasure)?;
         let result = if cleanup {
             self.runtime
-                .cleanup_call("MV3D_LP_StopMeasure", |driver| driver.stop(self.handle))
+                .cleanup_call(Operation::StopMeasure, |driver| driver.stop(self.handle))
         } else {
             self.runtime
-                .call("MV3D_LP_StopMeasure", |driver| driver.stop(self.handle))
+                .call(Operation::StopMeasure, |driver| driver.stop(self.handle))
         };
         match result {
             Ok(()) => {
@@ -797,7 +798,7 @@ impl Measurement<'_> {
         }
     }
 
-    fn require_measuring(&self, operation: &'static str) -> Result<(), Error> {
+    fn require_measuring(&self, operation: Operation) -> Result<(), Error> {
         if *self.state == DeviceState::Measuring {
             Ok(())
         } else {
@@ -819,7 +820,7 @@ impl Drop for Measurement<'_> {
 }
 
 fn validate_parameter_value(
-    operation: &'static str,
+    operation: Operation,
     value: &ParameterValueRecord,
 ) -> Result<(), Error> {
     if let ParameterValueRecord::String(value) = value {

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::driver::DriverError;
-use crate::error::{ContractViolation, Error};
+use crate::error::{ContractViolation, Error, Operation};
 use crate::runtime::{Gate, Runtime};
 
 use super::mock_driver::{FfiOp, MockDriver};
@@ -65,7 +65,7 @@ fn initialization_cleanup_failure_degrades_the_process_sdk_state() {
     assert!(matches!(
         first,
         Err(Error::Sdk {
-            operation: "MV3D_LP_Initialize",
+            operation: Operation::Initialize,
             ..
         })
     ));
@@ -208,7 +208,7 @@ fn handle_count_overflow_degrades_the_process_sdk_state() {
     assert!(matches!(
         runtime.open_by_ip("192.0.2.1".parse().unwrap()),
         Err(Error::ContractViolation {
-            operation: "MV3D_LP_OpenDeviceByIP",
+            operation: Operation::OpenDeviceByIp,
             kind: ContractViolation::HandleCountOverflow,
         })
     ));

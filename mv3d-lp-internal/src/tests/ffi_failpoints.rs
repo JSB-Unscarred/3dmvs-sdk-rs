@@ -11,7 +11,7 @@ use crate::device::{IpConfigRaw, IpConfiguration};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
 use crate::driver::{Driver, DriverError, DriverResult};
-use crate::error::Error;
+use crate::error::{Error, Operation};
 use crate::frame::{ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::parameter::ParameterValueRecord;
 
@@ -79,14 +79,14 @@ fn previously_missing_control_failures_are_observable_without_poisoning_the_runt
     assert!(matches!(
         runtime.open_by_serial(b"SERIAL"),
         Err(Error::Sdk {
-            operation: "MV3D_LP_OpenDeviceBySN",
+            operation: Operation::OpenDeviceBySn,
             status: INJECTED_STATUS,
         })
     ));
     assert!(matches!(
         runtime.set_ip_config(b"SERIAL", &IpConfiguration::Dhcp),
         Err(Error::Sdk {
-            operation: "MV3D_LP_SetIpConfig",
+            operation: Operation::SetIpConfig,
             status: INJECTED_STATUS,
         })
     ));
@@ -96,7 +96,7 @@ fn previously_missing_control_failures_are_observable_without_poisoning_the_runt
     assert!(matches!(
         device.set_parameter(b"Enabled", &ParameterValueRecord::Bool(true)),
         Err(Error::Sdk {
-            operation: "MV3D_LP_SetParam",
+            operation: Operation::SetParam,
             status: INJECTED_STATUS,
         })
     ));
@@ -104,7 +104,7 @@ fn previously_missing_control_failures_are_observable_without_poisoning_the_runt
     assert!(matches!(
         device.execute(b"Reset"),
         Err(Error::Sdk {
-            operation: "MV3D_LP_Execute",
+            operation: Operation::Execute,
             status: INJECTED_STATUS,
         })
     ));

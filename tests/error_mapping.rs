@@ -41,7 +41,7 @@ fn get_image_operation_uses_the_vendor_symbol() {
     assert_eq!(Operation::GetImage.sdk_name(), "MV3D_LP_GetImage");
 
     let error: Error = mv3d_lp_internal::Error::Sdk {
-        operation: "MV3D_LP_GetImage",
+        operation: Operation::GetImage,
         status: 0x8006_0006_u32 as i32,
     }
     .into();
@@ -123,7 +123,7 @@ fn malformed_incompatible_version_maps_without_panicking() {
 #[test]
 fn image_contract_violations_retain_lengths_and_operation() {
     let error: Error = mv3d_lp_internal::Error::ContractViolation {
-        operation: "MV3D_LP_GetImage",
+        operation: Operation::GetImage,
         kind: mv3d_lp_internal::ContractViolation::LengthMismatch {
             field: "image data",
             expected: 24,
@@ -190,7 +190,7 @@ fn remaining_image_contract_violations_map_without_losing_context() {
 
     for (kind, violation) in cases {
         let error: Error = mv3d_lp_internal::Error::ContractViolation {
-            operation: "MV3D_LP_GetImage",
+            operation: Operation::GetImage,
             kind,
         }
         .into();
@@ -208,7 +208,7 @@ fn remaining_image_contract_violations_map_without_losing_context() {
 #[test]
 fn excessive_timeout_retains_the_exact_duration() {
     let error: Error = mv3d_lp_internal::Error::InvalidInput {
-        operation: "timeout",
+        operation: Operation::GetImage,
         kind: mv3d_lp_internal::InvalidInput::TimeoutTooLong {
             maximum_millis: u32::MAX - 1,
             actual_millis: u128::from(u32::MAX),
@@ -219,7 +219,7 @@ fn excessive_timeout_retains_the_exact_duration() {
     assert_eq!(
         error,
         Error::InvalidInput {
-            field: "timeout",
+            field: Operation::GetImage.sdk_name(),
             violation: InputViolation::TimeoutTooLong {
                 maximum_millis: u32::MAX - 1,
                 actual_millis: u128::from(u32::MAX),
@@ -231,7 +231,7 @@ fn excessive_timeout_retains_the_exact_duration() {
 #[test]
 fn allocation_failure_retains_its_operation() {
     let error: Error = mv3d_lp_internal::Error::AllocationFailed {
-        operation: "MV3D_LP_GetImage",
+        operation: Operation::GetImage,
         requested: 1024,
     }
     .into();
@@ -304,7 +304,7 @@ fn file_transfer_operations_and_progress_contracts_map_exactly() {
 
     for (kind, violation) in cases {
         let error: Error = mv3d_lp_internal::Error::ContractViolation {
-            operation: "MV3D_LP_GetFileAccessProgress",
+            operation: Operation::GetFileAccessProgress,
             kind,
         }
         .into();
@@ -323,7 +323,7 @@ fn device_cleanup_mapping_preserves_the_close_error() {
     let error: Error = mv3d_lp_internal::DeviceCleanupError {
         stop: None,
         close: Some(Box::new(mv3d_lp_internal::Error::Sdk {
-            operation: "MV3D_LP_CloseDevice",
+            operation: Operation::CloseDevice,
             status: 0x8006_0000_u32 as i32,
         })),
     }

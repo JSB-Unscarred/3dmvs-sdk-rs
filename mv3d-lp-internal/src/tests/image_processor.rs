@@ -3,6 +3,8 @@ use crate::{Error, driver::DriverError};
 
 use super::mock_driver::{FfiOp, MockDriver, active_runtime};
 #[cfg(feature = "display-windows")]
+use crate::Operation;
+#[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
 #[cfg(feature = "display-windows")]
 use std::num::NonZeroIsize;
@@ -163,7 +165,7 @@ fn runtime_routes_windows_display_through_the_driver() {
             DisplayRangeRecord::Auto,
         ),
         Err(crate::Error::Sdk {
-            operation: "MV3D_LP_DisplayImage",
+            operation: Operation::DisplayImage,
             status,
         }) if status == 0x8006_0005_u32 as i32
     ));
