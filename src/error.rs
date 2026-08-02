@@ -144,10 +144,6 @@ pub enum InputViolation {
         max: usize,
         actual: usize,
     },
-    CallbackQueueCapacity {
-        maximum: usize,
-        actual: usize,
-    },
     TimeoutTooLong {
         maximum_millis: u32,
         actual_millis: u128,
@@ -199,10 +195,6 @@ impl fmt::Display for InputViolation {
                     "the value has {actual} bytes; at most {max} are allowed"
                 )
             }
-            Self::CallbackQueueCapacity { maximum, actual } => write!(
-                formatter,
-                "callback queue capacity is {actual}; at most {maximum} events are allowed"
-            ),
             Self::TimeoutTooLong {
                 maximum_millis,
                 actual_millis,

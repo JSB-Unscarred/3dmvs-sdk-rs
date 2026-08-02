@@ -18,8 +18,8 @@ use crate::SdkText;
 pub struct CallbackOptions {
     /// Maximum number of owned events waiting for the receiver.
     ///
-    /// Registration rejects values above [`CallbackOptions::MAX_QUEUE_CAPACITY`]
-    /// before allocating a channel.
+    /// Queued events own their data; image events retain copied payloads. Choose
+    /// this capacity based on event size, callback rate, and consumer latency.
     pub queue_capacity: NonZeroUsize,
 }
 
@@ -47,8 +47,7 @@ impl CallbackStats {
 }
 
 impl CallbackOptions {
-    /// Largest queue accepted by the callback registration APIs.
-    pub const MAX_QUEUE_CAPACITY: usize = 64;
+    /// Default number of events retained while the consumer is delayed.
     pub const DEFAULT_QUEUE_CAPACITY: NonZeroUsize =
         NonZeroUsize::new(4).expect("the default callback queue capacity is non-zero");
 

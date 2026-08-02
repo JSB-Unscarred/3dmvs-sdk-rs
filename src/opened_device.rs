@@ -78,7 +78,7 @@ impl<'sdk> Device<'sdk> {
         &mut self,
         options: CallbackOptions,
     ) -> Result<(CallbackMeasurement<'_>, Receiver<OwnedFrame>)> {
-        let (sink, receiver) = frame_callback_channel(options)?;
+        let (sink, receiver) = frame_callback_channel(options);
         self.inner
             .start_callback(sink)
             .map(|inner| (CallbackMeasurement::from_internal(inner), receiver))
@@ -97,7 +97,7 @@ impl<'sdk> Device<'sdk> {
     where
         F: FnMut(OwnedFrame) + Send + 'static,
     {
-        let (sink, receiver) = frame_callback_channel(options)?;
+        let (sink, receiver) = frame_callback_channel(options);
         let worker =
             CallbackWorker::spawn(receiver, handler).map_err(|_| Error::CallbackWorkerSpawn)?;
         self.inner
@@ -118,7 +118,7 @@ impl<'sdk> Device<'sdk> {
         &mut self,
         options: CallbackOptions,
     ) -> Result<Receiver<DeviceException>> {
-        let (sink, receiver) = exception_callback_channel(options)?;
+        let (sink, receiver) = exception_callback_channel(options);
         self.inner
             .register_exception_callback(sink)
             .map(|()| receiver)
@@ -137,7 +137,7 @@ impl<'sdk> Device<'sdk> {
     where
         F: FnMut(DeviceException) + Send + 'static,
     {
-        let (sink, receiver) = exception_callback_channel(options)?;
+        let (sink, receiver) = exception_callback_channel(options);
         let worker =
             CallbackWorker::spawn(receiver, handler).map_err(|_| Error::CallbackWorkerSpawn)?;
         self.inner
@@ -266,23 +266,21 @@ impl<'device> CallbackMeasurement<'device> {
 
 fn frame_callback_channel(
     options: CallbackOptions,
-) -> Result<(mv3d_lp_internal::FrameCallbackSink, Receiver<OwnedFrame>)> {
-    let capacity = callback_queue_capacity(options)?;
-    let (sender, receiver) = sync_channel(capacity);
+) -> (mv3d_lp_internal::FrameCallbackSink, Receiver<OwnedFrame>) {
+    let (sender, receiver) = sync_channel(options.queue_capacity.get());
     let sink = Arc::new(move |record| {
         delivery_from_try_send(sender.try_send(OwnedFrame::from_internal(record)))
     });
-    Ok((sink, receiver))
+    (sink, receiver)
 }
 
 fn exception_callback_channel(
     options: CallbackOptions,
-) -> Result<(
+) -> (
     mv3d_lp_internal::ExceptionCallbackSink,
     Receiver<DeviceException>,
-)> {
-    let capacity = callback_queue_capacity(options)?;
-    let (sender, receiver) = sync_channel(capacity);
+) {
+    let (sender, receiver) = sync_channel(options.queue_capacity.get());
     let sink = Arc::new(move |record: mv3d_lp_internal::ExceptionRecord| {
         let Ok(description) = SdkText::try_from(record.description) else {
             return mv3d_lp_internal::CallbackDelivery::Disconnected;
@@ -290,21 +288,7 @@ fn exception_callback_channel(
         let event = DeviceException::new(DeviceExceptionType::from_raw(record.kind), description);
         delivery_from_try_send(sender.try_send(event))
     });
-    Ok((sink, receiver))
-}
-
-fn callback_queue_capacity(options: CallbackOptions) -> Result<usize> {
-    let capacity = options.queue_capacity.get();
-    if capacity > CallbackOptions::MAX_QUEUE_CAPACITY {
-        return Err(Error::InvalidInput {
-            field: "callback queue capacity",
-            violation: InputViolation::CallbackQueueCapacity {
-                maximum: CallbackOptions::MAX_QUEUE_CAPACITY,
-                actual: capacity,
-            },
-        });
-    }
-    Ok(capacity)
+    (sink, receiver)
 }
 
 fn delivery_from_try_send<T>(
@@ -464,7 +448,7 @@ mod tests {
 
     use crate::{CallbackOptions, Error, InputViolation};
 
-    use super::{callback_queue_capacity, frame_callback_channel, timeout_millis};
+    use super::{frame_callback_channel, timeout_millis};
 
     #[test]
     fn timeout_conversion_is_finite_checked_and_rounds_up() {
@@ -494,23 +478,35 @@ mod tests {
     }
 
     #[test]
-    fn excessive_callback_queue_capacity_is_rejected_before_allocation() {
-        let options = CallbackOptions::new(
-            NonZeroUsize::new(CallbackOptions::MAX_QUEUE_CAPACITY + 1).unwrap(),
+    fn production_callback_channel_honors_configured_capacity() {
+        const CAPACITY: usize = 65;
+
+        let options = CallbackOptions::new(NonZeroUsize::new(CAPACITY).unwrap());
+        let (sink, receiver) = frame_callback_channel(options);
+
+        for frame_number in 0..CAPACITY {
+            assert_eq!(
+                sink(callback_frame(u32::try_from(frame_number).unwrap())),
+                mv3d_lp_internal::CallbackDelivery::Delivered
+            );
+        }
+        assert_eq!(
+            sink(callback_frame(u32::try_from(CAPACITY).unwrap())),
+            mv3d_lp_internal::CallbackDelivery::Full
         );
-        assert!(matches!(
-            callback_queue_capacity(options),
-            Err(Error::InvalidInput {
-                field: "callback queue capacity",
-                violation: InputViolation::CallbackQueueCapacity { .. },
-            })
-        ));
+
+        for frame_number in 0..CAPACITY {
+            assert_eq!(
+                receiver.recv().unwrap().frame_number,
+                u32::try_from(frame_number).unwrap()
+            );
+        }
     }
 
     #[test]
     fn production_callback_channel_drops_newest_when_full() {
         let options = CallbackOptions::new(NonZeroUsize::new(1).unwrap());
-        let (sink, receiver) = frame_callback_channel(options).unwrap();
+        let (sink, receiver) = frame_callback_channel(options);
 
         assert_eq!(
             sink(callback_frame(1)),
