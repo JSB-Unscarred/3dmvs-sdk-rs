@@ -5,7 +5,7 @@ use crate::error::{Error, InvalidInput, Operation};
 use crate::frame::{FrameRecord, ImageTypeRecord};
 use crate::opened_device::DeviceState;
 
-use super::mock_driver::{MockDriver, active_runtime};
+use super::mock_driver::{FfiOp, MockDriver, active_runtime};
 
 fn frame(data: Vec<u8>) -> FrameRecord {
     FrameRecord {
@@ -131,8 +131,11 @@ fn failed_explicit_stop_faults_device_and_close_retries_cleanup_stop() {
     assert_eq!(device.state(), DeviceState::Faulted);
     device.close().unwrap();
 
-    let stop_count = mock.logs().iter().filter(|entry| **entry == "stop").count();
-    assert_eq!(stop_count, 2);
+    let operations = mock.operations();
+    assert_eq!(
+        &operations[operations.len() - 3..],
+        [FfiOp::StopMeasure, FfiOp::StopMeasure, FfiOp::CloseDevice]
+    );
 }
 
 #[test]

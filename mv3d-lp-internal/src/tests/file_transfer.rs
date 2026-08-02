@@ -358,6 +358,11 @@ fn failure_after_driver_entry_faults_device_and_retains_names_until_close() {
 
     device.close().unwrap();
     assert!(names.upgrade().is_none());
+    let operations = mock.operations();
+    assert_eq!(
+        &operations[operations.len() - 2..],
+        [FfiOp::FileAccessRead, FfiOp::CloseDevice]
+    );
     assert_eq!(operation_count(&mock, FfiOp::FileAccessRead), 1);
     assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 1);
     assert_eq!(operation_count(&mock, FfiOp::StopMeasure), 0);

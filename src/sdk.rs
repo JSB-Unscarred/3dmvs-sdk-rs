@@ -26,14 +26,15 @@ pub struct Sdk {
 impl Sdk {
     /// Initializes the process-wide SDK using the default compatible ABI version range.
     pub fn initialize() -> Result<Self> {
-        let inner = mv3d_lp_internal::Runtime::initialize().map_err(Error::from)?;
+        let inner = mv3d_lp_internal::Runtime::initialize().map_err(Error::map_internal_error)?;
         Self::from_internal(inner)
     }
 
     /// Initializes the process-wide SDK only when its version exactly matches the audited
     /// bindings baseline.
     pub fn initialize_strict() -> Result<Self> {
-        let inner = mv3d_lp_internal::Runtime::initialize_strict().map_err(Error::from)?;
+        let inner =
+            mv3d_lp_internal::Runtime::initialize_strict().map_err(Error::map_internal_error)?;
         Self::from_internal(inner)
     }
 
@@ -56,13 +57,15 @@ impl Sdk {
     }
 
     pub fn device_count_hint(&self) -> Result<u32> {
-        self.inner.device_count_hint().map_err(Error::from)
+        self.inner
+            .device_count_hint()
+            .map_err(Error::map_internal_error)
     }
 
     pub fn devices(&self) -> Result<Vec<DeviceInfo>> {
         self.inner
             .devices()
-            .map_err(Error::from)?
+            .map_err(Error::map_internal_error)?
             .into_iter()
             .map(device_from_internal)
             .collect()
@@ -88,21 +91,21 @@ impl Sdk {
         };
         self.inner
             .set_ip_config(serial_number.as_bytes(), &internal_configuration)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device<'_>> {
         self.inner
             .open_by_ip(address)
             .map(Device::from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     pub fn open_by_serial(&self, serial_number: &SerialNumber) -> Result<Device<'_>> {
         self.inner
             .open_by_serial(serial_number.as_bytes())
             .map(Device::from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     #[must_use]
@@ -111,7 +114,7 @@ impl Sdk {
     }
 
     pub fn shutdown(self) -> Result<()> {
-        self.inner.shutdown().map_err(Error::from)
+        self.inner.shutdown().map_err(Error::map_internal_error)
     }
 }
 

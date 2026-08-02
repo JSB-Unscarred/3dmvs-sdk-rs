@@ -67,7 +67,7 @@ impl ImageProcessor<'_> {
         self.inner
             .map_depth_to_point_cloud(input.to_internal())
             .map(OwnedImage::from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     pub fn depth_to_round_point_cloud(&self, inputs: &[ImageRef<'_>]) -> Result<OwnedImage> {
@@ -75,7 +75,7 @@ impl ImageProcessor<'_> {
         self.inner
             .map_depth_to_point_cloud_round(&inputs)
             .map(OwnedImage::from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     pub fn convert(&self, input: ImageRef<'_>, target: ImageType) -> Result<OwnedImage> {
@@ -103,7 +103,7 @@ impl ImageProcessor<'_> {
                 mv3d_lp_internal::ImageTypeRecord::from_bits(target.bits()),
             )
             .map(OwnedImage::from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     pub fn mosaic_depth(&self, inputs: &[ImageRef<'_>]) -> Result<OwnedImage> {
@@ -111,7 +111,7 @@ impl ImageProcessor<'_> {
         self.inner
             .mosaic_depth(&inputs)
             .map(OwnedImage::from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     /// Saves an image using the vendor encoder.
@@ -136,7 +136,7 @@ impl ImageProcessor<'_> {
         }
         self.inner
             .save_image(input.to_internal(), format.to_internal(), file_name)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 }
 

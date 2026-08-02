@@ -70,6 +70,19 @@ fn public_lifecycle_and_control_methods_have_safe_signatures() {
 }
 
 #[test]
+fn known_device_states_are_public() {
+    let states = [
+        DeviceState::Open,
+        DeviceState::Measuring,
+        DeviceState::CallbackMeasuring,
+        DeviceState::Faulted,
+        DeviceState::Transferring,
+    ];
+
+    assert_eq!(states.len(), 5);
+}
+
+#[test]
 fn public_device_sessions_and_transfer_support_scoped_thread_handoff() {
     fn handoff_device(device: Device<'_>) {
         std::thread::scope(|scope| {

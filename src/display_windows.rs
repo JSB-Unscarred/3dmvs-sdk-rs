@@ -47,7 +47,7 @@ impl ImageProcessor<'_> {
         };
         self.inner
             .display_image(image.to_internal(), hwnd, range)
-            .map_err(crate::Error::from)
+            .map_err(crate::Error::map_internal_error)
     }
 }
 

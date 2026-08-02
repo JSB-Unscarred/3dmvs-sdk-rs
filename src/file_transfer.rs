@@ -51,7 +51,7 @@ impl<'device> FileTransfer<'device> {
         self.inner
             .progress()
             .map(status_from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     /// Polls until completion or until `timeout` elapses.
@@ -69,7 +69,7 @@ impl<'device> FileTransfer<'device> {
         self.inner
             .wait_timeout(poll_interval, timeout)
             .map(|progress| progress.map(progress_from_internal))
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 }
 

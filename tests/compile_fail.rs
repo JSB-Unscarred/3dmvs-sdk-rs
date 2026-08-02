@@ -53,10 +53,20 @@ const CASES: &[CompileFailCase] = &[
         source: include_str!("compile_fail_cases/lifecycle/shutdown_while_device_borrowed.rs"),
         error_code: "E0505",
     },
+    CompileFailCase {
+        bin: "exhaustive_device_state_match",
+        source: include_str!("compile_fail_cases/public_api/exhaustive_device_state_match.rs"),
+        error_code: "E0004",
+    },
+    CompileFailCase {
+        bin: "removed_callback_retired_state",
+        source: include_str!("compile_fail_cases/public_api/removed_callback_retired_state.rs"),
+        error_code: "E0599",
+    },
 ];
 
 #[test]
-fn safety_contracts_fail_with_the_expected_error_codes() {
+fn compile_time_contracts_fail_with_the_expected_error_codes() {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let project = CompileFailProject::new(&workspace)
@@ -93,7 +103,7 @@ fn safety_contracts_fail_with_the_expected_error_codes() {
 
         assert!(
             !output.status.success(),
-            "`{}` unexpectedly compiled; the safety contract is no longer enforced",
+            "`{}` unexpectedly compiled; the compile-time contract is no longer enforced",
             case.bin
         );
 

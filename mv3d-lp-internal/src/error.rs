@@ -2,7 +2,6 @@ use std::fmt;
 
 /// Identifies the SDK operation associated with an error.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
 pub enum Operation {
     GetVersion,
     Initialize,
@@ -31,7 +30,6 @@ pub enum Operation {
     ImageConvert,
     DepthMosaic,
     SaveImage,
-    #[cfg(feature = "display-windows")]
     DisplayImage,
 }
 
@@ -66,7 +64,6 @@ impl Operation {
             Self::ImageConvert => "MV3D_LP_ImageConvert",
             Self::DepthMosaic => "MV3D_LP_DepthMosaic",
             Self::SaveImage => "MV3D_LP_SaveImage",
-            #[cfg(feature = "display-windows")]
             Self::DisplayImage => "MV3D_LP_DisplayImage",
         }
     }

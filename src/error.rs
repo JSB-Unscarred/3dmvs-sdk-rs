@@ -1,9 +1,84 @@
 use crate::{SdkText, SdkVersion};
-pub use mv3d_lp_internal::Operation;
 use std::error::Error as StdError;
 use std::fmt;
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Identifies the SDK operation associated with an error.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum Operation {
+    GetVersion,
+    Initialize,
+    Finalize,
+    GetDeviceNumber,
+    GetDeviceList,
+    OpenDeviceByIp,
+    OpenDeviceBySn,
+    CloseDevice,
+    SetIpConfig,
+    StartMeasure,
+    StopMeasure,
+    SoftTrigger,
+    ClearDataBuffer,
+    GetImage,
+    RegisterImageDataCallback,
+    RegisterExceptionCallback,
+    GetParam,
+    SetParam,
+    Execute,
+    FileAccessRead,
+    FileAccessWrite,
+    GetFileAccessProgress,
+    MapDepthToPointCloud,
+    MapDepthToPointCloudRound,
+    ImageConvert,
+    DepthMosaic,
+    SaveImage,
+    DisplayImage,
+}
+
+impl Operation {
+    #[must_use]
+    pub const fn sdk_name(self) -> &'static str {
+        match self {
+            Self::GetVersion => "MV3D_LP_GetVersion",
+            Self::Initialize => "MV3D_LP_Initialize",
+            Self::Finalize => "MV3D_LP_Finalize",
+            Self::GetDeviceNumber => "MV3D_LP_GetDeviceNumber",
+            Self::GetDeviceList => "MV3D_LP_GetDeviceList",
+            Self::OpenDeviceByIp => "MV3D_LP_OpenDeviceByIP",
+            Self::OpenDeviceBySn => "MV3D_LP_OpenDeviceBySN",
+            Self::CloseDevice => "MV3D_LP_CloseDevice",
+            Self::SetIpConfig => "MV3D_LP_SetIpConfig",
+            Self::StartMeasure => "MV3D_LP_StartMeasure",
+            Self::StopMeasure => "MV3D_LP_StopMeasure",
+            Self::SoftTrigger => "MV3D_LP_SoftTrigger",
+            Self::ClearDataBuffer => "MV3D_LP_ClearDataBuffer",
+            Self::GetImage => "MV3D_LP_GetImage",
+            Self::RegisterImageDataCallback => "MV3D_LP_RegisterImageDataCallBack",
+            Self::RegisterExceptionCallback => "MV3D_LP_RegisterExceptionCallBack",
+            Self::GetParam => "MV3D_LP_GetParam",
+            Self::SetParam => "MV3D_LP_SetParam",
+            Self::Execute => "MV3D_LP_Execute",
+            Self::FileAccessRead => "MV3D_LP_FileAccessRead",
+            Self::FileAccessWrite => "MV3D_LP_FileAccessWrite",
+            Self::GetFileAccessProgress => "MV3D_LP_GetFileAccessProgress",
+            Self::MapDepthToPointCloud => "MV3D_LP_MapDepthToPointCloud",
+            Self::MapDepthToPointCloudRound => "MV3D_LP_MapDepthToPointCloudRound",
+            Self::ImageConvert => "MV3D_LP_ImageConvert",
+            Self::DepthMosaic => "MV3D_LP_DepthMosaic",
+            Self::SaveImage => "MV3D_LP_SaveImage",
+            Self::DisplayImage => "MV3D_LP_DisplayImage",
+        }
+    }
+}
+
+impl fmt::Display for Operation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.sdk_name())
+    }
+}
 
 /// A status returned by the SDK, stored as its exact 32-bit bit pattern.
 ///
@@ -531,17 +606,19 @@ impl From<SdkError> for Error {
     }
 }
 
-impl From<mv3d_lp_internal::DeviceCleanupError> for Error {
-    fn from(error: mv3d_lp_internal::DeviceCleanupError) -> Self {
+impl Error {
+    pub(crate) fn map_device_cleanup_error(error: mv3d_lp_internal::DeviceCleanupError) -> Self {
         Self::DeviceCleanup {
-            stop: error.stop.map(|error| Box::new(Self::from(*error))),
-            close: error.close.map(|error| Box::new(Self::from(*error))),
+            stop: error
+                .stop
+                .map(|error| Box::new(Self::map_internal_error(*error))),
+            close: error
+                .close
+                .map(|error| Box::new(Self::map_internal_error(*error))),
         }
     }
-}
 
-impl From<mv3d_lp_internal::Error> for Error {
-    fn from(error: mv3d_lp_internal::Error) -> Self {
+    pub(crate) fn map_internal_error(error: mv3d_lp_internal::Error) -> Self {
         use mv3d_lp_internal::{ContractViolation as InternalContract, Error as InternalError};
 
         match error {
@@ -575,10 +652,12 @@ impl From<mv3d_lp_internal::Error> for Error {
                     },
                 }
             }
-            InternalError::Sdk { operation, status } => {
-                Self::Sdk(SdkError::new(operation, StatusCode::from_raw(status)))
-            }
+            InternalError::Sdk { operation, status } => Self::Sdk(SdkError::new(
+                map_internal_operation(operation),
+                StatusCode::from_raw(status),
+            )),
             InternalError::InvalidState { operation, state } => {
+                let operation = map_internal_operation(operation);
                 let expected = match operation {
                     Operation::RegisterImageDataCallback
                     | Operation::RegisterExceptionCallback
@@ -597,62 +676,67 @@ impl From<mv3d_lp_internal::Error> for Error {
                     actual: state,
                 }
             }
-            InternalError::InvalidInput { operation, kind } => Self::InvalidInput {
-                field: operation.sdk_name(),
-                violation: match kind {
-                    mv3d_lp_internal::InvalidInput::Empty => InputViolation::Empty,
-                    mv3d_lp_internal::InvalidInput::InteriorNul => InputViolation::InteriorNul,
-                    mv3d_lp_internal::InvalidInput::NonAscii => InputViolation::NonAscii,
-                    mv3d_lp_internal::InvalidInput::TooLong { actual, maximum } => {
-                        InputViolation::TooLong {
-                            max: maximum,
-                            actual,
+            InternalError::InvalidInput { operation, kind } => {
+                let operation = map_internal_operation(operation);
+                Self::InvalidInput {
+                    field: operation.sdk_name(),
+                    violation: match kind {
+                        mv3d_lp_internal::InvalidInput::Empty => InputViolation::Empty,
+                        mv3d_lp_internal::InvalidInput::InteriorNul => InputViolation::InteriorNul,
+                        mv3d_lp_internal::InvalidInput::NonAscii => InputViolation::NonAscii,
+                        mv3d_lp_internal::InvalidInput::TooLong { actual, maximum } => {
+                            InputViolation::TooLong {
+                                max: maximum,
+                                actual,
+                            }
                         }
-                    }
-                    mv3d_lp_internal::InvalidInput::TimeoutTooLong {
-                        maximum_millis,
-                        actual_millis,
-                    } => InputViolation::TimeoutTooLong {
-                        maximum_millis,
-                        actual_millis,
+                        mv3d_lp_internal::InvalidInput::TimeoutTooLong {
+                            maximum_millis,
+                            actual_millis,
+                        } => InputViolation::TimeoutTooLong {
+                            maximum_millis,
+                            actual_millis,
+                        },
+                        mv3d_lp_internal::InvalidInput::ImageCount {
+                            minimum,
+                            maximum,
+                            actual,
+                        } => InputViolation::ImageCount {
+                            minimum,
+                            maximum,
+                            actual,
+                        },
+                        mv3d_lp_internal::InvalidInput::UnexpectedImageType {
+                            expected,
+                            actual,
+                        } => InputViolation::UnexpectedImageType { expected, actual },
+                        mv3d_lp_internal::InvalidInput::UnsupportedImageConversion {
+                            source,
+                            target,
+                        } => InputViolation::UnsupportedImageConversion { source, target },
+                        mv3d_lp_internal::InvalidInput::UnsupportedImageFileFormat {
+                            image_type,
+                            file_format,
+                        } => InputViolation::UnsupportedImageFileFormat {
+                            image_type,
+                            file_format,
+                        },
+                        mv3d_lp_internal::InvalidInput::InvalidImageLayout { field } => {
+                            InputViolation::InvalidImageLayout { field }
+                        }
+                        mv3d_lp_internal::InvalidInput::UnsupportedDisplayImageType { actual } => {
+                            InputViolation::UnsupportedDisplayImageType { actual }
+                        }
+                        mv3d_lp_internal::InvalidInput::UnsupportedDisplayMode { image_type } => {
+                            InputViolation::UnsupportedDisplayMode { image_type }
+                        }
+                        mv3d_lp_internal::InvalidInput::InvalidDisplayRange {
+                            minimum,
+                            maximum,
+                        } => InputViolation::InvalidDisplayRange { minimum, maximum },
                     },
-                    mv3d_lp_internal::InvalidInput::ImageCount {
-                        minimum,
-                        maximum,
-                        actual,
-                    } => InputViolation::ImageCount {
-                        minimum,
-                        maximum,
-                        actual,
-                    },
-                    mv3d_lp_internal::InvalidInput::UnexpectedImageType { expected, actual } => {
-                        InputViolation::UnexpectedImageType { expected, actual }
-                    }
-                    mv3d_lp_internal::InvalidInput::UnsupportedImageConversion {
-                        source,
-                        target,
-                    } => InputViolation::UnsupportedImageConversion { source, target },
-                    mv3d_lp_internal::InvalidInput::UnsupportedImageFileFormat {
-                        image_type,
-                        file_format,
-                    } => InputViolation::UnsupportedImageFileFormat {
-                        image_type,
-                        file_format,
-                    },
-                    mv3d_lp_internal::InvalidInput::InvalidImageLayout { field } => {
-                        InputViolation::InvalidImageLayout { field }
-                    }
-                    mv3d_lp_internal::InvalidInput::UnsupportedDisplayImageType { actual } => {
-                        InputViolation::UnsupportedDisplayImageType { actual }
-                    }
-                    mv3d_lp_internal::InvalidInput::UnsupportedDisplayMode { image_type } => {
-                        InputViolation::UnsupportedDisplayMode { image_type }
-                    }
-                    mv3d_lp_internal::InvalidInput::InvalidDisplayRange { minimum, maximum } => {
-                        InputViolation::InvalidDisplayRange { minimum, maximum }
-                    }
-                },
-            },
+                }
+            }
             InternalError::ContractViolation { operation, kind } => {
                 let violation = match kind {
                     InternalContract::NullVersionPointer => ContractViolation::NullPointer {
@@ -744,20 +828,20 @@ impl From<mv3d_lp_internal::Error> for Error {
                     }
                 };
                 Self::ContractViolation {
-                    operation,
+                    operation: map_internal_operation(operation),
                     violation,
                 }
             }
             InternalError::OpenFailedWithHandle { operation, source } => {
                 Self::OpenFailedWithHandle {
-                    operation,
-                    source: Box::new(Self::from(*source)),
+                    operation: map_internal_operation(operation),
+                    source: Box::new(Self::map_internal_error(*source)),
                 }
             }
             InternalError::DiscoveryChanged { attempts } => Self::DiscoveryChanged { attempts },
-            InternalError::AllocationFailed { operation, .. } => {
-                Self::AllocationFailed { operation }
-            }
+            InternalError::AllocationFailed { operation, .. } => Self::AllocationFailed {
+                operation: map_internal_operation(operation),
+            },
             InternalError::UnclosedDevices {
                 live_handles,
                 teardown_uncertain,
@@ -769,6 +853,45 @@ impl From<mv3d_lp_internal::Error> for Error {
     }
 }
 
+pub(crate) const fn map_internal_operation(operation: mv3d_lp_internal::Operation) -> Operation {
+    match operation {
+        mv3d_lp_internal::Operation::GetVersion => Operation::GetVersion,
+        mv3d_lp_internal::Operation::Initialize => Operation::Initialize,
+        mv3d_lp_internal::Operation::Finalize => Operation::Finalize,
+        mv3d_lp_internal::Operation::GetDeviceNumber => Operation::GetDeviceNumber,
+        mv3d_lp_internal::Operation::GetDeviceList => Operation::GetDeviceList,
+        mv3d_lp_internal::Operation::OpenDeviceByIp => Operation::OpenDeviceByIp,
+        mv3d_lp_internal::Operation::OpenDeviceBySn => Operation::OpenDeviceBySn,
+        mv3d_lp_internal::Operation::CloseDevice => Operation::CloseDevice,
+        mv3d_lp_internal::Operation::SetIpConfig => Operation::SetIpConfig,
+        mv3d_lp_internal::Operation::StartMeasure => Operation::StartMeasure,
+        mv3d_lp_internal::Operation::StopMeasure => Operation::StopMeasure,
+        mv3d_lp_internal::Operation::SoftTrigger => Operation::SoftTrigger,
+        mv3d_lp_internal::Operation::ClearDataBuffer => Operation::ClearDataBuffer,
+        mv3d_lp_internal::Operation::GetImage => Operation::GetImage,
+        mv3d_lp_internal::Operation::RegisterImageDataCallback => {
+            Operation::RegisterImageDataCallback
+        }
+        mv3d_lp_internal::Operation::RegisterExceptionCallback => {
+            Operation::RegisterExceptionCallback
+        }
+        mv3d_lp_internal::Operation::GetParam => Operation::GetParam,
+        mv3d_lp_internal::Operation::SetParam => Operation::SetParam,
+        mv3d_lp_internal::Operation::Execute => Operation::Execute,
+        mv3d_lp_internal::Operation::FileAccessRead => Operation::FileAccessRead,
+        mv3d_lp_internal::Operation::FileAccessWrite => Operation::FileAccessWrite,
+        mv3d_lp_internal::Operation::GetFileAccessProgress => Operation::GetFileAccessProgress,
+        mv3d_lp_internal::Operation::MapDepthToPointCloud => Operation::MapDepthToPointCloud,
+        mv3d_lp_internal::Operation::MapDepthToPointCloudRound => {
+            Operation::MapDepthToPointCloudRound
+        }
+        mv3d_lp_internal::Operation::ImageConvert => Operation::ImageConvert,
+        mv3d_lp_internal::Operation::DepthMosaic => Operation::DepthMosaic,
+        mv3d_lp_internal::Operation::SaveImage => Operation::SaveImage,
+        mv3d_lp_internal::Operation::DisplayImage => Operation::DisplayImage,
+    }
+}
+
 fn parse_version_bytes(bytes: &[u8]) -> SdkVersion {
     parse_version_bytes_checked(bytes).expect("the audited expected version is valid")
 }
@@ -776,3 +899,7 @@ fn parse_version_bytes(bytes: &[u8]) -> SdkVersion {
 fn parse_version_bytes_checked(bytes: &[u8]) -> Option<SdkVersion> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
 }
+
+#[cfg(test)]
+#[path = "error_tests.rs"]
+mod tests;

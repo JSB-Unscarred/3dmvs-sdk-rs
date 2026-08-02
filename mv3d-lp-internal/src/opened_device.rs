@@ -37,6 +37,37 @@ impl DeviceState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FaultOrigin {
+    MeasurementStopUncertain,
+    FileTransferStartUncertain,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DevicePhase {
+    Open,
+    Measuring,
+    CallbackMeasuring,
+    Faulted(FaultOrigin),
+    Transferring,
+}
+
+impl DevicePhase {
+    const fn observable(self) -> DeviceState {
+        match self {
+            Self::Open => DeviceState::Open,
+            Self::Measuring => DeviceState::Measuring,
+            Self::CallbackMeasuring => DeviceState::CallbackMeasuring,
+            Self::Faulted(_) => DeviceState::Faulted,
+            Self::Transferring => DeviceState::Transferring,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        self.observable().as_str()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceCleanupError {
     pub stop: Option<Box<Error>>,
@@ -71,7 +102,7 @@ impl std::error::Error for DeviceCleanupError {
 pub struct Device<'runtime> {
     runtime: &'runtime RuntimeInner,
     handle: Option<Handle>,
-    state: DeviceState,
+    state: DevicePhase,
     pending_transfer: Option<ActiveFileTransfer>,
     image_registration: Option<CallbackRegistration>,
     exception_registration: Option<CallbackRegistration>,
@@ -82,7 +113,7 @@ impl<'runtime> Device<'runtime> {
         Self {
             runtime,
             handle: Some(handle),
-            state: DeviceState::Open,
+            state: DevicePhase::Open,
             pending_transfer: None,
             image_registration: None,
             exception_registration: None,
@@ -90,7 +121,7 @@ impl<'runtime> Device<'runtime> {
     }
 
     pub fn state(&self) -> DeviceState {
-        self.state
+        self.state.observable()
     }
 
     pub fn start(&mut self) -> Result<Measurement<'_>, Error> {
@@ -98,7 +129,7 @@ impl<'runtime> Device<'runtime> {
         self.runtime.call(Operation::StartMeasure, |driver| {
             driver.start(self.handle())
         })?;
-        self.state = DeviceState::Measuring;
+        self.state = DevicePhase::Measuring;
         let handle = self.handle();
         Ok(Measurement {
             runtime: self.runtime,
@@ -128,7 +159,7 @@ impl<'runtime> Device<'runtime> {
         });
         match start {
             Ok(()) => {
-                self.state = DeviceState::CallbackMeasuring;
+                self.state = DevicePhase::CallbackMeasuring;
                 let handle = self.handle();
                 self.image_registration = Some(registration);
                 Ok(CallbackMeasurement {
@@ -271,7 +302,7 @@ impl<'runtime> Device<'runtime> {
 
         match result {
             Ok(()) => {
-                self.state = DeviceState::Transferring;
+                self.state = DevicePhase::Transferring;
                 let handle = self.handle();
                 Ok(FileTransfer {
                     runtime: self.runtime,
@@ -282,14 +313,14 @@ impl<'runtime> Device<'runtime> {
                 })
             }
             Err(start) => {
-                self.state = DeviceState::Faulted;
+                self.state = DevicePhase::Faulted(FaultOrigin::FileTransferStartUncertain);
                 Err(start)
             }
         }
     }
 
     pub fn active_file_transfer(&mut self) -> Option<FileTransfer<'_>> {
-        if self.state != DeviceState::Transferring {
+        if self.state != DevicePhase::Transferring {
             return None;
         }
         let direction = self.pending_transfer.as_ref()?.direction;
@@ -324,9 +355,10 @@ impl<'runtime> Device<'runtime> {
 
         let stop = if matches!(
             self.state,
-            DeviceState::Measuring | DeviceState::CallbackMeasuring
-        ) || (self.state == DeviceState::Faulted && self.pending_transfer.is_none())
-        {
+            DevicePhase::Measuring
+                | DevicePhase::CallbackMeasuring
+                | DevicePhase::Faulted(FaultOrigin::MeasurementStopUncertain)
+        ) {
             self.runtime
                 .call(Operation::StopMeasure, |driver| driver.stop(handle))
                 .err()
@@ -358,7 +390,7 @@ impl<'runtime> Device<'runtime> {
     }
 
     fn require_state(&self, operation: Operation, allowed: &[DeviceState]) -> Result<(), Error> {
-        if allowed.contains(&self.state) {
+        if allowed.contains(&self.state.observable()) {
             Ok(())
         } else {
             Err(Error::InvalidState {
@@ -441,7 +473,7 @@ pub(crate) fn take_file_name_lifetimes_for_test() -> Vec<Weak<()>> {
 pub struct FileTransfer<'device> {
     runtime: &'device RuntimeInner,
     handle: Handle,
-    state: &'device mut DeviceState,
+    state: &'device mut DevicePhase,
     pending_transfer: &'device mut Option<ActiveFileTransfer>,
     direction: FileTransferDirection,
 }
@@ -454,7 +486,7 @@ impl FileTransfer<'_> {
     pub fn progress(&mut self) -> Result<FileTransferStatus, Error> {
         const OPERATION: Operation = Operation::GetFileAccessProgress;
 
-        if *self.state != DeviceState::Transferring {
+        if *self.state != DevicePhase::Transferring {
             return Err(Error::InvalidState {
                 operation: OPERATION,
                 state: self.state.as_str(),
@@ -491,7 +523,7 @@ impl FileTransfer<'_> {
             self.pending_transfer
                 .take()
                 .expect("active transfer retains its file names until completion is observed");
-            *self.state = DeviceState::Open;
+            *self.state = DevicePhase::Open;
             Ok(FileTransferStatus::Completed(progress))
         } else {
             Ok(FileTransferStatus::Running(progress))
@@ -540,13 +572,13 @@ fn validated_file_name(operation: Operation, bytes: &[u8]) -> Result<CString, Er
 pub struct CallbackMeasurement<'device> {
     runtime: &'device RuntimeInner,
     handle: Handle,
-    state: &'device mut DeviceState,
+    state: &'device mut DevicePhase,
     registration: &'device mut Option<CallbackRegistration>,
 }
 
 impl CallbackMeasurement<'_> {
     pub fn state(&self) -> DeviceState {
-        *self.state
+        self.state.observable()
     }
 
     pub fn soft_trigger(&mut self) -> Result<(), Error> {
@@ -573,11 +605,11 @@ impl CallbackMeasurement<'_> {
             .call(Operation::StopMeasure, |driver| driver.stop(self.handle));
         match result {
             Ok(()) => {
-                *self.state = DeviceState::Open;
+                *self.state = DevicePhase::Open;
                 Ok(())
             }
             Err(error) => {
-                *self.state = DeviceState::Faulted;
+                *self.state = DevicePhase::Faulted(FaultOrigin::MeasurementStopUncertain);
                 Err(error)
             }
         }
@@ -590,7 +622,7 @@ impl CallbackMeasurement<'_> {
 
 impl Drop for CallbackMeasurement<'_> {
     fn drop(&mut self) {
-        if *self.state == DeviceState::CallbackMeasuring {
+        if *self.state == DevicePhase::CallbackMeasuring {
             let _ = self.stop_inner();
         } else {
             self.deactivate_callback();
@@ -604,12 +636,12 @@ impl Drop for CallbackMeasurement<'_> {
 pub struct Measurement<'device> {
     runtime: &'device RuntimeInner,
     handle: Handle,
-    state: &'device mut DeviceState,
+    state: &'device mut DevicePhase,
 }
 
 impl Measurement<'_> {
     pub fn state(&self) -> DeviceState {
-        *self.state
+        self.state.observable()
     }
 
     pub fn soft_trigger(&mut self) -> Result<(), Error> {
@@ -671,11 +703,11 @@ impl Measurement<'_> {
             .call(Operation::StopMeasure, |driver| driver.stop(self.handle));
         match result {
             Ok(()) => {
-                *self.state = DeviceState::Open;
+                *self.state = DevicePhase::Open;
                 Ok(())
             }
             Err(error) => {
-                *self.state = DeviceState::Faulted;
+                *self.state = DevicePhase::Faulted(FaultOrigin::MeasurementStopUncertain);
                 Err(error)
             }
         }
@@ -684,7 +716,7 @@ impl Measurement<'_> {
 
 impl Drop for Measurement<'_> {
     fn drop(&mut self) {
-        if *self.state == DeviceState::Measuring {
+        if *self.state == DevicePhase::Measuring {
             let _ = self.stop_inner();
         }
     }

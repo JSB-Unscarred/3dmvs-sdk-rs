@@ -9,15 +9,13 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
 pub enum DeviceState {
     Open,
     Measuring,
     CallbackMeasuring,
     Faulted,
     Transferring,
-    /// Legacy one-shot callback state retained for source compatibility. Current callback
-    /// measurements return the device to [`DeviceState::Open`] after a successful stop.
-    CallbackRetired,
 }
 
 /// An opened laser-profiler device borrowing its owning [`crate::Sdk`].
@@ -48,7 +46,7 @@ impl<'sdk> Device<'sdk> {
         self.inner
             .start()
             .map(Measurement::from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     /// Registers native image delivery, starts measurement, and returns a bounded receiver.
@@ -71,7 +69,7 @@ impl<'sdk> Device<'sdk> {
         self.inner
             .start_callback(sink)
             .map(|inner| (CallbackMeasurement::from_internal(inner), receiver))
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     /// Starts callback acquisition and invokes `handler` serially on a Rust worker thread.
@@ -93,7 +91,7 @@ impl<'sdk> Device<'sdk> {
         self.inner
             .start_callback(sink)
             .map(|inner| (CallbackMeasurement::from_internal(inner), worker))
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     /// Registers an owned exception-event receiver for the lifetime of this device handle.
@@ -112,7 +110,7 @@ impl<'sdk> Device<'sdk> {
         self.inner
             .register_exception_callback(sink)
             .map(|()| receiver)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     /// Invokes an exception handler serially on a Rust worker thread.
@@ -134,7 +132,7 @@ impl<'sdk> Device<'sdk> {
         self.inner
             .register_exception_callback(sink)
             .map(|()| worker)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     #[must_use]
@@ -145,13 +143,13 @@ impl<'sdk> Device<'sdk> {
     }
 
     pub fn clear_buffer(&mut self) -> Result<()> {
-        self.inner.clear_buffer().map_err(Error::from)
+        self.inner.clear_buffer().map_err(Error::map_internal_error)
     }
 
     pub fn get_parameter(&mut self, key: &ParamKey) -> Result<Parameter> {
         self.inner
             .get_parameter(key.as_bytes())
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
             .and_then(parameter_from_internal)
     }
 
@@ -159,11 +157,13 @@ impl<'sdk> Device<'sdk> {
         let internal_value = parameter_value_to_internal(value);
         self.inner
             .set_parameter(key.as_bytes(), &internal_value)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     pub fn execute(&mut self, key: &CommandKey) -> Result<()> {
-        self.inner.execute(key.as_bytes()).map_err(Error::from)
+        self.inner
+            .execute(key.as_bytes())
+            .map_err(Error::map_internal_error)
     }
 
     /// Starts copying a file from the device to the host.
@@ -180,7 +180,7 @@ impl<'sdk> Device<'sdk> {
         self.inner
             .download_file(device_file_name, local_file_name)
             .map(FileTransfer::from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     /// Starts copying a host file into the device.
@@ -195,7 +195,7 @@ impl<'sdk> Device<'sdk> {
         self.inner
             .upload_file(local_file_name, device_file_name)
             .map(FileTransfer::from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     /// Resumes polling after a previous transfer guard was dropped.
@@ -206,7 +206,7 @@ impl<'sdk> Device<'sdk> {
     }
 
     pub fn close(self) -> Result<()> {
-        self.inner.close().map_err(Error::from)
+        self.inner.close().map_err(Error::map_device_cleanup_error)
     }
 }
 
@@ -231,7 +231,7 @@ impl<'device> CallbackMeasurement<'device> {
     }
 
     pub fn soft_trigger(&mut self) -> Result<()> {
-        self.inner.soft_trigger().map_err(Error::from)
+        self.inner.soft_trigger().map_err(Error::map_internal_error)
     }
 
     #[must_use]
@@ -240,7 +240,7 @@ impl<'device> CallbackMeasurement<'device> {
     }
 
     pub fn stop(self) -> Result<()> {
-        self.inner.stop().map_err(Error::from)
+        self.inner.stop().map_err(Error::map_internal_error)
     }
 }
 
@@ -297,11 +297,11 @@ impl<'device> Measurement<'device> {
     }
 
     pub fn soft_trigger(&mut self) -> Result<()> {
-        self.inner.soft_trigger().map_err(Error::from)
+        self.inner.soft_trigger().map_err(Error::map_internal_error)
     }
 
     pub fn clear_buffer(&mut self) -> Result<()> {
-        self.inner.clear_buffer().map_err(Error::from)
+        self.inner.clear_buffer().map_err(Error::map_internal_error)
     }
 
     /// Waits up to `timeout` for one frame and copies every returned SDK payload.
@@ -324,13 +324,13 @@ impl<'device> Measurement<'device> {
         self.inner
             .get_image(timeout_ms)
             .map(OwnedFrame::from_internal)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     pub fn get_parameter(&mut self, key: &ParamKey) -> Result<Parameter> {
         self.inner
             .get_parameter(key.as_bytes())
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
             .and_then(parameter_from_internal)
     }
 
@@ -338,15 +338,17 @@ impl<'device> Measurement<'device> {
         let internal_value = parameter_value_to_internal(value);
         self.inner
             .set_parameter(key.as_bytes(), &internal_value)
-            .map_err(Error::from)
+            .map_err(Error::map_internal_error)
     }
 
     pub fn execute(&mut self, key: &CommandKey) -> Result<()> {
-        self.inner.execute(key.as_bytes()).map_err(Error::from)
+        self.inner
+            .execute(key.as_bytes())
+            .map_err(Error::map_internal_error)
     }
 
     pub fn stop(self) -> Result<()> {
-        self.inner.stop().map_err(Error::from)
+        self.inner.stop().map_err(Error::map_internal_error)
     }
 }
 
