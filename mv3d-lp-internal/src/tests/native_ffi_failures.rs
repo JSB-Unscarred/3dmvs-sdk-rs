@@ -17,7 +17,7 @@ use crate::callback::{
 };
 use crate::device::{IpConfigRaw, IpConfiguration};
 use crate::driver::{Driver, DriverError, DriverResult, Handle};
-use crate::error::ContractViolation;
+use crate::error::{ContractViolation, InvalidInput};
 use crate::ffi::{NativeDriver, native_display_image_call, zeroed_image, zeroed_parameter};
 use crate::frame::{ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::parameter::ParameterValueRecord;
@@ -242,6 +242,39 @@ fn every_native_ffi_failure_uses_the_expected_symbol_and_preserves_status() {
             }
         }
     }
+}
+
+#[test]
+fn invalid_image_input_is_rejected_before_calling_the_native_symbol() {
+    configure(VersionResponse::Null, false);
+    let padded_depth = [0_u8; 3];
+    let input = ImageInput {
+        image_type: ImageTypeRecord::from_raw(bindings::ImageType_Depth),
+        width: 1,
+        height: 1,
+        data: &padded_depth,
+        intensity_data: None,
+        exposure_timestamps: None,
+        frame_number: 0,
+        device_timestamp: 0,
+        valid: true,
+        x_scale: 1.0,
+        y_scale: 1.0,
+        z_scale: 1.0,
+        x_offset: 0,
+        y_offset: 0,
+        z_offset: 0,
+    };
+
+    assert_eq!(
+        NativeDriver.save_image(input, ImageFileFormatRecord::TiffU16, c"image.tiff"),
+        Err(DriverError::InvalidInput(
+            InvalidInput::InvalidImageLayout {
+                field: "data length",
+            }
+        ))
+    );
+    assert!(calls().is_empty());
 }
 
 fn exercise_version_failures(driver: &NativeDriver) {

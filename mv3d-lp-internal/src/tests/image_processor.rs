@@ -1,9 +1,8 @@
+use crate::error::{ContractViolation, InvalidInput, Operation};
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::{Error, driver::DriverError};
 
 use super::mock_driver::{FfiOp, MockDriver, active_runtime};
-#[cfg(feature = "display-windows")]
-use crate::Operation;
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
 #[cfg(feature = "display-windows")]
@@ -81,6 +80,48 @@ fn runtime_routes_all_image_processing_operations() {
     ] {
         assert!(logs.contains(&operation));
     }
+}
+
+#[test]
+fn runtime_preserves_image_input_and_sdk_contract_classification() {
+    let mock = MockDriver::new();
+    mock.push_convert_image(Err(DriverError::InvalidInput(
+        InvalidInput::InvalidImageLayout {
+            field: "data length",
+        },
+    )));
+    mock.push_convert_image(Err(DriverError::Contract(
+        ContractViolation::LengthMismatch {
+            field: "data",
+            expected: 4,
+            actual: 3,
+        },
+    )));
+    let (runtime, _) = active_runtime(&mock);
+    let depth = [0_u8; 8];
+    let input = input(&depth);
+    let target = ImageTypeRecord::from_bits(0x0108_0001);
+
+    assert_eq!(
+        runtime.convert_image(input, target),
+        Err(Error::InvalidInput {
+            operation: Operation::ImageConvert,
+            kind: InvalidInput::InvalidImageLayout {
+                field: "data length",
+            },
+        })
+    );
+    assert_eq!(
+        runtime.convert_image(input, target),
+        Err(Error::ContractViolation {
+            operation: Operation::ImageConvert,
+            kind: ContractViolation::LengthMismatch {
+                field: "data",
+                expected: 4,
+                actual: 3,
+            },
+        })
+    );
 }
 
 #[test]

@@ -175,6 +175,16 @@ pub enum InvalidInput {
     InvalidImageLayout {
         field: &'static str,
     },
+    UnsupportedDisplayImageType {
+        actual: u32,
+    },
+    UnsupportedDisplayMode {
+        image_type: u32,
+    },
+    InvalidDisplayRange {
+        minimum: i32,
+        maximum: i32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

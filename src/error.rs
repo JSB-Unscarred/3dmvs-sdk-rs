@@ -647,6 +647,15 @@ impl From<mv3d_lp_internal::Error> for Error {
                     mv3d_lp_internal::InvalidInput::InvalidImageLayout { field } => {
                         InputViolation::InvalidImageLayout { field }
                     }
+                    mv3d_lp_internal::InvalidInput::UnsupportedDisplayImageType { actual } => {
+                        InputViolation::UnsupportedDisplayImageType { actual }
+                    }
+                    mv3d_lp_internal::InvalidInput::UnsupportedDisplayMode { image_type } => {
+                        InputViolation::UnsupportedDisplayMode { image_type }
+                    }
+                    mv3d_lp_internal::InvalidInput::InvalidDisplayRange { minimum, maximum } => {
+                        InputViolation::InvalidDisplayRange { minimum, maximum }
+                    }
                 },
             },
             InternalError::ContractViolation { operation, kind } => {

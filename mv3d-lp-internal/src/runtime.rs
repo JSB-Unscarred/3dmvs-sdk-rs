@@ -550,6 +550,7 @@ fn parse_sdk_version(bytes: &[u8]) -> Option<SdkVersion> {
 fn map_driver_error(operation: Operation, error: DriverError) -> Error {
     match error {
         DriverError::Status(status) => Error::Sdk { operation, status },
+        DriverError::InvalidInput(kind) => Error::InvalidInput { operation, kind },
         DriverError::Contract(kind) => Error::ContractViolation { operation, kind },
         DriverError::Allocation { requested } => Error::AllocationFailed {
             operation,

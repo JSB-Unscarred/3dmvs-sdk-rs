@@ -68,12 +68,13 @@ use crate::display::DisplayRangeRecord;
 ))]
 use crate::driver::{Driver, Handle, status_result};
 use crate::driver::{DriverError, DriverResult};
-use crate::error::ContractViolation;
+use crate::error::{ContractViolation, InvalidInput};
 use crate::file_transfer::FileProgressRaw;
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 
 const VERSION_SCAN_LIMIT: usize = 64;
+const MAX_MULTI_IMAGE_COUNT: usize = 8;
 const DEFAULT_MAX_FRAME_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -372,10 +373,10 @@ impl Driver for NativeDriver {
     }
 
     fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> DriverResult<FrameRecord> {
-        require_image_type(input, bindings::ImageType_Depth, "depth input")?;
-        validate_expected_image_bytes(input.width, input.height, 12, "point cloud output")?;
+        require_image_type(input, bindings::ImageType_Depth)?;
         let input_dimensions = (input.width, input.height);
         let mut input = image_input_to_native(input)?;
+        validate_expected_image_bytes(input.nWidth, input.nHeight, 12)?;
         let mut output = zeroed_image();
         // SAFETY: input borrows a validated payload for the duration of this serialized call;
         // the vendor marks it [IN], so the SDK must not write through its legacy mutable pointer.
@@ -400,13 +401,8 @@ impl Driver for NativeDriver {
         &self,
         inputs: &[ImageInput<'_>],
     ) -> DriverResult<FrameRecord> {
-        validate_multi_depth_inputs(inputs, true)?;
-        let mut inputs = image_inputs_to_native(inputs)?;
-        let count = u32::try_from(inputs.len()).map_err(|_| {
-            DriverError::Contract(ContractViolation::LengthOverflow {
-                field: "image count",
-            })
-        })?;
+        let mut inputs = prepare_multi_depth_inputs(inputs, true)?;
+        let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
         let mut output = zeroed_image();
         // SAFETY: every descriptor borrows a validated, vendor-[IN] read-only payload, count
         // matches the initialized descriptor array, and output is writable for the call.
@@ -428,19 +424,18 @@ impl Driver for NativeDriver {
         input: ImageInput<'_>,
         target: ImageTypeRecord,
     ) -> DriverResult<FrameRecord> {
-        if !conversion_supported(input.image_type.raw(), target.raw()) {
-            return Err(invalid_image_value("image conversion pair"));
-        }
-        if let Some(bytes_per_pixel) = known_bytes_per_pixel(target.raw()) {
-            validate_expected_image_bytes(
-                input.width,
-                input.height,
-                bytes_per_pixel,
-                "converted output",
-            )?;
-        }
+        let source = input.image_type.raw();
         let input_dimensions = (input.width, input.height);
         let mut input = image_input_to_native(input)?;
+        if !conversion_supported(source, target.raw()) {
+            return Err(invalid_input(InvalidInput::UnsupportedImageConversion {
+                source: source as u32,
+                target: target.raw() as u32,
+            }));
+        }
+        if let Some(bytes_per_pixel) = known_bytes_per_pixel(target.raw()) {
+            validate_expected_image_bytes(input.nWidth, input.nHeight, bytes_per_pixel)?;
+        }
         let mut output = zeroed_image();
         output.enImageType = target.raw();
         // SAFETY: the header requires only the requested output type in the otherwise zeroed
@@ -461,13 +456,8 @@ impl Driver for NativeDriver {
     }
 
     fn mosaic_depth(&self, inputs: &[ImageInput<'_>]) -> DriverResult<FrameRecord> {
-        validate_multi_depth_inputs(inputs, false)?;
-        let mut inputs = image_inputs_to_native(inputs)?;
-        let count = u32::try_from(inputs.len()).map_err(|_| {
-            DriverError::Contract(ContractViolation::LengthOverflow {
-                field: "image count",
-            })
-        })?;
+        let mut inputs = prepare_multi_depth_inputs(inputs, false)?;
+        let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
         let mut output = zeroed_image();
         // SAFETY: descriptors and count describe initialized vendor-[IN] read-only inputs;
         // output is writable and receives SDK-owned transient payloads.
@@ -490,10 +480,14 @@ impl Driver for NativeDriver {
         format: ImageFileFormatRecord,
         file_name: &CStr,
     ) -> DriverResult<()> {
-        if !file_format_supported(input.image_type.raw(), format) {
-            return Err(invalid_image_value("image file format pair"));
-        }
+        let image_type = input.image_type.raw();
         let mut input = image_input_to_native(input)?;
+        if !file_format_supported(image_type, format) {
+            return Err(invalid_input(InvalidInput::UnsupportedImageFileFormat {
+                image_type: image_type as u32,
+                file_format: format as i32,
+            }));
+        }
         // SAFETY: input payload and filename are vendor-[IN], read-only borrows for this
         // synchronous call; the SDK must neither write them nor retain their addresses.
         status_result(unsafe {
@@ -509,11 +503,21 @@ impl Driver for NativeDriver {
         range: DisplayRangeRecord,
     ) -> DriverResult<()> {
         if !display_image_type_supported(input.image_type.raw()) {
-            return Err(invalid_image_value("display image type"));
+            return Err(invalid_input(InvalidInput::UnsupportedDisplayImageType {
+                actual: input.image_type.raw() as u32,
+            }));
         }
         if let DisplayRangeRecord::Manual { minimum, maximum } = range {
-            if input.image_type.raw() == bindings::ImageType_Mono8 || minimum >= maximum {
-                return Err(invalid_image_value("display range"));
+            if input.image_type.raw() == bindings::ImageType_Mono8 {
+                return Err(invalid_input(InvalidInput::UnsupportedDisplayMode {
+                    image_type: input.image_type.raw() as u32,
+                }));
+            }
+            if minimum >= maximum {
+                return Err(invalid_input(InvalidInput::InvalidDisplayRange {
+                    minimum,
+                    maximum,
+                }));
             }
         }
         let mut input = image_input_to_native(input)?;
@@ -551,79 +555,61 @@ impl Driver for NativeDriver {
 ))]
 fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_LP_IMAGE_DATA> {
     if input.width == 0 {
-        return Err(invalid_image_value("width"));
+        return Err(invalid_image_layout("width"));
     }
     if input.height == 0 {
-        return Err(invalid_image_value("height"));
+        return Err(invalid_image_layout("height"));
     }
     if input.data.is_empty() {
-        return Err(invalid_image_value("data length"));
+        return Err(invalid_image_layout("data length"));
     }
-    let data_len = u32::try_from(input.data.len()).map_err(|_| {
-        DriverError::Contract(ContractViolation::OutputTooLarge {
-            field: "input image data",
-            limit: u32::MAX as usize,
-            actual: input.data.len(),
-        })
-    })?;
+    let data_len = u32::try_from(input.data.len())
+        .map_err(|_| input_too_long(u32::MAX as usize, input.data.len()))?;
     let pixels = usize::try_from(input.width)
         .unwrap_or(usize::MAX)
         .checked_mul(usize::try_from(input.height).unwrap_or(usize::MAX))
-        .ok_or_else(|| length_overflow("dimensions"))?;
+        .ok_or_else(|| invalid_image_layout("dimensions"))?;
     if let Some(bytes_per_pixel) = known_bytes_per_pixel(input.image_type.raw()) {
         let expected = pixels
             .checked_mul(bytes_per_pixel)
-            .ok_or_else(|| length_overflow("data"))?;
+            .ok_or_else(|| invalid_image_layout("data length"))?;
         if input.data.len() != expected {
-            return Err(length_mismatch("data", expected, input.data.len()));
+            return Err(invalid_image_layout("data length"));
         }
     }
     if input.data.len() > DEFAULT_MAX_FRAME_BYTES {
-        return Err(DriverError::Contract(ContractViolation::OutputTooLarge {
-            field: "input image data",
-            limit: DEFAULT_MAX_FRAME_BYTES,
-            actual: input.data.len(),
-        }));
+        return Err(input_too_long(DEFAULT_MAX_FRAME_BYTES, input.data.len()));
     }
     let intensity_len = match input.intensity_data {
         Some(intensity) if intensity.len() != pixels => {
-            return Err(length_mismatch("intensity data", pixels, intensity.len()));
+            return Err(invalid_image_layout("intensity data length"));
         }
-        Some(intensity) => {
-            u32::try_from(intensity.len()).map_err(|_| length_overflow("intensity data"))?
-        }
+        Some(intensity) => u32::try_from(intensity.len())
+            .map_err(|_| input_too_long(u32::MAX as usize, intensity.len()))?,
         None => 0,
     };
     if let Some(timestamps) = input.exposure_timestamps {
         if timestamps.len() != usize::try_from(input.height).unwrap_or(usize::MAX) {
-            return Err(length_mismatch(
-                "exposure timestamps",
-                usize::try_from(input.height).unwrap_or(usize::MAX),
-                timestamps.len(),
-            ));
+            return Err(invalid_image_layout("exposure timestamp count"));
         }
     }
     if !input.x_scale.is_finite() || !input.y_scale.is_finite() || !input.z_scale.is_finite() {
-        return Err(invalid_image_value("calibration scale"));
+        return Err(invalid_image_layout("calibration scale"));
     }
     let exposure_bytes = input.exposure_timestamps.map_or(Ok(0), |timestamps| {
         timestamps
             .len()
             .checked_mul(size_of::<i64>())
-            .ok_or_else(|| length_overflow("exposure timestamps"))
+            .ok_or_else(|| invalid_image_layout("exposure timestamp bytes"))
     })?;
     let aggregate = input
         .data
         .len()
         .checked_add(usize::try_from(intensity_len).unwrap_or(usize::MAX))
         .and_then(|bytes| bytes.checked_add(exposure_bytes))
-        .ok_or_else(|| length_overflow("input image payloads"))?;
+        .ok_or_else(|| invalid_image_layout("aggregate input length"))?;
     if aggregate > DEFAULT_MAX_FRAME_BYTES {
-        return Err(DriverError::Contract(ContractViolation::OutputTooLarge {
-            field: "input image payloads",
-            limit: DEFAULT_MAX_FRAME_BYTES,
-            actual: aggregate,
-        }));
+        return Err(input_too_long(DEFAULT_MAX_FRAME_BYTES, aggregate));
     }
 
     Ok(bindings::MV3D_LP_IMAGE_DATA {
@@ -695,12 +681,14 @@ pub(crate) unsafe fn native_display_image_call(
 fn require_image_type(
     input: ImageInput<'_>,
     expected: bindings::Mv3dLpImageType,
-    field: &'static str,
 ) -> DriverResult<()> {
     if input.image_type.raw() == expected {
         Ok(())
     } else {
-        Err(invalid_image_value(field))
+        Err(invalid_input(InvalidInput::UnexpectedImageType {
+            expected: expected as u32,
+            actual: input.image_type.raw() as u32,
+        }))
     }
 }
 
@@ -713,21 +701,30 @@ fn require_image_type(
         target_env = "msvc"
     )
 ))]
-fn validate_multi_depth_inputs(
+fn prepare_multi_depth_inputs(
     inputs: &[ImageInput<'_>],
     point_cloud_output: bool,
-) -> DriverResult<()> {
-    if !(1..=8).contains(&inputs.len()) {
-        return Err(invalid_image_value("image count"));
+) -> DriverResult<Vec<bindings::MV3D_LP_IMAGE_DATA>> {
+    if !(1..=MAX_MULTI_IMAGE_COUNT).contains(&inputs.len()) {
+        return Err(invalid_image_count(inputs.len()));
     }
+    let mut native = Vec::new();
+    native
+        .try_reserve_exact(inputs.len())
+        .map_err(|_| DriverError::Allocation {
+            requested: inputs
+                .len()
+                .saturating_mul(size_of::<bindings::MV3D_LP_IMAGE_DATA>()),
+        })?;
     let mut aggregate_input = 0usize;
     let mut predicted_output = 0usize;
     for input in inputs {
-        require_image_type(*input, bindings::ImageType_Depth, "depth input")?;
+        require_image_type(*input, bindings::ImageType_Depth)?;
+        native.push(image_input_to_native(*input)?);
         let input_bytes = image_input_payload_bytes(*input)?;
         aggregate_input = aggregate_input
             .checked_add(input_bytes)
-            .ok_or_else(|| length_overflow("aggregate input images"))?;
+            .ok_or_else(|| invalid_image_layout("aggregate input length"))?;
         let output_bytes = if point_cloud_output {
             expected_image_bytes(input.width, input.height, 12)?
         } else {
@@ -735,14 +732,15 @@ fn validate_multi_depth_inputs(
                 .data
                 .len()
                 .checked_add(input.intensity_data.map_or(0, <[u8]>::len))
-                .ok_or_else(|| length_overflow("mosaic output"))?
+                .ok_or_else(|| invalid_image_layout("predicted output length"))?
         };
         predicted_output = predicted_output
             .checked_add(output_bytes)
-            .ok_or_else(|| length_overflow("aggregate output image"))?;
+            .ok_or_else(|| invalid_image_layout("predicted output length"))?;
     }
-    validate_byte_limit("aggregate input images", aggregate_input)?;
-    validate_byte_limit("aggregate output image", predicted_output)
+    validate_input_byte_limit(aggregate_input)?;
+    validate_input_byte_limit(predicted_output)?;
+    Ok(native)
 }
 
 #[cfg(any(
@@ -759,14 +757,14 @@ fn image_input_payload_bytes(input: ImageInput<'_>) -> DriverResult<usize> {
         timestamps
             .len()
             .checked_mul(size_of::<i64>())
-            .ok_or_else(|| length_overflow("exposure timestamps"))
+            .ok_or_else(|| invalid_image_layout("exposure timestamp bytes"))
     })?;
     input
         .data
         .len()
         .checked_add(input.intensity_data.map_or(0, <[u8]>::len))
         .and_then(|bytes| bytes.checked_add(exposure_bytes))
-        .ok_or_else(|| length_overflow("input image payloads"))
+        .ok_or_else(|| invalid_image_layout("aggregate input length"))
 }
 
 #[cfg(any(
@@ -783,7 +781,7 @@ fn expected_image_bytes(width: u32, height: u32, bytes_per_pixel: usize) -> Driv
         .unwrap_or(usize::MAX)
         .checked_mul(usize::try_from(height).unwrap_or(usize::MAX))
         .and_then(|pixels| pixels.checked_mul(bytes_per_pixel))
-        .ok_or_else(|| length_overflow("expected output image"))
+        .ok_or_else(|| invalid_image_layout("expected output length"))
 }
 
 #[cfg(any(
@@ -799,9 +797,8 @@ fn validate_expected_image_bytes(
     width: u32,
     height: u32,
     bytes_per_pixel: usize,
-    field: &'static str,
 ) -> DriverResult<()> {
-    validate_byte_limit(field, expected_image_bytes(width, height, bytes_per_pixel)?)
+    validate_input_byte_limit(expected_image_bytes(width, height, bytes_per_pixel)?)
 }
 
 #[cfg(any(
@@ -813,16 +810,26 @@ fn validate_expected_image_bytes(
         target_env = "msvc"
     )
 ))]
-fn validate_byte_limit(field: &'static str, actual: usize) -> DriverResult<()> {
+fn validate_input_byte_limit(actual: usize) -> DriverResult<()> {
     if actual > DEFAULT_MAX_FRAME_BYTES {
-        Err(DriverError::Contract(ContractViolation::OutputTooLarge {
-            field,
-            limit: DEFAULT_MAX_FRAME_BYTES,
-            actual,
-        }))
+        Err(input_too_long(DEFAULT_MAX_FRAME_BYTES, actual))
     } else {
         Ok(())
     }
+}
+
+#[cfg(any(
+    all(test, not(miri), not(feature = "native")),
+    all(
+        test,
+        feature = "native",
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )
+))]
+pub(crate) fn validate_input_byte_limit_for_test(actual: usize) -> DriverResult<()> {
+    validate_input_byte_limit(actual)
 }
 
 #[cfg(any(
@@ -916,32 +923,6 @@ fn display_image_type_supported(image_type: i32) -> bool {
 }
 
 #[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-fn image_inputs_to_native(
-    inputs: &[ImageInput<'_>],
-) -> DriverResult<Vec<bindings::MV3D_LP_IMAGE_DATA>> {
-    let mut native = Vec::new();
-    native
-        .try_reserve_exact(inputs.len())
-        .map_err(|_| DriverError::Allocation {
-            requested: inputs
-                .len()
-                .saturating_mul(size_of::<bindings::MV3D_LP_IMAGE_DATA>()),
-        })?;
-    for input in inputs {
-        native.push(image_input_to_native(*input)?);
-    }
-    Ok(native)
-}
-
-#[cfg(any(
     test,
     all(
         feature = "native",
@@ -956,7 +937,7 @@ unsafe fn processed_image_from_native(
     auxiliary_payloads: AuxiliaryPayloads,
 ) -> DriverResult<FrameRecord> {
     if output.enImageType != expected.raw() {
-        return Err(invalid_image_value("output image type"));
+        return Err(invalid_sdk_image_value("output image type"));
     }
     let mut sanitized = *output;
     match auxiliary_payloads {
@@ -1004,20 +985,20 @@ fn validate_processed_image_lengths(image: &bindings::MV3D_LP_IMAGE_DATA) -> Dri
     let pixels = usize::try_from(image.nWidth)
         .unwrap_or(usize::MAX)
         .checked_mul(usize::try_from(image.nHeight).unwrap_or(usize::MAX))
-        .ok_or_else(|| length_overflow("dimensions"))?;
+        .ok_or_else(|| sdk_length_overflow("dimensions"))?;
     if let Some(bytes_per_pixel) = known_bytes_per_pixel(image.enImageType) {
         let expected = pixels
             .checked_mul(bytes_per_pixel)
-            .ok_or_else(|| length_overflow("data"))?;
+            .ok_or_else(|| sdk_length_overflow("data"))?;
         let actual = usize::try_from(image.nDataLen).unwrap_or(usize::MAX);
         if actual != expected {
-            return Err(length_mismatch("data", expected, actual));
+            return Err(sdk_length_mismatch("data", expected, actual));
         }
     }
     if image.nIntensityDataLen != 0 {
         let actual = usize::try_from(image.nIntensityDataLen).unwrap_or(usize::MAX);
         if actual != pixels {
-            return Err(length_mismatch("intensity data", pixels, actual));
+            return Err(sdk_length_mismatch("intensity data", pixels, actual));
         }
     }
     Ok(())
@@ -1057,34 +1038,34 @@ fn validate_image_layout(
     limits: FrameLimits,
 ) -> DriverResult<ValidatedImageLayout> {
     if image.nWidth == 0 {
-        return Err(invalid_image_value("width"));
+        return Err(invalid_sdk_image_value("width"));
     }
     if image.nHeight == 0 {
-        return Err(invalid_image_value("height"));
+        return Err(invalid_sdk_image_value("height"));
     }
 
     let width = usize_from_u32(image.nWidth, "dimensions")?;
     let height = usize_from_u32(image.nHeight, "dimensions")?;
     let pixels = width
         .checked_mul(height)
-        .ok_or_else(|| length_overflow("dimensions"))?;
+        .ok_or_else(|| sdk_length_overflow("dimensions"))?;
     let data_len = usize_from_u32(image.nDataLen, "data")?;
 
     // Pointer/length pairs are checked before format-specific arithmetic so a null pointer with
     // a claimed readable extent is always reported without trying to access it.
     if data_len != 0 && image.pData.is_null() {
-        return Err(null_pointer_with_length("data", data_len));
+        return Err(sdk_null_pointer_with_length("data", data_len));
     }
     if data_len == 0 {
-        return Err(invalid_image_value("data length"));
+        return Err(invalid_sdk_image_value("data length"));
     }
 
     if let Some(bytes_per_pixel) = known_bytes_per_pixel(image.enImageType) {
         let expected = pixels
             .checked_mul(bytes_per_pixel)
-            .ok_or_else(|| length_overflow("data"))?;
+            .ok_or_else(|| sdk_length_overflow("data"))?;
         if data_len < expected {
-            return Err(length_mismatch("data", expected, data_len));
+            return Err(sdk_length_mismatch("data", expected, data_len));
         }
     }
 
@@ -1092,11 +1073,11 @@ fn validate_image_layout(
     let intensity_len = match intensity_len {
         0 => None,
         length if image.pIntensityData.is_null() => {
-            return Err(null_pointer_with_length("intensity data", length));
+            return Err(sdk_null_pointer_with_length("intensity data", length));
         }
         length => {
             if length < pixels {
-                return Err(length_mismatch("intensity data", pixels, length));
+                return Err(sdk_length_mismatch("intensity data", pixels, length));
             }
             Some(length)
         }
@@ -1110,14 +1091,14 @@ fn validate_image_layout(
     let exposure_bytes = match exposure_count {
         Some(count) => count
             .checked_mul(size_of::<i64>())
-            .ok_or_else(|| length_overflow("exposure timestamps"))?,
+            .ok_or_else(|| sdk_length_overflow("exposure timestamps"))?,
         None => 0,
     };
 
     let total = data_len
         .checked_add(intensity_len.unwrap_or(0))
         .and_then(|bytes| bytes.checked_add(exposure_bytes))
-        .ok_or_else(|| length_overflow("frame payloads"))?;
+        .ok_or_else(|| sdk_length_overflow("frame payloads"))?;
     if total > limits.max_frame_bytes {
         return Err(DriverError::Contract(ContractViolation::OutputTooLarge {
             field: "frame payloads",
@@ -1244,18 +1225,38 @@ fn allocated_i64s(count: usize, requested_bytes: usize) -> DriverResult<Vec<i64>
 }
 
 fn usize_from_u32(value: u32, field: &'static str) -> DriverResult<usize> {
-    usize::try_from(value).map_err(|_| length_overflow(field))
+    usize::try_from(value).map_err(|_| sdk_length_overflow(field))
 }
 
-fn invalid_image_value(field: &'static str) -> DriverError {
+fn invalid_input(kind: InvalidInput) -> DriverError {
+    DriverError::InvalidInput(kind)
+}
+
+fn invalid_image_count(actual: usize) -> DriverError {
+    invalid_input(InvalidInput::ImageCount {
+        minimum: 1,
+        maximum: MAX_MULTI_IMAGE_COUNT,
+        actual,
+    })
+}
+
+fn invalid_image_layout(field: &'static str) -> DriverError {
+    invalid_input(InvalidInput::InvalidImageLayout { field })
+}
+
+fn input_too_long(maximum: usize, actual: usize) -> DriverError {
+    invalid_input(InvalidInput::TooLong { actual, maximum })
+}
+
+fn invalid_sdk_image_value(field: &'static str) -> DriverError {
     DriverError::Contract(ContractViolation::InvalidImageValue { field })
 }
 
-fn null_pointer_with_length(field: &'static str, length: usize) -> DriverError {
+fn sdk_null_pointer_with_length(field: &'static str, length: usize) -> DriverError {
     DriverError::Contract(ContractViolation::NullPointerWithLength { field, length })
 }
 
-fn length_mismatch(field: &'static str, expected: usize, actual: usize) -> DriverError {
+fn sdk_length_mismatch(field: &'static str, expected: usize, actual: usize) -> DriverError {
     DriverError::Contract(ContractViolation::LengthMismatch {
         field,
         expected,
@@ -1263,7 +1264,7 @@ fn length_mismatch(field: &'static str, expected: usize, actual: usize) -> Drive
     })
 }
 
-fn length_overflow(field: &'static str) -> DriverError {
+fn sdk_length_overflow(field: &'static str) -> DriverError {
     DriverError::Contract(ContractViolation::LengthOverflow { field })
 }
 
@@ -1288,7 +1289,7 @@ pub(crate) fn image_from_test_buffers(
 
     let layout = validate_image_layout(&image, limits)?;
     if data.is_none_or(|bytes| bytes.len() < layout.data_len) {
-        return Err(length_mismatch(
+        return Err(sdk_length_mismatch(
             "test data backing",
             layout.data_len,
             data.map_or(0, <[u8]>::len),
@@ -1296,7 +1297,7 @@ pub(crate) fn image_from_test_buffers(
     }
     if let Some(expected) = layout.intensity_len {
         if intensity_data.is_none_or(|bytes| bytes.len() < expected) {
-            return Err(length_mismatch(
+            return Err(sdk_length_mismatch(
                 "test intensity backing",
                 expected,
                 intensity_data.map_or(0, <[u8]>::len),
@@ -1305,7 +1306,7 @@ pub(crate) fn image_from_test_buffers(
     }
     if let Some(expected) = layout.exposure_count {
         if exposure_timestamps.is_none_or(|values| values.len() < expected) {
-            return Err(length_mismatch(
+            return Err(sdk_length_mismatch(
                 "test exposure backing",
                 expected,
                 exposure_timestamps.map_or(0, <[i64]>::len),

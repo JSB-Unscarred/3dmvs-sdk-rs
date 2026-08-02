@@ -85,3 +85,30 @@ fn processed_uncompressed_output_requires_exact_length() {
         }))
     ));
 }
+
+#[test]
+fn processed_output_type_mismatch_remains_a_contract_violation() {
+    let data = [0_u8; 8];
+    let mut image = zeroed_image();
+    image.enImageType = ImageType_Depth;
+    image.nWidth = 2;
+    image.nHeight = 2;
+    image.nDataLen = data.len() as u32;
+
+    assert!(matches!(
+        processed_image_from_test_buffers(
+            image,
+            ImageTypeRecord::from_raw(ImageType_PointCloud),
+            true,
+            true,
+            &data,
+            None,
+            None,
+        ),
+        Err(DriverError::Contract(
+            ContractViolation::InvalidImageValue {
+                field: "output image type",
+            }
+        ))
+    ));
+}

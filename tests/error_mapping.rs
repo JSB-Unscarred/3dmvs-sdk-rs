@@ -206,6 +206,139 @@ fn remaining_image_contract_violations_map_without_losing_context() {
 }
 
 #[test]
+fn invalid_image_inputs_map_to_public_input_errors() {
+    let cases = [
+        (
+            Operation::MapDepthToPointCloudRound,
+            mv3d_lp_internal::InvalidInput::ImageCount {
+                minimum: 1,
+                maximum: 8,
+                actual: 0,
+            },
+            InputViolation::ImageCount {
+                minimum: 1,
+                maximum: 8,
+                actual: 0,
+            },
+        ),
+        (
+            Operation::MapDepthToPointCloud,
+            mv3d_lp_internal::InvalidInput::UnexpectedImageType {
+                expected: 0x0110_00B8,
+                actual: 0x0108_0001,
+            },
+            InputViolation::UnexpectedImageType {
+                expected: 0x0110_00B8,
+                actual: 0x0108_0001,
+            },
+        ),
+        (
+            Operation::ImageConvert,
+            mv3d_lp_internal::InvalidInput::UnsupportedImageConversion {
+                source: 0x0108_0001,
+                target: 0x0218_0014,
+            },
+            InputViolation::UnsupportedImageConversion {
+                source: 0x0108_0001,
+                target: 0x0218_0014,
+            },
+        ),
+        (
+            Operation::SaveImage,
+            mv3d_lp_internal::InvalidInput::UnsupportedImageFileFormat {
+                image_type: 0x0108_0001,
+                file_format: 1,
+            },
+            InputViolation::UnsupportedImageFileFormat {
+                image_type: 0x0108_0001,
+                file_format: 1,
+            },
+        ),
+        (
+            Operation::ImageConvert,
+            mv3d_lp_internal::InvalidInput::InvalidImageLayout {
+                field: "data length",
+            },
+            InputViolation::InvalidImageLayout {
+                field: "data length",
+            },
+        ),
+        (
+            Operation::DepthMosaic,
+            mv3d_lp_internal::InvalidInput::TooLong {
+                maximum: 512,
+                actual: 513,
+            },
+            InputViolation::TooLong {
+                max: 512,
+                actual: 513,
+            },
+        ),
+    ];
+
+    for (operation, kind, violation) in cases {
+        let error: Error = mv3d_lp_internal::Error::InvalidInput { operation, kind }.into();
+
+        assert_eq!(
+            error,
+            Error::InvalidInput {
+                field: operation.sdk_name(),
+                violation,
+            }
+        );
+    }
+}
+
+#[cfg(feature = "display-windows")]
+#[test]
+fn invalid_display_inputs_map_to_public_input_errors() {
+    let cases = [
+        (
+            mv3d_lp_internal::InvalidInput::UnsupportedDisplayImageType {
+                actual: 0x0218_0001,
+            },
+            InputViolation::UnsupportedDisplayImageType {
+                actual: 0x0218_0001,
+            },
+        ),
+        (
+            mv3d_lp_internal::InvalidInput::UnsupportedDisplayMode {
+                image_type: 0x0108_0001,
+            },
+            InputViolation::UnsupportedDisplayMode {
+                image_type: 0x0108_0001,
+            },
+        ),
+        (
+            mv3d_lp_internal::InvalidInput::InvalidDisplayRange {
+                minimum: 10,
+                maximum: 10,
+            },
+            InputViolation::InvalidDisplayRange {
+                minimum: 10,
+                maximum: 10,
+            },
+        ),
+    ];
+
+    for (kind, violation) in cases {
+        let error: Error = mv3d_lp_internal::Error::InvalidInput {
+            operation: Operation::DisplayImage,
+            kind,
+        }
+        .into();
+
+        assert_eq!(
+            error,
+            Error::InvalidInput {
+                field: Operation::DisplayImage.sdk_name(),
+                violation,
+            }
+        );
+    }
+}
+
+#[test]
 fn excessive_timeout_retains_the_exact_duration() {
     let error: Error = mv3d_lp_internal::Error::InvalidInput {
         operation: Operation::GetImage,
