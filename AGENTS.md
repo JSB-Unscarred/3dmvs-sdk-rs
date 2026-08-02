@@ -204,5 +204,4 @@ cargo +nightly-2026-07-09 miri test -p mv3d-lp-internal --lib --no-default-featu
 - 一个 commit 只表达一个逻辑变更。除非用户明确要求，否则不要自动创建 commit。
 - commit 标题使用 `<type>(<scope>)?!: <中文简述>`；scope 可选，统一使用英文小写 type、半角冒号和一个空格，标题末尾不加句号。
 - 常用 type：`feat`、`fix`、`refactor`、`test`、`docs`、`chore`、`perf`。破坏性变更在 type/scope 后加 `!`。
-- 标题描述行为变化，不写“更新代码”等空泛内容。复杂提交在空行后的正文说明动机、关键约束、兼容性和验证结果。
-- 完成代码或文档修改后，交付回复提供一条可直接使用的中文 commit message 建议；纯只读分析无需提供。
+- 标题描述行为变化，不写“更新代码”等空泛内容。复杂提交在空行后的正文说明动机、关键约束、兼容性和验证结果,要有分点的正文.
