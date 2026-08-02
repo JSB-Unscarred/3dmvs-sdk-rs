@@ -163,7 +163,7 @@ pub enum CallbackWorkerExit {
 /// SDK handle, or native callback payload.
 #[must_use = "dropping CallbackWorker detaches its Rust worker thread"]
 pub struct CallbackWorker {
-    handle: Option<JoinHandle<CallbackWorkerExit>>,
+    handle: JoinHandle<CallbackWorkerExit>,
 }
 
 impl CallbackWorker {
@@ -187,33 +187,30 @@ impl CallbackWorker {
                     Err(_) => CallbackWorkerExit::HandlerPanicked,
                 }
             })?;
-        Ok(Self {
-            handle: Some(handle),
-        })
+        Ok(Self { handle })
     }
 
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        self.handle
-            .as_ref()
-            .is_none_or(std::thread::JoinHandle::is_finished)
+        self.handle.is_finished()
     }
 
     /// Waits for the channel to close or the handler to panic.
     ///
+    /// A live callback registration retains a channel sender. Stop or drop the corresponding
+    /// callback measurement before joining an image worker; replace the exception registration or
+    /// close its device before joining an exception worker.
+    ///
     /// This method should not be called while holding an SDK call lock. It can
-    /// wait indefinitely when a user handler does not return.
+    /// wait indefinitely while a sender remains live or when a user handler does not return.
     ///
     /// # Panics
     ///
     /// This method may panic if dropping a user-defined thread panic payload
     /// itself panics. Panic payloads follow normal Rust drop semantics.
     #[must_use]
-    pub fn join(mut self) -> CallbackWorkerExit {
-        let Some(handle) = self.handle.take() else {
-            return CallbackWorkerExit::WorkerPanicked;
-        };
-        match handle.join() {
+    pub fn join(self) -> CallbackWorkerExit {
+        match self.handle.join() {
             Ok(exit) => exit,
             Err(_) => CallbackWorkerExit::WorkerPanicked,
         }

@@ -114,12 +114,12 @@ impl<'runtime> Device<'runtime> {
         const OPERATION: Operation = Operation::RegisterImageDataCallback;
         self.require_state(OPERATION, &[DeviceState::Open])?;
 
-        let mut registration = CallbackRegistration::image(sink)?;
+        let registration = CallbackRegistration::image(sink)?;
         let register = self.runtime.call(OPERATION, |driver| {
             driver.register_image_callback(self.handle(), registration.cookie())
         });
         if let Err(error) = register {
-            registration.deactivate();
+            drop(registration);
             return Err(error);
         }
 
@@ -139,7 +139,7 @@ impl<'runtime> Device<'runtime> {
                 })
             }
             Err(error) => {
-                registration.deactivate();
+                drop(registration);
                 Err(error)
             }
         }
@@ -152,19 +152,17 @@ impl<'runtime> Device<'runtime> {
         const OPERATION: Operation = Operation::RegisterExceptionCallback;
         self.require_state(OPERATION, &[DeviceState::Open])?;
 
-        let mut registration = CallbackRegistration::exception(sink)?;
+        let registration = CallbackRegistration::exception(sink)?;
         let register = self.runtime.call(OPERATION, |driver| {
             driver.register_exception_callback(self.handle(), registration.cookie())
         });
         match register {
             Ok(()) => {
-                if let Some(mut previous) = self.exception_registration.replace(registration) {
-                    previous.deactivate();
-                }
+                drop(self.exception_registration.replace(registration));
                 Ok(())
             }
             Err(error) => {
-                registration.deactivate();
+                drop(registration);
                 Err(error)
             }
         }
@@ -318,12 +316,8 @@ impl<'runtime> Device<'runtime> {
     }
 
     fn cleanup(&mut self) -> Result<(), DeviceCleanupError> {
-        if let Some(mut registration) = self.image_registration.take() {
-            registration.deactivate();
-        }
-        if let Some(mut registration) = self.exception_registration.take() {
-            registration.deactivate();
-        }
+        drop(self.image_registration.take());
+        drop(self.exception_registration.take());
         let Some(handle) = self.handle.take() else {
             return Ok(());
         };
@@ -590,9 +584,7 @@ impl CallbackMeasurement<'_> {
     }
 
     fn deactivate_callback(&mut self) {
-        if let Some(mut registration) = self.registration.take() {
-            registration.deactivate();
-        }
+        drop(self.registration.take());
     }
 }
 

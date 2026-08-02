@@ -177,9 +177,9 @@ cargo doc --workspace --no-deps --locked
 安装 3DMVS 的 x64 Windows MSVC 主机额外运行：
 
 ```powershell
-cargo check --workspace --features native
-cargo test --workspace --features native --no-run
-cargo test --workspace --features display-windows
+cargo check --workspace --features native --locked
+cargo test --workspace --features native --no-run --locked
+cargo test --workspace --features display-windows --locked
 ```
 
 `mv3d-lp-internal/build.rs` 从 `MV3DLP_DEV_ENV` 读取 Development 根目录，默认是 `C:\Program Files (x86)\3DMVS\Development`，只校验并链接 `Libraries\win64\Mv3dLp.lib`。脚本不复制 DLL、不设置 `PATH`/GenTL 环境，也不重新生成 bindings。原生目标编译或链接成功不等于真实 DLL、固件和设备行为已经通过。

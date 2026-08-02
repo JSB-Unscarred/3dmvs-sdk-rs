@@ -21,7 +21,7 @@
 $env:MV3D_LP_TEST_SERIAL = "<serial-from-secure-local-config>"
 $env:MV3D_LP_TEST_DEVICE_READ_FILE = "<small-read-only-device-fixture>"
 $env:MV3D_LP_TEST_LOCAL_SCRATCH_DIR = "<empty-absolute-ascii-scratch-directory>"
-cargo test -p mv3d-lp-internal --features native --test native_thread_contract single_runtime_cross_thread_contract -- --ignored --exact --nocapture --test-threads=1
+cargo test -p mv3d-lp-internal --features native --test native_thread_contract --locked single_runtime_cross_thread_contract -- --ignored --exact --nocapture --test-threads=1
 ```
 
 设备须在线、可正常输出图像，device fixture 须是允许重复下载的小型只读文件。测试只调用 FileAccess read；host 端只在唯一子目录中创建不覆盖的目标，并只删除本次测试登记的精确文件和该空子目录。

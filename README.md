@@ -116,7 +116,7 @@ fn receive_one_frame(device: &mut Device<'_>) -> Result<()> {
 - 回调 cookie 永不复用；晚到或已撤销的回调被忽略；公共 API 的用户 handler 不在原生回调线程执行，unwind panic 被隔离在原生 ABI 边界内。
 - 资源 `Drop` 做最佳努力清理；显式 `stop`、`close` 和 `shutdown` 返回清理错误。
 - 有活句柄或清理结果不确定时跳过 `Finalize`；单个设备 Close 结果不确定会把进程级会话降级为 `Degraded`，阻止新设备、`Finalize` 和新 runtime，但不会改变其他设备各自的 `DeviceState`，也不会使它们的存量操作或纯图像处理失效。
-- 进程级互斥锁只保护 runtime 生命周期和设备 open/close 记账；不同设备的普通调用可以并行。无设备句柄隔离的 ImgProc/Save 调用使用独立互斥锁串行化。
+- 进程级互斥锁只保护 runtime 生命周期和设备 open/close 记账；不同设备的普通调用可以并行。无设备句柄隔离的 ImgProc/Save/Display 调用使用独立互斥锁串行化。
 
 ## 原生契约假设
 
@@ -148,9 +148,9 @@ cargo doc --workspace --no-deps --locked
 已安装 3DMVS 的 x64 Windows MSVC 主机可额外检查：
 
 ```powershell
-cargo check --workspace --features native
-cargo test --workspace --features native --no-run
-cargo test --workspace --features display-windows
+cargo check --workspace --features native --locked
+cargo test --workspace --features native --no-run --locked
+cargo test --workspace --features display-windows --locked
 ```
 
 默认测试使用 fake backend 和本地 FFI stubs，不调用厂商 SDK，也不要求设备；`cargo test` 同时运行两个 crate 和负向编译契约。原生构建、ABI 复验和实机观察属于独立证据。

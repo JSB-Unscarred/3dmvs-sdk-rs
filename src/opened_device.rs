@@ -77,7 +77,8 @@ impl<'sdk> Device<'sdk> {
     /// Starts callback acquisition and invokes `handler` serially on a Rust worker thread.
     ///
     /// Like [`Device::start_receiving`], this can be called again after the previous callback
-    /// measurement stops successfully.
+    /// measurement stops successfully. Stop or drop the returned measurement before calling
+    /// [`CallbackWorker::join`], because its registration owns the worker's channel sender.
     pub fn start_with_callback<F>(
         &mut self,
         options: CallbackOptions,
@@ -117,7 +118,8 @@ impl<'sdk> Device<'sdk> {
     /// Invokes an exception handler serially on a Rust worker thread.
     ///
     /// A later call to this method or [`Device::exception_receiver`] replaces the previous
-    /// exception callback after the native registration succeeds.
+    /// exception callback after the native registration succeeds. Joining the returned worker
+    /// requires replacing this registration or closing the device first so its channel closes.
     pub fn on_exception<F>(
         &mut self,
         options: CallbackOptions,

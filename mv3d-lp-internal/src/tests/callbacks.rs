@@ -169,7 +169,7 @@ fn concurrent_callbacks_are_delivered_once_without_crossing_cookies() {
 }
 
 #[test]
-fn deactivation_rejects_new_admissions_and_waits_for_in_flight_callback() {
+fn registration_drop_rejects_new_admissions_and_waits_for_in_flight_callback() {
     let calls = Arc::new(AtomicUsize::new(0));
     let sink_calls = Arc::clone(&calls);
     let (entered_sender, entered_receiver) = mpsc::channel();
@@ -190,7 +190,7 @@ fn deactivation_rejects_new_admissions_and_waits_for_in_flight_callback() {
         }
         CallbackDelivery::Delivered
     });
-    let mut registration = CallbackRegistration::image(sink).unwrap();
+    let registration = CallbackRegistration::image(sink).unwrap();
     let cookie = registration.cookie();
 
     let callback = thread::spawn(move || invoke_mono(cookie, 1, 1));
@@ -198,9 +198,9 @@ fn deactivation_rejects_new_admissions_and_waits_for_in_flight_callback() {
 
     let (started_sender, started_receiver) = mpsc::channel();
     let (done_sender, done_receiver) = mpsc::channel();
-    let deactivate = thread::spawn(move || {
+    let retire = thread::spawn(move || {
         started_sender.send(()).unwrap();
-        registration.deactivate();
+        drop(registration);
         done_sender.send(()).unwrap();
     });
     started_receiver.recv().unwrap();
@@ -222,7 +222,7 @@ fn deactivation_rejects_new_admissions_and_waits_for_in_flight_callback() {
 
     release_callback(&release);
     callback.join().unwrap();
-    deactivate.join().unwrap();
+    retire.join().unwrap();
     done_receiver.recv().unwrap();
     let before = calls.load(Ordering::SeqCst);
     invoke_mono(cookie, 3, 3);
@@ -540,7 +540,7 @@ fn failed_callback_start_retires_its_cookie_and_can_be_retried() {
 }
 
 #[test]
-fn exception_callback_registration_replaces_and_drains_the_previous_cookie() {
+fn exception_callback_registration_replaces_and_retires_the_previous_cookie() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();

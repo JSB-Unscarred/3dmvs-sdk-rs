@@ -83,13 +83,12 @@ impl CallbackSink {
 }
 
 struct EntryState {
-    accepting: bool,
     in_flight: usize,
+    // Presence is the callback's admission state as well as the owned root sink.
     sink: Option<CallbackSink>,
 }
 
 struct CallbackEntry {
-    kind: CallbackKind,
     state: Mutex<EntryState>,
     drained: Condvar,
     delivered: AtomicU64,
@@ -101,9 +100,7 @@ struct CallbackEntry {
 impl CallbackEntry {
     fn new(sink: CallbackSink) -> Self {
         Self {
-            kind: sink.kind(),
             state: Mutex::new(EntryState {
-                accepting: true,
                 in_flight: 0,
                 sink: Some(sink),
             }),
@@ -122,15 +119,11 @@ impl CallbackEntry {
     }
 
     fn try_enter(self: &Arc<Self>, expected: CallbackKind) -> Option<InFlight> {
-        if self.kind != expected {
-            return None;
-        }
         let mut state = self.lock();
-        if !state.accepting {
+        if state.sink.as_ref().map(CallbackSink::kind) != Some(expected) {
             return None;
         }
         let Some(in_flight) = state.in_flight.checked_add(1) else {
-            state.accepting = false;
             let retired_sink = state.sink.take();
             drop(state);
             increment_saturating(&self.panics);
@@ -148,7 +141,6 @@ impl CallbackEntry {
 
     fn begin_deactivate(&self) -> Option<CallbackSink> {
         let mut state = self.lock();
-        state.accepting = false;
         state.sink.take()
     }
 
@@ -195,7 +187,7 @@ impl CallbackEntry {
     }
 
     fn stats(&self) -> CallbackStatsRecord {
-        let accepting = self.lock().accepting;
+        let accepting = self.lock().sink.is_some();
         CallbackStatsRecord {
             delivered: self.delivered.load(Ordering::Relaxed),
             dropped_full: self.dropped_full.load(Ordering::Relaxed),
@@ -235,7 +227,6 @@ impl Drop for InFlight {
 
         let mut state = self.entry.lock();
         if state.in_flight == 0 {
-            state.accepting = false;
             let retired_sink = state.sink.take();
             drop(state);
             increment_saturating(&self.entry.panics);
@@ -313,7 +304,6 @@ fn registry() -> &'static CallbackRegistry {
 pub struct CallbackRegistration {
     cookie: CallbackCookie,
     entry: Arc<CallbackEntry>,
-    active: bool,
 }
 
 impl CallbackRegistration {
@@ -333,11 +323,7 @@ impl CallbackRegistration {
                 operation,
                 kind: ContractViolation::CallbackCookieExhausted,
             })?;
-        Ok(Self {
-            cookie,
-            entry,
-            active: true,
-        })
+        Ok(Self { cookie, entry })
     }
 
     pub(crate) fn cookie(&self) -> CallbackCookie {
@@ -347,22 +333,16 @@ impl CallbackRegistration {
     pub fn stats(&self) -> CallbackStatsRecord {
         self.entry.stats()
     }
-
-    pub(crate) fn deactivate(&mut self) {
-        if !self.active {
-            return;
-        }
-        let retired_sink = self.entry.begin_deactivate();
-        registry().remove(self.cookie, &self.entry);
-        self.entry.wait_until_drained();
-        self.active = false;
-        self.entry.drop_sink_without_unwind(retired_sink);
-    }
 }
 
 impl Drop for CallbackRegistration {
     fn drop(&mut self) {
-        self.deactivate();
+        // Revoke admission before hiding the cookie, then drain every callback that already
+        // cloned the sink before destroying the registration's root clone.
+        let retired_sink = self.entry.begin_deactivate();
+        registry().remove(self.cookie, &self.entry);
+        self.entry.wait_until_drained();
+        self.entry.drop_sink_without_unwind(retired_sink);
     }
 }
 
