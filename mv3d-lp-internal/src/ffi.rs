@@ -593,9 +593,6 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
             return Err(invalid_image_layout("exposure timestamp count"));
         }
     }
-    if !input.x_scale.is_finite() || !input.y_scale.is_finite() || !input.z_scale.is_finite() {
-        return Err(invalid_image_layout("calibration scale"));
-    }
     let exposure_bytes = input.exposure_timestamps.map_or(Ok(0), |timestamps| {
         timestamps
             .len()

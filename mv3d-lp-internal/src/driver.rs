@@ -20,7 +20,6 @@ pub(crate) enum DriverError {
     InvalidInput(InvalidInput),
     Contract(ContractViolation),
     Allocation { requested: usize },
-    OrphanedHandle(Box<DriverError>),
 }
 
 pub(crate) type DriverResult<T> = Result<T, DriverError>;
@@ -30,9 +29,9 @@ pub(crate) struct Handle(NonNull<std::ffi::c_void>);
 
 // SAFETY: Production handles are opaque values returned by successful device opens.
 // Rust never dereferences them, and the crate's safe public API does not expose the raw
-// value. `Device` retains exclusive logical ownership and remains `!Sync`, so calls for
-// one handle cannot overlap through the safe API. Vendor evidence for moving handles
-// between threads and operating distinct devices concurrently is recorded in
+// value. `Handle` deliberately has no `Sync` implementation, so every device/session owner
+// inherits `!Sync` and calls for one handle cannot overlap through the safe API. Vendor evidence
+// for moving handles between threads and operating distinct devices concurrently is recorded in
 // `3dmvs_sdk_threading_model_conclusion.md` sections 3.2 and 3.3.
 unsafe impl Send for Handle {}
 

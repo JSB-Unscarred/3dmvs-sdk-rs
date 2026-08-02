@@ -68,9 +68,9 @@ fn native_boundary_rejects_wrong_types_and_counts_before_calling_sdk() {
 }
 
 #[test]
-fn native_boundary_requires_tightly_packed_finite_inputs() {
+fn native_boundary_requires_tightly_packed_inputs() {
     let padded_mono = [0_u8; 2];
-    let mut input = ImageInput {
+    let input = ImageInput {
         image_type: ImageTypeRecord::from_raw(crate::bindings::ImageType_Mono8),
         width: 1,
         height: 1,
@@ -99,16 +99,26 @@ fn native_boundary_requires_tightly_packed_finite_inputs() {
     ));
 
     let depth = [0_u8; 2];
-    input.image_type = ImageTypeRecord::from_raw(crate::bindings::ImageType_Depth);
-    input.data = &depth;
-    input.x_scale = f32::NAN;
+    let non_finite_calibration = ImageInput {
+        image_type: ImageTypeRecord::from_raw(crate::bindings::ImageType_Depth),
+        width: 1,
+        height: 1,
+        data: &depth,
+        intensity_data: None,
+        exposure_timestamps: None,
+        frame_number: 0,
+        device_timestamp: 0,
+        valid: true,
+        x_scale: f32::NAN,
+        y_scale: f32::INFINITY,
+        z_scale: f32::NEG_INFINITY,
+        x_offset: 0,
+        y_offset: 0,
+        z_offset: 0,
+    };
     assert!(matches!(
-        driver.map_depth_to_point_cloud(input),
-        Err(DriverError::InvalidInput(
-            InvalidInput::InvalidImageLayout {
-                field: "calibration scale",
-            }
-        ))
+        driver.map_depth_to_point_cloud(non_finite_calibration),
+        Err(DriverError::Status(_))
     ));
 }
 

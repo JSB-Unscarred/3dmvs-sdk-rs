@@ -1,5 +1,3 @@
-use std::cell::Cell;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TrySendError, sync_channel};
 use std::time::Duration;
@@ -17,6 +15,8 @@ pub enum DeviceState {
     CallbackMeasuring,
     Faulted,
     Transferring,
+    /// Legacy one-shot callback state retained for source compatibility. Current callback
+    /// measurements return the device to [`DeviceState::Open`] after a successful stop.
     CallbackRetired,
 }
 
@@ -29,27 +29,16 @@ pub enum DeviceState {
 /// serializes calls on this device while calls on different devices may run concurrently.
 pub struct Device<'sdk> {
     inner: mv3d_lp_internal::Device<'sdk>,
-    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'sdk> Device<'sdk> {
     pub(crate) fn from_internal(inner: mv3d_lp_internal::Device<'sdk>) -> Self {
-        Self {
-            inner,
-            _not_sync: PhantomData,
-        }
+        Self { inner }
     }
 
     #[must_use]
     pub fn state(&self) -> DeviceState {
-        match self.inner.state() {
-            mv3d_lp_internal::DeviceState::Open => DeviceState::Open,
-            mv3d_lp_internal::DeviceState::Measuring => DeviceState::Measuring,
-            mv3d_lp_internal::DeviceState::CallbackMeasuring => DeviceState::CallbackMeasuring,
-            mv3d_lp_internal::DeviceState::Faulted => DeviceState::Faulted,
-            mv3d_lp_internal::DeviceState::Transferring => DeviceState::Transferring,
-            mv3d_lp_internal::DeviceState::CallbackRetired => DeviceState::CallbackRetired,
-        }
+        state_from_internal(self.inner.state())
     }
 
     /// Starts acquisition and returns an exclusive measurement guard.
@@ -227,27 +216,16 @@ impl<'sdk> Device<'sdk> {
 #[must_use = "dropping CallbackMeasurement stops callback acquisition"]
 pub struct CallbackMeasurement<'device> {
     inner: mv3d_lp_internal::CallbackMeasurement<'device>,
-    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'device> CallbackMeasurement<'device> {
     fn from_internal(inner: mv3d_lp_internal::CallbackMeasurement<'device>) -> Self {
-        Self {
-            inner,
-            _not_sync: PhantomData,
-        }
+        Self { inner }
     }
 
     #[must_use]
     pub fn state(&self) -> DeviceState {
-        match self.inner.state() {
-            mv3d_lp_internal::DeviceState::Open => DeviceState::Open,
-            mv3d_lp_internal::DeviceState::Measuring => DeviceState::Measuring,
-            mv3d_lp_internal::DeviceState::CallbackMeasuring => DeviceState::CallbackMeasuring,
-            mv3d_lp_internal::DeviceState::Faulted => DeviceState::Faulted,
-            mv3d_lp_internal::DeviceState::Transferring => DeviceState::Transferring,
-            mv3d_lp_internal::DeviceState::CallbackRetired => DeviceState::CallbackRetired,
-        }
+        state_from_internal(self.inner.state())
     }
 
     pub fn soft_trigger(&mut self) -> Result<()> {
@@ -309,15 +287,11 @@ fn delivery_from_try_send<T>(
 #[must_use = "dropping Measurement stops acquisition"]
 pub struct Measurement<'device> {
     inner: mv3d_lp_internal::Measurement<'device>,
-    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'device> Measurement<'device> {
     fn from_internal(inner: mv3d_lp_internal::Measurement<'device>) -> Self {
-        Self {
-            inner,
-            _not_sync: PhantomData,
-        }
+        Self { inner }
     }
 
     pub fn soft_trigger(&mut self) -> Result<()> {
@@ -371,6 +345,16 @@ impl<'device> Measurement<'device> {
 
     pub fn stop(self) -> Result<()> {
         self.inner.stop().map_err(Error::from)
+    }
+}
+
+fn state_from_internal(state: mv3d_lp_internal::DeviceState) -> DeviceState {
+    match state {
+        mv3d_lp_internal::DeviceState::Open => DeviceState::Open,
+        mv3d_lp_internal::DeviceState::Measuring => DeviceState::Measuring,
+        mv3d_lp_internal::DeviceState::CallbackMeasuring => DeviceState::CallbackMeasuring,
+        mv3d_lp_internal::DeviceState::Faulted => DeviceState::Faulted,
+        mv3d_lp_internal::DeviceState::Transferring => DeviceState::Transferring,
     }
 }
 
@@ -435,7 +419,7 @@ fn parameter_from_internal(record: mv3d_lp_internal::ParameterRecord) -> Result<
             value,
             maximum_length,
         } => Parameter::String {
-            value: SdkText::new(value)?,
+            value: SdkText::try_from(value)?,
             max_length: maximum_length,
         },
     })

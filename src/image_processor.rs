@@ -1,6 +1,3 @@
-use std::marker::PhantomData;
-use std::rc::Rc;
-
 use crate::{Error, ImageRef, ImageType, InputViolation, Operation, OwnedImage, Result};
 
 const MAX_MULTI_IMAGE_COUNT: usize = 8;
@@ -55,7 +52,6 @@ impl ImageFileFormat {
 /// not separate written vendor guarantees.
 pub struct ImageProcessor<'sdk> {
     pub(crate) inner: &'sdk mv3d_lp_internal::Runtime,
-    pub(crate) _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
 impl ImageProcessor<'_> {
@@ -301,17 +297,6 @@ pub(crate) fn validate_layout(operation: Operation, image: ImageRef<'_>) -> Resu
             ));
         }
     }
-    if !image.calibration.x_scale.is_finite()
-        || !image.calibration.y_scale.is_finite()
-        || !image.calibration.z_scale.is_finite()
-    {
-        return Err(invalid(
-            operation,
-            InputViolation::InvalidImageLayout {
-                field: "calibration scale",
-            },
-        ));
-    }
     let aggregate = payload_bytes(operation, image)?;
     if aggregate > MAX_IMAGE_BYTES {
         return Err(invalid(
@@ -433,7 +418,10 @@ pub(crate) fn invalid(operation: Operation, violation: InputViolation) -> Error 
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageFileFormat, conversion_supported, file_format_supported, prepare_multi};
+    use super::{
+        ImageFileFormat, conversion_supported, file_format_supported, prepare_multi,
+        validate_layout,
+    };
     use crate::{ImageCalibration, ImageRef, ImageType, Operation};
 
     #[test]
@@ -528,6 +516,29 @@ mod tests {
         assert!(prepare_multi(Operation::DepthMosaic, &[depth]).is_ok());
         assert!(prepare_multi(Operation::DepthMosaic, &[depth; 8]).is_ok());
         assert!(prepare_multi(Operation::DepthMosaic, &[depth; 9]).is_err());
+    }
+
+    #[test]
+    fn calibration_scales_have_no_undocumented_finite_policy() {
+        let depth = ImageRef {
+            image_type: ImageType::DEPTH,
+            width: 1,
+            height: 1,
+            data: &[0, 0],
+            intensity_data: None,
+            exposure_timestamps: None,
+            frame_number: 0,
+            device_timestamp: 0,
+            valid: true,
+            calibration: ImageCalibration {
+                x_scale: f32::NAN,
+                y_scale: f32::INFINITY,
+                z_scale: f32::NEG_INFINITY,
+                ..ImageCalibration::default()
+            },
+        };
+
+        assert!(validate_layout(Operation::MapDepthToPointCloud, depth).is_ok());
     }
 
     fn image_types() -> [ImageType; 8] {

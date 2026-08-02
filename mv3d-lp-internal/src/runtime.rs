@@ -85,9 +85,22 @@ impl Gate {
     }
 
     fn lock(&self) -> MutexGuard<'_, ProcessSdkState> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                // A panic while this gate is held may leave a native lifecycle side effect ahead
+                // of the Rust ledger. Preserve the tracked count but forbid further expansion.
+                let mut state = poisoned.into_inner();
+                let live_handles = match *state {
+                    ProcessSdkState::Fresh => 0,
+                    ProcessSdkState::Active { live_handles }
+                    | ProcessSdkState::Degraded { live_handles } => live_handles,
+                };
+                *state = ProcessSdkState::Degraded { live_handles };
+                self.state.clear_poison();
+                state
+            }
+        }
     }
 }
 
@@ -102,14 +115,6 @@ impl RuntimeInner {
     // methods borrows it. Rust therefore prevents Finalize while an existing call-capable value
     // is alive; ordinary and image calls do not need to consult the process lifecycle gate.
     pub(crate) fn call<T>(
-        &self,
-        operation: Operation,
-        call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
-    ) -> Result<T, Error> {
-        call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
-    }
-
-    pub(crate) fn cleanup_call<T>(
         &self,
         operation: Operation,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
@@ -160,10 +165,10 @@ impl RuntimeInner {
             }
             Err(error) if handle.is_some() => {
                 *state = ProcessSdkState::Degraded { live_handles };
-                Err(map_driver_error(
+                Err(Error::OpenFailedWithHandle {
                     operation,
-                    DriverError::OrphanedHandle(Box::new(error)),
-                ))
+                    source: Box::new(map_driver_error(operation, error)),
+                })
             }
             Err(error) => Err(map_driver_error(operation, error)),
         }
@@ -556,10 +561,6 @@ fn map_driver_error(operation: Operation, error: DriverError) -> Error {
             operation,
             requested,
         },
-        DriverError::OrphanedHandle(source) => Error::OpenFailedWithHandle {
-            operation,
-            source: Box::new(map_driver_error(operation, *source)),
-        },
     }
 }
 
@@ -625,4 +626,29 @@ fn validated_c_string(
         operation,
         kind: InvalidInput::InteriorNul,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{Gate, ProcessSdkState};
+
+    #[test]
+    fn poisoned_lifecycle_gate_fails_closed() {
+        let gate = Arc::new(Gate::new());
+        let poisoning_gate = Arc::clone(&gate);
+
+        assert!(
+            std::thread::spawn(move || {
+                let _state = poisoning_gate.state.lock().unwrap();
+                panic!("poison the lifecycle gate");
+            })
+            .join()
+            .is_err()
+        );
+
+        assert_eq!(*gate.lock(), ProcessSdkState::Degraded { live_handles: 0 });
+        assert!(!gate.state.is_poisoned());
+    }
 }

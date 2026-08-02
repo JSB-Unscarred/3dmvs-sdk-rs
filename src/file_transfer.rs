@@ -1,5 +1,3 @@
-use std::cell::Cell;
-use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::{Error, Result};
@@ -30,15 +28,11 @@ pub enum FileTransferStatus {
 #[must_use = "dropping FileTransfer does not cancel the device transfer"]
 pub struct FileTransfer<'device> {
     inner: mv3d_lp_internal::FileTransfer<'device>,
-    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'device> FileTransfer<'device> {
     pub(crate) fn from_internal(inner: mv3d_lp_internal::FileTransfer<'device>) -> Self {
-        Self {
-            inner,
-            _not_sync: PhantomData,
-        }
+        Self { inner }
     }
 
     #[must_use]
@@ -64,6 +58,9 @@ impl<'device> FileTransfer<'device> {
     ///
     /// `Ok(None)` means the timeout elapsed while the transfer was still running. A polling error
     /// ends only the current call, so callers may retry.
+    ///
+    /// Each successful progress snapshot is validated independently. The SDK does not promise
+    /// that `completed` is monotonic or that `total` remains fixed between calls.
     pub fn wait_timeout(
         &mut self,
         poll_interval: Duration,

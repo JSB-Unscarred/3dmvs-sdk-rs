@@ -121,6 +121,29 @@ fn malformed_incompatible_version_maps_without_panicking() {
 }
 
 #[test]
+fn repeatable_callback_registration_requires_only_an_open_device() {
+    for operation in [
+        Operation::RegisterImageDataCallback,
+        Operation::RegisterExceptionCallback,
+    ] {
+        let error: Error = mv3d_lp_internal::Error::InvalidState {
+            operation,
+            state: "faulted",
+        }
+        .into();
+
+        assert_eq!(
+            error,
+            Error::InvalidState {
+                operation,
+                expected: "open",
+                actual: "faulted",
+            }
+        );
+    }
+}
+
+#[test]
 fn image_contract_violations_retain_lengths_and_operation() {
     let error: Error = mv3d_lp_internal::Error::ContractViolation {
         operation: Operation::GetImage,
@@ -142,6 +165,11 @@ fn image_contract_violations_retain_lengths_and_operation() {
                 actual: 12,
             },
         }
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("image data has length 12; expected 24 for this SDK result")
     );
 }
 
@@ -411,26 +439,6 @@ fn file_transfer_operations_and_progress_contracts_map_exactly() {
             ContractViolation::FileProgressExceedsTotal {
                 completed: 11,
                 total: 10,
-            },
-        ),
-        (
-            mv3d_lp_internal::ContractViolation::FileProgressRegressed {
-                previous: 5,
-                current: 4,
-            },
-            ContractViolation::FileProgressRegressed {
-                previous: 5,
-                current: 4,
-            },
-        ),
-        (
-            mv3d_lp_internal::ContractViolation::FileProgressTotalChanged {
-                previous: 10,
-                current: 4,
-            },
-            ContractViolation::FileProgressTotalChanged {
-                previous: 10,
-                current: 4,
             },
         ),
     ];

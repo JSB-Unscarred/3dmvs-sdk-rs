@@ -167,96 +167,94 @@ fn ordinary_sdk_progress_error_is_retryable() {
 }
 
 #[test]
-fn progress_contract_violations_are_retryable() {
-    let cases = [
-        (
-            vec![],
-            FileProgressRaw {
-                completed: 11,
-                total: 10,
-            },
-            ContractViolation::FileProgressExceedsTotal {
-                completed: 11,
-                total: 10,
-            },
-        ),
-        (
-            vec![FileProgressRaw {
-                completed: 4,
-                total: 10,
-            }],
-            FileProgressRaw {
-                completed: 3,
-                total: 10,
-            },
-            ContractViolation::FileProgressRegressed {
-                previous: 4,
-                current: 3,
-            },
-        ),
-        (
-            vec![FileProgressRaw {
-                completed: 4,
-                total: 10,
-            }],
-            FileProgressRaw {
-                completed: 4,
-                total: 4,
-            },
-            ContractViolation::FileProgressTotalChanged {
-                previous: 10,
-                current: 4,
-            },
-        ),
-    ];
+fn progress_exceeding_its_current_total_is_retryable() {
+    let mock = MockDriver::new();
+    mock.push_file_access_progress(Ok(FileProgressRaw {
+        completed: 11,
+        total: 10,
+    }));
+    mock.push_file_access_progress(Ok(FileProgressRaw {
+        completed: 10,
+        total: 10,
+    }));
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    let mut transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
+    let names = take_only_file_name_lifetime();
 
-    for (prefix, invalid, expected) in cases {
-        let mock = MockDriver::new();
-        for sample in &prefix {
-            mock.push_file_access_progress(Ok(*sample));
+    assert_eq!(
+        transfer.progress().unwrap_err(),
+        Error::ContractViolation {
+            operation: Operation::GetFileAccessProgress,
+            kind: ContractViolation::FileProgressExceedsTotal {
+                completed: 11,
+                total: 10,
+            },
         }
-        mock.push_file_access_progress(Ok(invalid));
-        mock.push_file_access_progress(Ok(FileProgressRaw {
-            completed: 10,
+    );
+    assert!(names.upgrade().is_some());
+    assert!(matches!(
+        transfer.progress().unwrap(),
+        FileTransferStatus::Completed(progress)
+            if progress.completed == 10 && progress.total == 10
+    ));
+    assert!(names.upgrade().is_none());
+    drop(transfer);
+
+    assert_eq!(device.state(), DeviceState::Open);
+    device.close().unwrap();
+    assert_eq!(operation_count(&mock, FfiOp::GetFileAccessProgress), 2);
+    assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 1);
+    assert_eq!(operation_count(&mock, FfiOp::StopMeasure), 0);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn progress_snapshots_need_not_be_monotonic_or_keep_a_fixed_total() {
+    let mock = MockDriver::new();
+    for progress in [
+        FileProgressRaw {
+            completed: 4,
             total: 10,
-        }));
-        let (runtime, _) = active_runtime(&mock);
-        let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-        let mut transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
-        let names = take_only_file_name_lifetime();
-
-        for _ in &prefix {
-            assert!(matches!(
-                transfer.progress().unwrap(),
-                FileTransferStatus::Running(_)
-            ));
-        }
-        assert_eq!(
-            transfer.progress().unwrap_err(),
-            Error::ContractViolation {
-                operation: Operation::GetFileAccessProgress,
-                kind: expected,
-            }
-        );
-        assert!(names.upgrade().is_some());
-        assert!(matches!(
-            transfer.progress().unwrap(),
-            FileTransferStatus::Completed(progress)
-                if progress.completed == 10 && progress.total == 10
-        ));
-        assert!(names.upgrade().is_none());
-        drop(transfer);
-
-        assert_eq!(device.state(), DeviceState::Open);
-        device.close().unwrap();
-        assert_eq!(
-            operation_count(&mock, FfiOp::GetFileAccessProgress),
-            prefix.len() + 2
-        );
-        assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 1);
-        assert_eq!(operation_count(&mock, FfiOp::StopMeasure), 0);
-        runtime.shutdown().unwrap();
+        },
+        FileProgressRaw {
+            completed: 3,
+            total: 12,
+        },
+        FileProgressRaw {
+            completed: 4,
+            total: 4,
+        },
+    ] {
+        mock.push_file_access_progress(Ok(progress));
     }
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
+    let mut transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
+    let names = take_only_file_name_lifetime();
+
+    assert!(matches!(
+        transfer.progress().unwrap(),
+        FileTransferStatus::Running(progress)
+            if progress.completed == 4 && progress.total == 10
+    ));
+    assert!(matches!(
+        transfer.progress().unwrap(),
+        FileTransferStatus::Running(progress)
+            if progress.completed == 3 && progress.total == 12
+    ));
+    assert!(matches!(
+        transfer.progress().unwrap(),
+        FileTransferStatus::Completed(progress)
+            if progress.completed == 4 && progress.total == 4
+    ));
+    assert!(names.upgrade().is_none());
+    drop(transfer);
+
+    assert_eq!(device.state(), DeviceState::Open);
+    device.close().unwrap();
+    assert_eq!(operation_count(&mock, FfiOp::GetFileAccessProgress), 3);
+    runtime.shutdown().unwrap();
 }
 
 #[test]

@@ -298,10 +298,14 @@ pub enum ContractViolation {
         completed: u64,
         total: u64,
     },
+    /// Legacy diagnostic retained for source compatibility. Current versions validate each
+    /// progress snapshot independently because the SDK does not promise monotonic samples.
     FileProgressRegressed {
         previous: u64,
         current: u64,
     },
+    /// Legacy diagnostic retained for source compatibility. Current versions do not require the
+    /// SDK's reported total to remain fixed across progress snapshots.
     FileProgressTotalChanged {
         previous: u64,
         current: u64,
@@ -339,7 +343,7 @@ impl fmt::Display for ContractViolation {
                 actual,
             } => write!(
                 formatter,
-                "{field} has length {actual}; the SDK image metadata requires at least {expected}"
+                "{field} has length {actual}; expected {expected} for this SDK result"
             ),
             Self::OutputTooLarge {
                 field,
@@ -576,10 +580,9 @@ impl From<mv3d_lp_internal::Error> for Error {
             }
             InternalError::InvalidState { operation, state } => {
                 let expected = match operation {
-                    Operation::RegisterImageDataCallback | Operation::RegisterExceptionCallback => {
-                        "open with no previous callback registration"
-                    }
-                    Operation::StartMeasure
+                    Operation::RegisterImageDataCallback
+                    | Operation::RegisterExceptionCallback
+                    | Operation::StartMeasure
                     | Operation::FileAccessRead
                     | Operation::FileAccessWrite => "open",
                     Operation::StopMeasure | Operation::SoftTrigger | Operation::GetImage => {
@@ -738,12 +741,6 @@ impl From<mv3d_lp_internal::Error> for Error {
                     }
                     InternalContract::FileProgressExceedsTotal { completed, total } => {
                         ContractViolation::FileProgressExceedsTotal { completed, total }
-                    }
-                    InternalContract::FileProgressRegressed { previous, current } => {
-                        ContractViolation::FileProgressRegressed { previous, current }
-                    }
-                    InternalContract::FileProgressTotalChanged { previous, current } => {
-                        ContractViolation::FileProgressTotalChanged { previous, current }
                     }
                 };
                 Self::ContractViolation {

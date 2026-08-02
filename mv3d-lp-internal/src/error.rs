@@ -132,14 +132,6 @@ pub enum ContractViolation {
         completed: u64,
         total: u64,
     },
-    FileProgressRegressed {
-        previous: u64,
-        current: u64,
-    },
-    FileProgressTotalChanged {
-        previous: u64,
-        current: u64,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

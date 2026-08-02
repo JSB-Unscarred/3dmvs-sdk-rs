@@ -1,9 +1,7 @@
-use std::cell::Cell;
 #[cfg(test)]
 use std::cell::RefCell;
 use std::ffi::CString;
 use std::fmt;
-use std::marker::PhantomData;
 #[cfg(test)]
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -25,7 +23,6 @@ pub enum DeviceState {
     CallbackMeasuring,
     Faulted,
     Transferring,
-    CallbackRetired,
 }
 
 impl DeviceState {
@@ -36,7 +33,6 @@ impl DeviceState {
             Self::CallbackMeasuring => "callback measuring",
             Self::Faulted => "faulted",
             Self::Transferring => "transferring",
-            Self::CallbackRetired => "callback retired",
         }
     }
 }
@@ -79,7 +75,6 @@ pub struct Device<'runtime> {
     pending_transfer: Option<ActiveFileTransfer>,
     image_registration: Option<CallbackRegistration>,
     exception_registration: Option<CallbackRegistration>,
-    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'runtime> Device<'runtime> {
@@ -91,7 +86,6 @@ impl<'runtime> Device<'runtime> {
             pending_transfer: None,
             image_registration: None,
             exception_registration: None,
-            _not_sync: PhantomData,
         }
     }
 
@@ -110,8 +104,6 @@ impl<'runtime> Device<'runtime> {
             runtime: self.runtime,
             handle,
             state: &mut self.state,
-            active: true,
-            _not_sync: PhantomData,
         })
     }
 
@@ -144,8 +136,6 @@ impl<'runtime> Device<'runtime> {
                     handle,
                     state: &mut self.state,
                     registration: &mut self.image_registration,
-                    active: true,
-                    _not_sync: PhantomData,
                 })
             }
             Err(error) => {
@@ -206,23 +196,7 @@ impl<'runtime> Device<'runtime> {
 
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValueRecord) -> Result<(), Error> {
         self.require_usable(Operation::SetParam)?;
-        if let ParameterValueRecord::String(value) = value {
-            if value.len() > 255 {
-                return Err(Error::InvalidInput {
-                    operation: Operation::SetParam,
-                    kind: InvalidInput::TooLong {
-                        actual: value.len(),
-                        maximum: 255,
-                    },
-                });
-            }
-            if value.contains(&0) {
-                return Err(Error::InvalidInput {
-                    operation: Operation::SetParam,
-                    kind: InvalidInput::InteriorNul,
-                });
-            }
-        }
+        validate_parameter_value(Operation::SetParam, value)?;
         let key = RuntimeInner::parameter_key(Operation::SetParam, key)?;
         self.runtime.call(Operation::SetParam, |driver| {
             driver.set_parameter(self.handle(), &key, value)
@@ -307,7 +281,6 @@ impl<'runtime> Device<'runtime> {
                     state: &mut self.state,
                     pending_transfer: &mut self.pending_transfer,
                     direction,
-                    _not_sync: PhantomData,
                 })
             }
             Err(start) => {
@@ -329,7 +302,6 @@ impl<'runtime> Device<'runtime> {
             state: &mut self.state,
             pending_transfer: &mut self.pending_transfer,
             direction,
-            _not_sync: PhantomData,
         })
     }
 
@@ -362,7 +334,7 @@ impl<'runtime> Device<'runtime> {
         ) || (self.state == DeviceState::Faulted && self.pending_transfer.is_none())
         {
             self.runtime
-                .cleanup_call(Operation::StopMeasure, |driver| driver.stop(handle))
+                .call(Operation::StopMeasure, |driver| driver.stop(handle))
                 .err()
                 .map(Box::new)
         } else {
@@ -406,8 +378,6 @@ impl<'runtime> Device<'runtime> {
 struct ActiveFileTransfer {
     names: FileNameBundle,
     direction: FileTransferDirection,
-    last_completed: Option<u64>,
-    last_total: Option<u64>,
 }
 
 impl ActiveFileTransfer {
@@ -419,8 +389,6 @@ impl ActiveFileTransfer {
         Self {
             names: FileNameBundle::new(user_file_name, device_file_name),
             direction,
-            last_completed: None,
-            last_total: None,
         }
     }
 }
@@ -482,7 +450,6 @@ pub struct FileTransfer<'device> {
     state: &'device mut DeviceState,
     pending_transfer: &'device mut Option<ActiveFileTransfer>,
     direction: FileTransferDirection,
-    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl FileTransfer<'_> {
@@ -525,45 +492,6 @@ impl FileTransfer<'_> {
                 },
             });
         }
-
-        let pending = self
-            .pending_transfer
-            .as_mut()
-            .expect("transferring state always retains its file names");
-        if progress.total > 0 {
-            if let Some(previous) = pending.last_total {
-                if progress.total != previous {
-                    return Err(Error::ContractViolation {
-                        operation: OPERATION,
-                        kind: crate::error::ContractViolation::FileProgressTotalChanged {
-                            previous,
-                            current: progress.total,
-                        },
-                    });
-                }
-            }
-            pending.last_total = Some(progress.total);
-        } else if let Some(previous) = pending.last_total {
-            return Err(Error::ContractViolation {
-                operation: OPERATION,
-                kind: crate::error::ContractViolation::FileProgressTotalChanged {
-                    previous,
-                    current: 0,
-                },
-            });
-        }
-        if let Some(previous) = pending.last_completed {
-            if progress.completed < previous {
-                return Err(Error::ContractViolation {
-                    operation: OPERATION,
-                    kind: crate::error::ContractViolation::FileProgressRegressed {
-                        previous,
-                        current: progress.completed,
-                    },
-                });
-            }
-        }
-        pending.last_completed = Some(progress.completed);
 
         if progress.total > 0 && progress.completed == progress.total {
             self.pending_transfer
@@ -620,8 +548,6 @@ pub struct CallbackMeasurement<'device> {
     handle: Handle,
     state: &'device mut DeviceState,
     registration: &'device mut Option<CallbackRegistration>,
-    active: bool,
-    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl CallbackMeasurement<'_> {
@@ -630,7 +556,6 @@ impl CallbackMeasurement<'_> {
     }
 
     pub fn soft_trigger(&mut self) -> Result<(), Error> {
-        self.require_measuring(Operation::SoftTrigger)?;
         self.runtime.call(Operation::SoftTrigger, |driver| {
             driver.soft_trigger(self.handle)
         })
@@ -644,21 +569,14 @@ impl CallbackMeasurement<'_> {
     }
 
     pub fn stop(mut self) -> Result<(), Error> {
-        let result = self.stop_with(false);
-        self.active = false;
-        result
+        self.stop_inner()
     }
 
-    fn stop_with(&mut self, cleanup: bool) -> Result<(), Error> {
+    fn stop_inner(&mut self) -> Result<(), Error> {
         self.deactivate_callback();
-        self.require_measuring(Operation::StopMeasure)?;
-        let result = if cleanup {
-            self.runtime
-                .cleanup_call(Operation::StopMeasure, |driver| driver.stop(self.handle))
-        } else {
-            self.runtime
-                .call(Operation::StopMeasure, |driver| driver.stop(self.handle))
-        };
+        let result = self
+            .runtime
+            .call(Operation::StopMeasure, |driver| driver.stop(self.handle));
         match result {
             Ok(()) => {
                 *self.state = DeviceState::Open;
@@ -676,24 +594,12 @@ impl CallbackMeasurement<'_> {
             registration.deactivate();
         }
     }
-
-    fn require_measuring(&self, operation: Operation) -> Result<(), Error> {
-        if *self.state == DeviceState::CallbackMeasuring {
-            Ok(())
-        } else {
-            Err(Error::InvalidState {
-                operation,
-                state: self.state.as_str(),
-            })
-        }
-    }
 }
 
 impl Drop for CallbackMeasurement<'_> {
     fn drop(&mut self) {
-        if self.active {
-            let _ = self.stop_with(true);
-            self.active = false;
+        if *self.state == DeviceState::CallbackMeasuring {
+            let _ = self.stop_inner();
         } else {
             self.deactivate_callback();
         }
@@ -707,8 +613,6 @@ pub struct Measurement<'device> {
     runtime: &'device RuntimeInner,
     handle: Handle,
     state: &'device mut DeviceState,
-    active: bool,
-    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl Measurement<'_> {
@@ -717,21 +621,18 @@ impl Measurement<'_> {
     }
 
     pub fn soft_trigger(&mut self) -> Result<(), Error> {
-        self.require_measuring(Operation::SoftTrigger)?;
         self.runtime.call(Operation::SoftTrigger, |driver| {
             driver.soft_trigger(self.handle)
         })
     }
 
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
-        self.require_measuring(Operation::ClearDataBuffer)?;
         self.runtime.call(Operation::ClearDataBuffer, |driver| {
             driver.clear_buffer(self.handle)
         })
     }
 
     pub fn get_image(&mut self, timeout_ms: u32) -> Result<FrameRecord, Error> {
-        self.require_measuring(Operation::GetImage)?;
         if timeout_ms == u32::MAX {
             return Err(Error::InvalidInput {
                 operation: Operation::GetImage,
@@ -747,7 +648,6 @@ impl Measurement<'_> {
     }
 
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<ParameterRecord, Error> {
-        self.require_measuring(Operation::GetParam)?;
         let key = RuntimeInner::parameter_key(Operation::GetParam, key)?;
         self.runtime.call(Operation::GetParam, |driver| {
             driver.get_parameter(self.handle, &key)
@@ -755,7 +655,6 @@ impl Measurement<'_> {
     }
 
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValueRecord) -> Result<(), Error> {
-        self.require_measuring(Operation::SetParam)?;
         validate_parameter_value(Operation::SetParam, value)?;
         let key = RuntimeInner::parameter_key(Operation::SetParam, key)?;
         self.runtime.call(Operation::SetParam, |driver| {
@@ -764,7 +663,6 @@ impl Measurement<'_> {
     }
 
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
-        self.require_measuring(Operation::Execute)?;
         let key = RuntimeInner::parameter_key(Operation::Execute, key)?;
         self.runtime.call(Operation::Execute, |driver| {
             driver.execute(self.handle, &key)
@@ -772,20 +670,13 @@ impl Measurement<'_> {
     }
 
     pub fn stop(mut self) -> Result<(), Error> {
-        let result = self.stop_with(false);
-        self.active = false;
-        result
+        self.stop_inner()
     }
 
-    fn stop_with(&mut self, cleanup: bool) -> Result<(), Error> {
-        self.require_measuring(Operation::StopMeasure)?;
-        let result = if cleanup {
-            self.runtime
-                .cleanup_call(Operation::StopMeasure, |driver| driver.stop(self.handle))
-        } else {
-            self.runtime
-                .call(Operation::StopMeasure, |driver| driver.stop(self.handle))
-        };
+    fn stop_inner(&mut self) -> Result<(), Error> {
+        let result = self
+            .runtime
+            .call(Operation::StopMeasure, |driver| driver.stop(self.handle));
         match result {
             Ok(()) => {
                 *self.state = DeviceState::Open;
@@ -797,24 +688,12 @@ impl Measurement<'_> {
             }
         }
     }
-
-    fn require_measuring(&self, operation: Operation) -> Result<(), Error> {
-        if *self.state == DeviceState::Measuring {
-            Ok(())
-        } else {
-            Err(Error::InvalidState {
-                operation,
-                state: self.state.as_str(),
-            })
-        }
-    }
 }
 
 impl Drop for Measurement<'_> {
     fn drop(&mut self) {
-        if self.active {
-            let _ = self.stop_with(true);
-            self.active = false;
+        if *self.state == DeviceState::Measuring {
+            let _ = self.stop_inner();
         }
     }
 }

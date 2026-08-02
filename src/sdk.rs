@@ -1,6 +1,4 @@
-use std::marker::PhantomData;
 use std::net::Ipv4Addr;
-use std::rc::Rc;
 
 use crate::{
     ContractViolation, Device, DeviceInfo, Error, ImageProcessor, IpConfiguration,
@@ -23,7 +21,6 @@ use crate::{
 pub struct Sdk {
     inner: mv3d_lp_internal::Runtime,
     version: SdkVersion,
-    _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
 impl Sdk {
@@ -50,11 +47,7 @@ impl Sdk {
                     field: "SDK version",
                 },
             })?;
-        Ok(Self {
-            inner,
-            version,
-            _not_send_or_sync: PhantomData,
-        })
+        Ok(Self { inner, version })
     }
 
     #[must_use]
@@ -114,10 +107,7 @@ impl Sdk {
 
     #[must_use]
     pub fn image_processor(&self) -> ImageProcessor<'_> {
-        ImageProcessor {
-            inner: &self.inner,
-            _not_send_or_sync: PhantomData,
-        }
+        ImageProcessor { inner: &self.inner }
     }
 
     pub fn shutdown(self) -> Result<()> {
@@ -127,12 +117,12 @@ impl Sdk {
 
 fn device_from_internal(record: mv3d_lp_internal::DeviceRecord) -> Result<DeviceInfo> {
     Ok(DeviceInfo {
-        manufacturer_name: SdkText::new(record.manufacturer_name)?,
-        model_name: SdkText::new(record.model_name)?,
-        device_version: SdkText::new(record.device_version)?,
-        manufacturer_specific_info: SdkText::new(record.manufacturer_specific_info)?,
-        serial_number: SerialNumber::new(record.serial_number)?,
-        user_defined_name: SdkText::new(record.user_defined_name)?,
+        manufacturer_name: SdkText::try_from(record.manufacturer_name)?,
+        model_name: SdkText::try_from(record.model_name)?,
+        device_version: SdkText::try_from(record.device_version)?,
+        manufacturer_specific_info: SdkText::try_from(record.manufacturer_specific_info)?,
+        serial_number: SerialNumber::try_from(record.serial_number)?,
+        user_defined_name: SdkText::try_from(record.user_defined_name)?,
         mac_address: record.mac_address,
         ip_configuration_mode: IpConfigurationMode::from_raw(record.ip_configuration_mode),
         current_ip: parse_optional_ipv4("current IP", &record.current_ip)?,
