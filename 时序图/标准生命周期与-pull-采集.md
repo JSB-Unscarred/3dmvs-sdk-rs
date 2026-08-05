@@ -1,0 +1,105 @@
+# 标准生命周期与 pull 采集
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor App as 业务代码
+    participant Public as mv3d-lp 公共 API
+    participant Core as mv3d-lp-internal
+    participant Native as 厂商 LPSDK
+
+    App->>Public: Sdk::initialize()
+    Public->>Core: Runtime::initialize()
+    Core->>Native: MV3D_LP_GetVersion()
+    Native-->>Core: SDK 版本字节
+    Core->>Core: 校验 ABI 兼容范围
+    alt 版本兼容
+        Core->>Native: MV3D_LP_Initialize()
+        Native-->>Core: status
+        Core->>Core: ProcessSdkState = Active
+        Core-->>Public: Runtime + SdkVersion
+        Public-->>App: Sdk
+    else 版本不兼容
+        Core-->>Public: IncompatibleSdkVersion
+        Public-->>App: Err
+    end
+
+    Note over App,Native: 以下为初始化成功后的主路径
+    App->>Public: sdk.devices()
+    Public->>Core: Runtime::devices()
+    Core->>Native: MV3D_LP_GetDeviceNumber()
+    Native-->>Core: count hint
+    loop 列表容量不足时有限重试
+        Core->>Native: MV3D_LP_GetDeviceList(capacity)
+        Native-->>Core: 设备描述符
+        Core->>Core: 校验数量并复制为 DeviceRecord
+    end
+    Core-->>Public: DeviceRecord 列表
+    Public-->>App: DeviceInfo 列表
+
+    App->>Public: sdk.open_by_ip(address)
+    Public->>Core: Runtime::open_by_ip(address)
+    Core->>Native: MV3D_LP_OpenDeviceByIP(...)
+    Native-->>Core: 原生 handle
+    Core->>Core: 记录 live_handles，state = Open
+    Core-->>Public: internal Device
+    Public-->>App: Device guard
+
+    opt 采集前配置
+        App->>Public: device.set_parameter(key, value)
+        Public->>Core: 校验 key 和 ParameterValue
+        Core->>Native: MV3D_LP_SetParam(...)
+        Native-->>Core: status
+        Core-->>Public: Result
+        Public-->>App: Result
+    end
+
+    App->>Public: device.start()
+    Public->>Core: Device::start()
+    Core->>Native: MV3D_LP_StartMeasure(handle)
+    Native-->>Core: status
+    Core->>Core: state = Measuring
+    Core-->>Public: internal Measurement
+    Public-->>App: Measurement guard
+
+    loop 按需获取帧
+        App->>Public: measurement.get_image(timeout)
+        Public->>Core: get_image(timeout_ms)
+        Core->>Native: MV3D_LP_GetImage(handle, descriptor, timeout_ms)
+        Native-->>Core: 图像描述符和临时 payload 指针
+        Core->>Core: 校验判别值、指针、长度与算术
+        Core->>Core: 立即复制图像、亮度和曝光时间戳
+        Core-->>Public: FrameRecord（拥有 payload）
+        Public-->>App: OwnedFrame
+    end
+
+    App->>Public: measurement.stop()
+    Public->>Core: Measurement::stop()
+    Core->>Native: MV3D_LP_StopMeasure(handle)
+    Native-->>Core: status
+    Core->>Core: state = Open
+    Core-->>Public: Result
+    Public-->>App: Result
+
+    App->>Public: device.close()
+    Public->>Core: Device::close()
+    Core->>Native: MV3D_LP_CloseDevice(handle)
+    Native-->>Core: status
+    Core->>Core: 减少 live_handles
+    Core-->>Public: Result
+    Public-->>App: Result
+
+    App->>Public: sdk.shutdown()
+    Public->>Core: Runtime::shutdown()
+    Core->>Native: MV3D_LP_Finalize()
+    Native-->>Core: status
+    alt Finalize 成功
+        Core->>Core: ProcessSdkState = Fresh
+        Core-->>Public: Ok
+        Public-->>App: Ok
+    else Finalize 结果异常
+        Core->>Core: ProcessSdkState = Degraded
+        Core-->>Public: Err
+        Public-->>App: Err
+    end
+```
