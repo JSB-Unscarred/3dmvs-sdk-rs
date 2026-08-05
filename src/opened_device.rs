@@ -438,6 +438,7 @@ mod tests {
 
     use super::{frame_callback_channel, timeout_millis};
 
+    // 验证超时转换检查范围并向上取整，防止截断导致实际等待时间缩短。
     #[test]
     fn timeout_conversion_is_finite_checked_and_rounds_up() {
         assert_eq!(timeout_millis(Duration::ZERO).unwrap(), 0);
@@ -465,6 +466,7 @@ mod tests {
         ));
     }
 
+    // 验证生产 callback channel 使用配置容量，防止公开选项与实际队列脱节。
     #[test]
     fn production_callback_channel_honors_configured_capacity() {
         const CAPACITY: usize = 65;
@@ -491,6 +493,7 @@ mod tests {
         }
     }
 
+    // 验证队列满时丢弃最新帧，防止 SDK callback 线程发生阻塞。
     #[test]
     fn production_callback_channel_drops_newest_when_full() {
         let options = CallbackOptions::new(NonZeroUsize::new(1).unwrap());

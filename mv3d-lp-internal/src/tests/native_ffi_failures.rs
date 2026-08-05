@@ -192,6 +192,7 @@ fn poisoned_image() -> bindings::MV3D_LP_IMAGE_DATA {
     image
 }
 
+// 验证 raw FFI 符号清单覆盖所有生产调用，防止新增 native 调用绕过失败测试。
 #[test]
 fn raw_symbol_ledger_matches_every_production_binding_call() {
     assert_eq!(RawFfiOp::ALL.len(), 28);
@@ -221,6 +222,7 @@ fn raw_symbol_ledger_matches_every_production_binding_call() {
     );
 }
 
+// 验证每个 native FFI 失败保留操作符号与状态码，防止底层错误上下文丢失。
 #[test]
 fn every_native_ffi_failure_uses_the_expected_symbol_and_preserves_status() {
     let driver = NativeDriver;
@@ -244,6 +246,7 @@ fn every_native_ffi_failure_uses_the_expected_symbol_and_preserves_status() {
     }
 }
 
+// 验证非法图像输入在 native 符号前被拒绝，防止无效 descriptor 传入 SDK。
 #[test]
 fn invalid_image_input_is_rejected_before_calling_the_native_symbol() {
     configure(VersionResponse::Null, false);

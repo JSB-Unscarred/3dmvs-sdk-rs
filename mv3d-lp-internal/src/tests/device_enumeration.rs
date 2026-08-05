@@ -3,6 +3,7 @@ use crate::error::{ContractViolation, Error};
 
 use super::mock_driver::{MockDriver, active_runtime};
 
+// 验证设备列表增长时按新容量重试，防止枚举期间设备变化造成结果截断。
 #[test]
 fn discovery_retries_when_the_device_list_grows() {
     let mock = MockDriver::new();
@@ -21,6 +22,7 @@ fn discovery_retries_when_the_device_list_grows() {
     assert_eq!(mock.capacities(), vec![1, 2]);
 }
 
+// 验证异常大的设备数量在分配前被拒绝，防止不可信 SDK 计数触发巨额分配。
 #[test]
 fn discovery_rejects_unbounded_sdk_counts() {
     let mock = MockDriver::new();
@@ -37,6 +39,7 @@ fn discovery_rejects_unbounded_sdk_counts() {
     assert!(mock.capacities().is_empty());
 }
 
+// 验证连续不稳定快照按上限终止，防止设备变化导致枚举无限重试。
 #[test]
 fn discovery_stops_after_three_unstable_snapshots() {
     let mock = MockDriver::new();

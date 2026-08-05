@@ -21,6 +21,7 @@ use crate::opened_device::DeviceState;
 
 use super::mock_driver::{MockDriver, active_runtime};
 
+// 验证图像 callback 在返回前复制全部 payload 与元数据，防止引用 SDK 临时缓冲区。
 #[test]
 fn image_callback_immediately_copies_all_three_payloads_and_metadata() {
     let (sender, receiver) = mpsc::channel::<FrameRecord>();
@@ -75,6 +76,7 @@ fn image_callback_immediately_copies_all_three_payloads_and_metadata() {
     assert_eq!(registration.stats().delivered, 1);
 }
 
+// 验证异常 callback 限制描述长度并保留未知类型，防止越界读取和事件值丢失。
 #[test]
 fn exception_callback_bounds_description_and_preserves_unknown_kind() {
     let (sender, receiver) = mpsc::channel::<ExceptionRecord>();
@@ -111,6 +113,7 @@ fn exception_callback_bounds_description_and_preserves_unknown_kind() {
     assert_eq!(registration.stats().delivered, 2);
 }
 
+// 验证并发 callback 按 cookie 精确投递一次，防止不同设备注册之间串流。
 #[test]
 fn concurrent_callbacks_are_delivered_once_without_crossing_cookies() {
     const CALLBACKS: usize = 32;
@@ -168,6 +171,7 @@ fn concurrent_callbacks_are_delivered_once_without_crossing_cookies() {
     assert_eq!(second.stats().delivered, (CALLBACKS / 2) as u64);
 }
 
+// 验证注册注销先拒绝新投递再等待在途 callback，防止 sink 释放期间继续访问。
 #[test]
 fn registration_drop_rejects_new_admissions_and_waits_for_in_flight_callback() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -229,6 +233,7 @@ fn registration_drop_rejects_new_admissions_and_waits_for_in_flight_callback() {
     assert_eq!(calls.load(Ordering::SeqCst), before);
 }
 
+// 验证队列满仅丢当前事件而接收端断开会关闭 slot，防止 callback 阻塞或空转。
 #[test]
 fn full_drops_one_event_while_disconnected_fail_closes_the_slot() {
     let full_calls = Arc::new(AtomicUsize::new(0));
@@ -262,6 +267,7 @@ fn full_drops_one_event_while_disconnected_fail_closes_the_slot() {
     assert!(!disconnected.stats().accepting);
 }
 
+// 验证畸形 descriptor 只记失败且有效流继续工作，防止单帧错误终止 callback。
 #[test]
 fn null_malformed_and_wrong_kind_descriptors_do_not_end_valid_streams() {
     let image_calls = Arc::new(AtomicUsize::new(0));
@@ -305,6 +311,7 @@ fn null_malformed_and_wrong_kind_descriptors_do_not_end_valid_streams() {
     assert!(exception.stats().accepting);
 }
 
+// 验证零值和未知 cookie 在读取 payload 前被拒绝，防止无归属指针被解引用。
 #[test]
 fn zero_and_unknown_cookies_are_rejected_before_payload_access() {
     let mut hostile = crate::ffi::zeroed_image();
@@ -322,6 +329,7 @@ fn zero_and_unknown_cookies_are_rejected_before_payload_access() {
     }
 }
 
+// 验证 sink panic 被 trampoline 捕获并关闭注册，防止 unwind 穿过 C ABI。
 #[test]
 fn a_panicking_sink_is_contained_by_the_trampoline_and_fail_closed() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -343,6 +351,7 @@ fn a_panicking_sink_is_contained_by_the_trampoline_and_fail_closed() {
     assert!(!registration.stats().accepting);
 }
 
+// 验证 panic payload 析构再次 panic 时仍受边界约束，防止双重 unwind 穿过 C ABI。
 #[test]
 fn a_panic_payload_with_a_panicking_destructor_cannot_cross_the_trampoline() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -361,6 +370,7 @@ fn a_panic_payload_with_a_panicking_destructor_cannot_cross_the_trampoline() {
     assert!(!registration.stats().accepting);
 }
 
+// 验证图像 callback 注册失败后立即注销 cookie，防止迟到投递进入失败的 sink。
 #[test]
 fn failed_image_registration_retires_the_cookie_before_late_delivery() {
     let mock = MockDriver::new();
@@ -396,6 +406,7 @@ fn failed_image_registration_retires_the_cookie_before_late_delivery() {
     runtime.shutdown().unwrap();
 }
 
+// 验证异常 callback 注册失败后立即注销 cookie，防止迟到事件访问失败注册。
 #[test]
 fn failed_exception_registration_retires_the_cookie_before_late_delivery() {
     let mock = MockDriver::new();
@@ -430,6 +441,7 @@ fn failed_exception_registration_retires_the_cookie_before_late_delivery() {
     runtime.shutdown().unwrap();
 }
 
+// 验证 callback 测量停止后使用新 cookie 重启，防止旧注册状态污染下一次采集。
 #[test]
 fn callback_measurement_can_restart_with_a_fresh_cookie_after_stop() {
     let mock = MockDriver::new();
@@ -472,6 +484,7 @@ fn callback_measurement_can_restart_with_a_fresh_cookie_after_stop() {
     runtime.shutdown().unwrap();
 }
 
+// 验证重复图像注册直接透传 SDK 错误，防止 Rust 状态误报注册成功。
 #[test]
 fn repeated_image_registration_forwards_the_native_error() {
     let mock = MockDriver::new();
@@ -504,6 +517,7 @@ fn repeated_image_registration_forwards_the_native_error() {
     runtime.shutdown().unwrap();
 }
 
+// 验证 callback 启动失败会注销 cookie 且允许重试，防止失败注册永久占用 slot。
 #[test]
 fn failed_callback_start_retires_its_cookie_and_can_be_retried() {
     let mock = MockDriver::new();
@@ -539,6 +553,7 @@ fn failed_callback_start_retires_its_cookie_and_can_be_retried() {
     runtime.shutdown().unwrap();
 }
 
+// 验证异常 callback 替换成功后注销旧 cookie，防止新旧 sink 同时接收事件。
 #[test]
 fn exception_callback_registration_replaces_and_retires_the_previous_cookie() {
     let mock = MockDriver::new();
@@ -574,6 +589,7 @@ fn exception_callback_registration_replaces_and_retires_the_previous_cookie() {
     runtime.shutdown().unwrap();
 }
 
+// 验证异常 callback 替换失败时旧注册继续有效，防止错误清除工作中的 sink。
 #[test]
 fn failed_exception_callback_replacement_keeps_the_previous_cookie_active() {
     let mock = MockDriver::new();
@@ -612,12 +628,14 @@ fn failed_exception_callback_replacement_keeps_the_previous_cookie_active() {
     runtime.shutdown().unwrap();
 }
 
+// 验证显式 stop 与 Drop 都先停用 callback，防止停止采集期间接纳新事件。
 #[test]
 fn callback_measurement_deactivates_before_explicit_and_drop_stop() {
     assert_callback_stop_order(false);
     assert_callback_stop_order(true);
 }
 
+// 验证关闭设备会注销被遗忘 guard 的 cookie，防止 handle 关闭后继续投递。
 #[test]
 fn device_close_retires_the_cookie_of_a_forgotten_callback_measurement() {
     let mock = MockDriver::new();
@@ -662,6 +680,7 @@ fn device_close_retires_the_cookie_of_a_forgotten_callback_measurement() {
     runtime.shutdown().unwrap();
 }
 
+// 验证异常注册在 close 前停用且可承受迟到 callback，防止关闭后访问已释放 sink。
 #[test]
 fn exception_registration_deactivates_before_close_and_survives_late_callbacks() {
     assert_exception_close_order(Ok(()));

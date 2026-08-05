@@ -35,6 +35,7 @@ assert_not_impl!(OwnedFrame: Clone);
 assert_not_impl!(OwnedImage: Clone);
 assert_not_impl!(Receiver<OwnedFrame>: Sync);
 
+// 验证设备及活动 guard 可转移线程且保持独占访问，防止跨线程并发调用同一 handle。
 #[test]
 fn public_device_owners_are_send_but_not_sync() {
     fn assert_send<T: Send>() {}
@@ -45,6 +46,7 @@ fn public_device_owners_are_send_but_not_sync() {
     assert_send::<FileTransfer<'static>>();
 }
 
+// 验证 owned 数据可安全跨线程传递与共享，防止 callback 输出携带线程绑定状态。
 #[test]
 fn owned_frames_can_move_and_be_shared_between_threads() {
     fn assert_send_sync<T: Send + Sync>() {}

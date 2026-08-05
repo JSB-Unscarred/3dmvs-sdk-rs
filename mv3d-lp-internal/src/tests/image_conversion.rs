@@ -6,6 +6,7 @@ use crate::driver::DriverError;
 use crate::error::ContractViolation;
 use crate::ffi::{FrameLimits, image_from_test_buffers, zeroed_image};
 
+// 验证 SDK 失败状态优先于输出解析，防止读取失败调用留下的未可信 descriptor。
 #[test]
 fn failing_status_wins_over_untrusted_output() {
     let image = zeroed_image();
@@ -23,6 +24,7 @@ fn failing_status_wins_over_untrusted_output() {
     );
 }
 
+// 验证非零数据长度要求有效指针，防止从空地址复制图像 payload。
 #[test]
 fn null_data_pointer_with_nonzero_length_is_rejected() {
     let image = base_image(ImageType_Mono8, 2, 2, 4);
@@ -38,6 +40,7 @@ fn null_data_pointer_with_nonzero_length_is_rejected() {
     );
 }
 
+// 验证非零强度长度要求有效指针，防止从空地址复制 intensity payload。
 #[test]
 fn null_intensity_pointer_with_nonzero_length_is_rejected() {
     let mut image = base_image(ImageType_Mono8, 2, 2, 4);
@@ -54,6 +57,7 @@ fn null_intensity_pointer_with_nonzero_length_is_rejected() {
     );
 }
 
+// 验证零长度 intensity 忽略非空指针，防止对空切片附加无依据的指针对齐要求。
 #[test]
 fn a_nonnull_zero_length_intensity_pointer_is_ignored() {
     let image = base_image(ImageType_Mono8, 2, 2, 4);
@@ -63,6 +67,7 @@ fn a_nonnull_zero_length_intensity_pointer_is_ignored() {
     assert_eq!(frame.intensity_data, None);
 }
 
+// 验证已知未压缩格式满足最小字节数，防止按尺寸读取短缓冲区。
 #[test]
 fn every_known_uncompressed_format_requires_its_minimum_length() {
     let formats = [
@@ -98,6 +103,7 @@ fn every_known_uncompressed_format_requires_its_minimum_length() {
     }
 }
 
+// 验证 JPEG 与未知格式使用 SDK 报告长度，防止套用未定义的像素布局。
 #[test]
 fn jpeg_and_unknown_types_use_reported_data_length() {
     for image_type in [ImageType_Jpeg, 0x1234_5678_i32] {
@@ -111,6 +117,7 @@ fn jpeg_and_unknown_types_use_reported_data_length() {
     }
 }
 
+// 验证图像尺寸乘法溢出在复制前被拒绝，防止绕回后的长度校验失效。
 #[test]
 fn data_size_arithmetic_overflow_is_rejected_before_copying() {
     let image = base_image(ImageType_PointCloud, u32::MAX, u32::MAX, u32::MAX);
@@ -123,6 +130,7 @@ fn data_size_arithmetic_overflow_is_rejected_before_copying() {
     ));
 }
 
+// 验证 aggregate 大小上限在读取 backing memory 前检查，防止超大 descriptor 触发访问。
 #[test]
 fn aggregate_limit_is_checked_before_backing_memory_is_read() {
     let image = base_image(0x1234_5678, 1, 1, 9);
@@ -144,6 +152,7 @@ fn aggregate_limit_is_checked_before_backing_memory_is_read() {
     );
 }
 
+// 验证 aggregate 大小恰好等于上限时可接受，防止合法边界值被拒绝。
 #[test]
 fn aggregate_limit_is_inclusive() {
     let data = [1, 2, 3, 4];
@@ -171,6 +180,7 @@ fn aggregate_limit_is_inclusive() {
     assert!(!frame.valid, "bValid == 0 remains an owned invalid frame");
 }
 
+// 验证 intensity 长度严格等于像素数，防止辅助平面布局与主图尺寸脱节。
 #[test]
 fn intensity_length_must_equal_the_pixel_count() {
     let data = [0; 4];
@@ -188,6 +198,7 @@ fn intensity_length_must_equal_the_pixel_count() {
     );
 }
 
+// 验证零宽或零高图像被拒绝，防止构造无有效像素布局的 frame。
 #[test]
 fn zero_dimensions_are_rejected() {
     let image = base_image(ImageType_Jpeg, 0, 1, 1);
@@ -200,6 +211,7 @@ fn zero_dimensions_are_rejected() {
     );
 }
 
+// 验证转换后的 frame 拥有独立数据，防止 Rust 输出继续别名 SDK 缓冲区。
 #[test]
 fn copied_frame_does_not_alias_sdk_buffers() {
     let mut data = [1, 2, 3, 4];

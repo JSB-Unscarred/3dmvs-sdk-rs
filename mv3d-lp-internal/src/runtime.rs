@@ -634,6 +634,7 @@ mod tests {
 
     use super::{Gate, ProcessSdkState};
 
+    // 验证生命周期锁中毒后进入封闭状态，防止继续扩展不确定的进程级 SDK 状态。
     #[test]
     fn poisoned_lifecycle_gate_fails_closed() {
         let gate = Arc::new(Gate::new());

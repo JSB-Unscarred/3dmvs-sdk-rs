@@ -30,6 +30,7 @@ const SCRATCH_ENV: &str = "MV3D_LP_TEST_LOCAL_SCRATCH_DIR";
 
 type TestResult<T = ()> = Result<T, String>;
 
+// 验证真实 SDK 的单 Runtime 跨线程生命周期，防止 mock 与厂商线程约定偏离。
 #[test]
 #[ignore]
 fn single_runtime_cross_thread_contract() {

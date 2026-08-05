@@ -13,6 +13,7 @@ use crate::parameter::ParameterRecord;
 
 use super::mock_driver::{FfiOp, MockDriver, active_runtime};
 
+// 验证移动 Device 后可完成 pull 采集，防止 Send 约定只在类型层成立。
 #[test]
 fn moved_device_supports_a_complete_pull_acquisition() {
     let mock = MockDriver::new();
@@ -57,6 +58,7 @@ fn moved_device_supports_a_complete_pull_acquisition() {
     );
 }
 
+// 验证目标线程 panic 时 Device 仍按 stop、close 清理，防止跨线程 unwind 泄漏 handle。
 #[test]
 fn moved_device_cleans_up_on_target_thread_panic() {
     let mock = MockDriver::new();
@@ -84,6 +86,7 @@ fn moved_device_cleans_up_on_target_thread_panic() {
     runtime.shutdown().unwrap();
 }
 
+// 验证移动 Measurement 后显式 stop 与 Drop 都归还设备，防止线程 handoff 破坏 guard。
 #[test]
 fn moved_measurement_supports_explicit_stop_and_drop() {
     for explicit_stop in [true, false] {
@@ -118,6 +121,7 @@ fn moved_measurement_supports_explicit_stop_and_drop() {
     }
 }
 
+// 验证移动 CallbackMeasurement 停止前排空在途 callback，防止 sink 仍执行时停止 SDK。
 #[test]
 fn moved_callback_measurement_drains_an_in_flight_callback_before_stop() {
     let mock = MockDriver::new();
@@ -182,6 +186,7 @@ fn moved_callback_measurement_drains_an_in_flight_callback_before_stop() {
     runtime.shutdown().unwrap();
 }
 
+// 验证不同设备的普通调用可并行，防止 runtime 锁将独立 handle 全局串行化。
 #[test]
 fn ordinary_calls_on_distinct_devices_can_overlap() {
     let mock = MockDriver::new();

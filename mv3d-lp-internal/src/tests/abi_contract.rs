@@ -4,6 +4,7 @@ use std::mem::{align_of, offset_of, size_of};
 
 use crate::bindings::{MV3D_LP_DEVICE_INFO, MV3D_LP_IMAGE_DATA, MV3D_LP_PARAM};
 
+// 验证关键 x64 FFI 结构布局与审计基线一致，防止字段偏移变化破坏 ABI。
 #[test]
 fn critical_x64_layouts_match_the_audited_baseline() {
     assert_eq!(size_of::<MV3D_LP_DEVICE_INFO>(), 268);

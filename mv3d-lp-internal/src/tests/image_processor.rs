@@ -48,6 +48,7 @@ fn output(image_type: u32, bytes: usize) -> FrameRecord {
     }
 }
 
+// 验证 Runtime 将全部图像处理请求路由到对应 driver 操作，防止操作映射遗漏。
 #[test]
 fn runtime_routes_all_image_processing_operations() {
     let mock = MockDriver::new();
@@ -82,6 +83,7 @@ fn runtime_routes_all_image_processing_operations() {
     }
 }
 
+// 验证图像输入错误与 SDK 契约错误保持分类，防止调用方责任和厂商责任混淆。
 #[test]
 fn runtime_preserves_image_input_and_sdk_contract_classification() {
     let mock = MockDriver::new();
@@ -124,6 +126,7 @@ fn runtime_preserves_image_input_and_sdk_contract_classification() {
     );
 }
 
+// 验证 teardown 不确定时纯图像处理仍可使用，防止无 handle 操作被进程状态误拦截。
 #[test]
 fn teardown_uncertainty_does_not_block_pure_image_processing() {
     let mock = MockDriver::new();
@@ -167,6 +170,7 @@ fn teardown_uncertainty_does_not_block_pure_image_processing() {
 }
 
 #[cfg(feature = "display-windows")]
+// 验证 Windows 显示请求通过 driver 路由，防止公开层绕开统一 FFI 边界。
 #[test]
 fn runtime_routes_windows_display_through_the_driver() {
     let mock = MockDriver::new();

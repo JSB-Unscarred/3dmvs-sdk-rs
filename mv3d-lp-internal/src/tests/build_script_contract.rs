@@ -1,5 +1,6 @@
 const BUILD_SCRIPT: &str = include_str!("../../build.rs");
 
+// 验证 native 构建仅依赖 import library，防止运行时 DLL 被误作链接输入。
 #[test]
 fn native_build_requires_only_the_import_library() {
     for unused_header in ["Mv3dLpApi.h", "Mv3dLpDefine.h", "Mv3dLpImgProc.h"] {

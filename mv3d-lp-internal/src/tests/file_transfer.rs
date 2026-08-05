@@ -31,6 +31,7 @@ fn operation_count(mock: &MockDriver, expected: FfiOp) -> usize {
         .count()
 }
 
+// 验证 transfer guard Drop 后文件名仍存活且可恢复轮询，防止异步 SDK 读取悬空指针。
 #[test]
 fn guard_drop_keeps_names_live_and_active_transfer_can_resume() {
     let mock = MockDriver::new();
@@ -87,6 +88,7 @@ fn guard_drop_keeps_names_live_and_active_transfer_can_resume() {
     runtime.shutdown().unwrap();
 }
 
+// 验证 wait 超时只返回诊断且可继续轮询，防止本地等待截止时间终止 native 传输。
 #[test]
 fn wait_timeout_can_retry_after_progress_diagnostic() {
     let mock = MockDriver::new();
@@ -138,6 +140,7 @@ fn wait_timeout_can_retry_after_progress_diagnostic() {
     runtime.shutdown().unwrap();
 }
 
+// 验证普通 SDK progress 错误可重试，防止瞬时查询失败误结束传输。
 #[test]
 fn ordinary_sdk_progress_error_is_retryable() {
     let mock = MockDriver::new();
@@ -166,6 +169,7 @@ fn ordinary_sdk_progress_error_is_retryable() {
     runtime.shutdown().unwrap();
 }
 
+// 验证 completed 暂时超过 total 时保留传输，防止未文档化进度快照触发终止。
 #[test]
 fn progress_exceeding_its_current_total_is_retryable() {
     let mock = MockDriver::new();
@@ -209,6 +213,7 @@ fn progress_exceeding_its_current_total_is_retryable() {
     runtime.shutdown().unwrap();
 }
 
+// 验证进度快照允许非单调值和 total 变化，防止添加厂商文档外约束。
 #[test]
 fn progress_snapshots_need_not_be_monotonic_or_keep_a_fixed_total() {
     let mock = MockDriver::new();
@@ -257,6 +262,7 @@ fn progress_snapshots_need_not_be_monotonic_or_keep_a_fixed_total() {
     runtime.shutdown().unwrap();
 }
 
+// 验证每次完成都释放对应文件名 bundle，防止连续传输累积 retained storage。
 #[test]
 fn filename_bundles_are_released_on_each_completion_and_never_accumulate() {
     let mock = MockDriver::new();
@@ -305,6 +311,7 @@ fn filename_bundles_are_released_on_each_completion_and_never_accumulate() {
     runtime.shutdown().unwrap();
 }
 
+// 验证 driver 调用前的输入拒绝保持设备 Open 且不分配文件名，防止本地错误污染状态。
 #[test]
 fn rejection_before_driver_entry_keeps_device_open_and_allocates_no_names() {
     let mock = MockDriver::new();
@@ -341,6 +348,7 @@ fn rejection_before_driver_entry_keeps_device_open_and_allocates_no_names() {
     runtime.shutdown().unwrap();
 }
 
+// 验证 driver 已进入后的启动失败使设备 Faulted 并保留文件名至 close，防止异步读取悬空。
 #[test]
 fn failure_after_driver_entry_faults_device_and_retains_names_until_close() {
     let mock = MockDriver::new();
@@ -369,6 +377,7 @@ fn failure_after_driver_entry_faults_device_and_retains_names_until_close() {
     runtime.shutdown().unwrap();
 }
 
+// 验证启动失败会释放文件名，即使后续 close 失败，防止未开始传输长期占用存储。
 #[test]
 fn failed_start_releases_names_even_when_device_close_fails() {
     const HANDLE: usize = 0x3456_789A;
@@ -403,6 +412,7 @@ fn failed_start_releases_names_even_when_device_close_fails() {
     ));
 }
 
+// 验证关闭活动传输成功后释放文件名，防止完成清理后残留 retained storage。
 #[test]
 fn closing_an_active_transfer_releases_names_on_success() {
     let mock = MockDriver::new();
@@ -421,6 +431,7 @@ fn closing_an_active_transfer_releases_names_on_success() {
     runtime.shutdown().unwrap();
 }
 
+// 验证关闭活动传输失败后仍释放 Rust 文件名，防止不确定 native 状态泄漏内存。
 #[test]
 fn closing_an_active_transfer_releases_names_on_failure() {
     let mock = MockDriver::new();
@@ -448,6 +459,7 @@ fn closing_an_active_transfer_releases_names_on_failure() {
     ));
 }
 
+// 验证 teardown 不确定时现有传输仍可查询进度，防止健康 handle 被进程状态误拦截。
 #[test]
 fn teardown_uncertainty_does_not_block_existing_transfer_progress() {
     let mock = MockDriver::new();
@@ -484,6 +496,7 @@ fn teardown_uncertainty_does_not_block_existing_transfer_progress() {
     ));
 }
 
+// 验证借用式 transfer 可转移到 scoped thread 并归还设备，防止线程 handoff 破坏复用。
 #[test]
 fn borrowed_transfer_can_move_to_a_scoped_thread_then_device_is_reused() {
     let mock = MockDriver::new();

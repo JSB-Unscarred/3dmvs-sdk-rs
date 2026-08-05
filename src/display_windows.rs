@@ -107,6 +107,7 @@ mod tests {
         }
     }
 
+    // 验证单色显示范围与模式约束，防止无效参数进入 Windows 显示接口。
     #[test]
     fn mono_manual_and_invalid_ranges_are_rejected() {
         assert!(
@@ -132,6 +133,7 @@ mod tests {
         assert!(validate_display_request(image(ImageType::DEPTH), DisplayRange::Auto).is_ok());
     }
 
+    // 验证厂商文档规定的显示类型矩阵，防止不支持的图像格式传入 SDK。
     #[test]
     fn documented_display_type_matrix_is_enforced() {
         for image_type in [

@@ -340,6 +340,7 @@ impl fmt::Debug for OwnedFrame {
 mod tests {
     use super::{ImageCalibration, ImageType, OwnedFrame, OwnedImage};
 
+    // 验证 Debug 仅输出 payload 长度，防止大量或敏感图像内容进入日志。
     #[test]
     fn debug_reports_lengths_without_payload_contents() {
         let frame = OwnedFrame {
@@ -370,6 +371,7 @@ mod tests {
         assert!(!debug.contains("123456789"));
     }
 
+    // 验证处理结果的 Debug 同样隐藏 payload，防止转换输出进入日志。
     #[test]
     fn processed_image_debug_is_redacted() {
         let image = OwnedImage {

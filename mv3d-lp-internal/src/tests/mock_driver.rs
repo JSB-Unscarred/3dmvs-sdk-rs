@@ -1033,6 +1033,7 @@ mod tests {
         }
     }
 
+    // 验证 mock 共享状态与 driver 满足线程 trait，防止并发测试依赖隐式实现。
     #[test]
     fn shared_state_and_driver_have_the_required_auto_traits() {
         assert_send::<MockState>();
@@ -1040,6 +1041,7 @@ mod tests {
         assert_sync::<MockDriver>();
     }
 
+    // 验证并发 probe 记录重叠且每个 failpoint 只消费一次，防止竞争导致重复注入。
     #[test]
     fn probe_observes_concurrency_and_consumes_one_failure_exactly_once() {
         let mock = Arc::new(MockDriver::new());
@@ -1070,6 +1072,7 @@ mod tests {
         );
     }
 
+    // 验证 probe 在 panic 后平衡计数并恢复 poisoned ledger，防止测试基础设施残留状态。
     #[test]
     fn probe_balances_a_panic_and_the_poisoned_ledger_recovers() {
         let mock = MockDriver::new();

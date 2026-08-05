@@ -6,6 +6,7 @@ use crate::opened_device::DeviceState;
 
 use super::mock_driver::{MockDriver, active_runtime};
 
+// 验证 start 与 stop 成功后才更新状态，防止 Rust 状态领先于 native 状态。
 #[test]
 fn start_and_stop_update_state_only_after_success() {
     let mock = MockDriver::new();
@@ -31,6 +32,7 @@ fn start_and_stop_update_state_only_after_success() {
     );
 }
 
+// 验证 start 失败后设备保持 Open 并可重试，防止可恢复错误污染生命周期。
 #[test]
 fn failed_start_leaves_device_open_and_is_retryable() {
     let mock = MockDriver::new();
@@ -45,6 +47,7 @@ fn failed_start_leaves_device_open_and_is_retryable() {
     device.close().unwrap();
 }
 
+// 验证成功状态配合空 handle 被视为契约错误，防止构造无效 Device。
 #[test]
 fn successful_open_with_a_null_handle_is_a_contract_violation() {
     let mock = MockDriver::new();
@@ -72,6 +75,7 @@ fn successful_open_with_a_null_handle_is_a_contract_violation() {
     );
 }
 
+// 验证 open 失败时返回的 handle 不进入有效状态，防止使用来源不确定的句柄。
 #[test]
 fn handle_returned_on_open_failure_is_never_treated_as_valid() {
     let mock = MockDriver::new();

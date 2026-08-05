@@ -424,6 +424,7 @@ mod tests {
     };
     use crate::{ImageCalibration, ImageRef, ImageType, Operation};
 
+    // 验证图像转换矩阵与厂商头文件一致，防止向 SDK 请求未定义转换。
     #[test]
     fn conversion_matrix_matches_vendor_header() {
         let types = image_types();
@@ -447,6 +448,7 @@ mod tests {
         }
     }
 
+    // 验证保存格式与图像类型的组合约束，防止无效 cross-product 进入 FFI。
     #[test]
     fn save_matrix_rejects_invalid_cross_product_entries() {
         let formats = [
@@ -498,6 +500,7 @@ mod tests {
         }
     }
 
+    // 验证多图输入数量仅接受一至八张，防止越过 SDK 数组容量约定。
     #[test]
     fn multi_image_count_accepts_one_through_eight_only() {
         let depth = ImageRef {
@@ -518,6 +521,7 @@ mod tests {
         assert!(prepare_multi(Operation::DepthMosaic, &[depth; 9]).is_err());
     }
 
+    // 验证标定缩放值按厂商数据透传，防止引入文档外的有限值限制。
     #[test]
     fn calibration_scales_have_no_undocumented_finite_policy() {
         let depth = ImageRef {

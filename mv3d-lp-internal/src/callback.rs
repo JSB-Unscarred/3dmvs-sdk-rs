@@ -506,6 +506,7 @@ mod tests {
         Arc::new(CallbackEntry::new(CallbackSink::Image(sink)))
     }
 
+    // 验证 callback cookie 始终非零且注销后不复用，防止迟到 callback 命中错误注册。
     #[test]
     fn cookies_are_nonzero_and_never_reused_after_removal() {
         let registry = CallbackRegistry::new();
@@ -523,6 +524,7 @@ mod tests {
         );
     }
 
+    // 验证 cookie 序列耗尽时终止分配，防止整数回绕重新产生旧 cookie。
     #[test]
     fn cookie_sequence_exhaustion_never_wraps_to_zero() {
         let registry = CallbackRegistry::new();

@@ -13,6 +13,7 @@ use crate::ffi::{FrameLimits, callback_image_from_native, image_from_test_buffer
 
 use super::mock_driver::{MockDriver, active_runtime};
 
+// 验证 raw descriptor 只从存活 Rust storage 复制，供 Miri 检查指针访问有效性。
 #[test]
 fn raw_descriptor_payloads_are_copied_from_live_rust_storage() {
     let mut data = [1, 2, 3, 4];
@@ -44,6 +45,7 @@ fn raw_descriptor_payloads_are_copied_from_live_rust_storage() {
     assert_eq!(frame.exposure_timestamps, Some(vec![10, 20]));
 }
 
+// 验证未对齐 exposure storage 按 native 字节复制，防止创建未对齐的 i64 引用。
 #[test]
 fn unaligned_exposure_storage_is_copied_as_native_bytes() {
     let mut data = [7_u8];
@@ -67,6 +69,7 @@ fn unaligned_exposure_storage_is_copied_as_native_bytes() {
     assert_eq!(frame.exposure_timestamps, Some(vec![expected]));
 }
 
+// 验证 fake backend 的 Drop 清理路径可由 Miri 执行，防止纯 Rust 生命周期出现 UB。
 #[test]
 fn fake_backend_exercises_drop_cleanup_without_native_ffi() {
     let mock = MockDriver::new();

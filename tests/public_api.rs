@@ -4,10 +4,11 @@ use std::sync::mpsc::Receiver;
 
 use mv3d_lp::{
     CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Device, DeviceException,
-    DeviceExceptionType, DeviceInfo, DeviceState, FileTransfer, ImageFileFormat, ImageProcessor,
-    ImageType, IpConfiguration, Measurement, OwnedFrame, OwnedImage, Result, Sdk, SdkText,
+    DeviceExceptionType, DeviceState, FileTransfer, ImageFileFormat, ImageProcessor, ImageType,
+    Measurement, OwnedFrame, Result, Sdk, SdkText,
 };
 
+// 验证公开生命周期与控制函数保持安全签名，防止借用关系或所有权约定退化。
 #[test]
 #[allow(clippy::type_complexity)]
 fn public_lifecycle_and_control_methods_have_safe_signatures() {
@@ -69,78 +70,7 @@ fn public_lifecycle_and_control_methods_have_safe_signatures() {
     let _: ImageFileFormat = ImageFileFormat::Ply;
 }
 
-#[test]
-fn known_device_states_are_public() {
-    let states = [
-        DeviceState::Open,
-        DeviceState::Measuring,
-        DeviceState::CallbackMeasuring,
-        DeviceState::Faulted,
-        DeviceState::Transferring,
-    ];
-
-    assert_eq!(states.len(), 5);
-}
-
-#[test]
-fn public_device_sessions_and_transfer_support_scoped_thread_handoff() {
-    fn handoff_device(device: Device<'_>) {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || drop(device))
-                .join()
-                .expect("scoped device handoff thread should not panic");
-        });
-    }
-
-    fn handoff_measurement(measurement: Measurement<'_>) {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || drop(measurement))
-                .join()
-                .expect("scoped measurement handoff thread should not panic");
-        });
-    }
-
-    fn handoff_callback_measurement(measurement: CallbackMeasurement<'_>) {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || drop(measurement))
-                .join()
-                .expect("scoped callback measurement handoff thread should not panic");
-        });
-    }
-
-    fn handoff_file_transfer(transfer: FileTransfer<'_>) {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || drop(transfer))
-                .join()
-                .expect("scoped file transfer handoff thread should not panic");
-        });
-    }
-
-    let _: for<'sdk> fn(Device<'sdk>) = handoff_device;
-    let _: for<'device> fn(Measurement<'device>) = handoff_measurement;
-    let _: for<'device> fn(CallbackMeasurement<'device>) = handoff_callback_measurement;
-    let _: for<'sdk> fn(FileTransfer<'sdk>) = handoff_file_transfer;
-}
-
-#[test]
-fn owned_output_types_can_move_between_threads() {
-    fn assert_send_sync<T: Send + Sync>() {}
-
-    assert_send_sync::<DeviceInfo>();
-    assert_send_sync::<SdkText>();
-    assert_send_sync::<IpConfiguration>();
-    assert_send_sync::<OwnedFrame>();
-    assert_send_sync::<OwnedImage>();
-    assert_send_sync::<DeviceException>();
-    assert_send_sync::<DeviceExceptionType>();
-    assert_send_sync::<CallbackOptions>();
-    assert_send_sync::<CallbackStats>();
-}
-
+// 验证 callback 公开字段使用 owned 数据并公开完整计数，防止泄漏内部借用状态。
 #[test]
 fn callback_public_types_preserve_owned_data_and_counters() {
     fn assert_exception_fields(event: &DeviceException) {
@@ -167,6 +97,7 @@ fn callback_public_types_preserve_owned_data_and_counters() {
     assert_eq!(unknown.name(), None);
 }
 
+// 验证图像类型保留已知值和未知位，防止新版 SDK 类型值被截断。
 #[test]
 fn image_types_preserve_known_and_unknown_bits() {
     assert_eq!(ImageType::MONO8.bits(), 0x0108_0001);
@@ -179,6 +110,7 @@ fn image_types_preserve_known_and_unknown_bits() {
     assert!(format!("{unknown:?}").contains("0xDEADBEEF"));
 }
 
+// 验证 OwnedFrame 公开 owned payload 与标定元数据，防止 callback 数据依赖 SDK 缓冲区。
 #[test]
 fn owned_frame_exposes_owned_payload_and_metadata() {
     fn assert_fields(frame: &OwnedFrame) {

@@ -6,6 +6,7 @@ use crate::runtime::{Gate, Runtime};
 
 use super::mock_driver::{FfiOp, MockDriver};
 
+// 验证进程仅允许一个活动 Runtime 且 finalize 后可重启，防止重复初始化全局 SDK。
 #[test]
 fn runtime_allows_one_active_instance_and_reinitializes_after_finalize() {
     let mock = MockDriver::new();
@@ -31,6 +32,7 @@ fn runtime_allows_one_active_instance_and_reinitializes_after_finalize() {
     );
 }
 
+// 验证 initialize 失败后 gate 回到 Fresh，防止可重试错误永久锁死进程状态。
 #[test]
 fn initialization_failure_returns_the_gate_to_fresh_for_retry() {
     let mock = MockDriver::new();
@@ -54,6 +56,7 @@ fn initialization_failure_returns_the_gate_to_fresh_for_retry() {
     );
 }
 
+// 验证初始化清理失败使进程进入 Degraded，防止在不确定全局状态上继续初始化。
 #[test]
 fn initialization_cleanup_failure_degrades_the_process_sdk_state() {
     let mock = MockDriver::new();
@@ -74,6 +77,7 @@ fn initialization_cleanup_failure_degrades_the_process_sdk_state() {
     assert_eq!(mock.logs(), ["version", "initialize", "finalize"]);
 }
 
+// 验证兼容版本可通过默认初始化，防止严格基线误用于普通入口。
 #[test]
 fn compatible_build_version_initializes_by_default() {
     let mock = MockDriver::new();
@@ -87,6 +91,7 @@ fn compatible_build_version_initializes_by_default() {
     assert_eq!(mock.logs(), ["version", "initialize", "finalize"]);
 }
 
+// 验证低于兼容范围的版本在 initialize 前被拒绝，防止不匹配 ABI 进入 SDK。
 #[test]
 fn version_below_compatible_range_is_rejected_before_initialization() {
     let mock = MockDriver::new();
@@ -99,6 +104,7 @@ fn version_below_compatible_range_is_rejected_before_initialization() {
     assert_eq!(mock.logs(), ["version"]);
 }
 
+// 验证兼容上界阻止初始化且保持 gate 可重试，防止新版 ABI 被误接受或污染状态。
 #[test]
 fn compatible_upper_bound_prevents_initialization_without_poisoning_the_gate() {
     let mock = MockDriver::new();
@@ -126,6 +132,7 @@ fn compatible_upper_bound_prevents_initialization_without_poisoning_the_gate() {
     );
 }
 
+// 验证 strict 入口拒绝非基线构建并保持 Fresh，防止验收失败阻断后续正确初始化。
 #[test]
 fn strict_version_rejects_compatible_build_and_leaves_the_gate_fresh() {
     let mock = MockDriver::new();
@@ -154,6 +161,7 @@ fn strict_version_rejects_compatible_build_and_leaves_the_gate_fresh() {
     );
 }
 
+// 验证版本按数值段比较，防止字典序误判多位版本号。
 #[test]
 fn strict_version_comparison_is_numeric() {
     let mock = MockDriver::new();
@@ -167,6 +175,7 @@ fn strict_version_comparison_is_numeric() {
     assert_eq!(mock.logs(), ["version", "initialize", "finalize"]);
 }
 
+// 验证版本查询失败后 gate 回到 Fresh，防止预初始化错误污染生命周期。
 #[test]
 fn version_query_failure_returns_the_gate_to_fresh_for_retry() {
     let mock = MockDriver::new();
@@ -184,6 +193,7 @@ fn version_query_failure_returns_the_gate_to_fresh_for_retry() {
     );
 }
 
+// 验证 finalize 失败使进程进入 Degraded，防止在不确定全局状态上重启 SDK。
 #[test]
 fn finalize_failure_degrades_the_process_sdk_state() {
     let mock = MockDriver::new();
@@ -198,6 +208,7 @@ fn finalize_failure_degrades_the_process_sdk_state() {
     assert!(retry_mock.operations().is_empty());
 }
 
+// 验证 handle 计数溢出使进程 Degraded，防止回绕后提前 finalize。
 #[test]
 fn handle_count_overflow_degrades_the_process_sdk_state() {
     let mock = MockDriver::new();
@@ -235,6 +246,7 @@ fn handle_count_overflow_degrades_the_process_sdk_state() {
     );
 }
 
+// 验证 handle 计数下溢使进程 Degraded，防止错误计数被当作健康生命周期。
 #[test]
 fn handle_count_underflow_degrades_the_process_sdk_state() {
     let mock = MockDriver::new();

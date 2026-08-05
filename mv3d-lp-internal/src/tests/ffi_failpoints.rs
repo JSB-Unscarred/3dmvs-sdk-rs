@@ -19,6 +19,7 @@ use super::mock_driver::{FfiOp, MockDriver, active_runtime, mock_handle};
 
 const INJECTED_STATUS: i32 = 0xE005_0001_u32 as i32;
 
+// 验证 driver failpoint 清单完整且 SDK 符号唯一，防止新增 FFI 操作绕过失败注入。
 #[test]
 fn driver_failpoint_ledger_is_complete_and_has_unique_vendor_names() {
     #[cfg(not(feature = "display-windows"))]
@@ -54,6 +55,7 @@ fn driver_failpoint_ledger_is_complete_and_has_unique_vendor_names() {
     assert_eq!(covered, declared, "every Driver method needs a failpoint");
 }
 
+// 验证每个 driver 操作消费统一失败注入器，防止测试遗漏错误返回路径。
 #[test]
 fn every_driver_operation_consumes_the_shared_failure_injector() {
     for &operation in FfiOp::ALL {
@@ -69,6 +71,7 @@ fn every_driver_operation_consumes_the_shared_failure_injector() {
     }
 }
 
+// 验证控制操作失败可观察且不污染 runtime，防止普通 SDK 错误扩大故障域。
 #[test]
 fn previously_missing_control_failures_are_observable_without_poisoning_the_runtime() {
     let mock = MockDriver::new();

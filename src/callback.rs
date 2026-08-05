@@ -248,6 +248,7 @@ mod tests {
         }
     }
 
+    // 验证默认 callback 队列有界且容量有效，防止消费者停滞时内存持续增长。
     #[test]
     fn callback_options_default_to_a_bounded_non_zero_queue() {
         assert_eq!(CallbackOptions::default().queue_capacity.get(), 4);
@@ -260,6 +261,7 @@ mod tests {
         assert_eq!(receiver.recv().unwrap(), 2);
     }
 
+    // 验证异常类型保留未知位模式，防止新版 SDK 事件值被错误归类。
     #[test]
     fn device_exception_types_preserve_unknown_bits() {
         assert_eq!(DeviceExceptionType::UNDEFINED.raw(), -1);
@@ -272,6 +274,7 @@ mod tests {
         assert!(format!("{unknown:?}").contains("0xDEADBEEF"));
     }
 
+    // 验证异常事件拥有描述文本，防止事件离开 callback 后引用失效缓冲区。
     #[test]
     fn device_exceptions_own_their_description() {
         let event = DeviceException::new(
@@ -282,6 +285,7 @@ mod tests {
         assert_eq!(event.description.as_bytes(), b"link lost");
     }
 
+    // 验证用户 handler 在 Rust worker 线程执行，防止阻塞 SDK callback 线程。
     #[test]
     fn worker_invokes_handler_on_its_rust_thread() {
         let caller = thread::current().id();
@@ -301,6 +305,7 @@ mod tests {
         assert_eq!(worker.join(), CallbackWorkerExit::ChannelClosed);
     }
 
+    // 验证用户 handler panic 被 worker 边界捕获，防止 panic 扩散到调用方线程。
     #[test]
     fn worker_contains_handler_panics() {
         let (sender, receiver) = mpsc::channel();
@@ -313,6 +318,7 @@ mod tests {
         assert_eq!(worker.join(), CallbackWorkerExit::HandlerPanicked);
     }
 
+    // 验证 handler panic payload 被及时释放，防止捕获后的资源滞留。
     #[test]
     fn worker_drops_handler_panic_payload() {
         let drops = Arc::new(AtomicUsize::new(0));
@@ -328,6 +334,7 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
+    // 验证 worker 析构 panic 被 join 转换为退出状态，防止二次 unwind 泄漏资源。
     #[test]
     fn join_drops_worker_panic_payload() {
         struct PanicWithPayloadOnDrop(Arc<AtomicUsize>);

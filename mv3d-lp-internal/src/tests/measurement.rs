@@ -27,6 +27,7 @@ fn frame(data: Vec<u8>) -> FrameRecord {
     }
 }
 
+// 验证 pull 采集路由 trigger、clear、get 与显式 stop，防止控制调用落到错误 handle 状态。
 #[test]
 fn measurement_routes_pull_controls_and_explicit_stop() {
     let mock = MockDriver::new();
@@ -60,6 +61,7 @@ fn measurement_routes_pull_controls_and_explicit_stop() {
     );
 }
 
+// 验证 NO_DATA 精确保留且采集可重试，防止暂时缺帧被误作会话终止。
 #[test]
 fn no_data_is_exact_and_the_measurement_can_retry() {
     let mock = MockDriver::new();
@@ -83,6 +85,7 @@ fn no_data_is_exact_and_the_measurement_can_retry() {
     assert_eq!(mock.image_timeouts(), [5, 6]);
 }
 
+// 验证断连状态码完整返回且清理继续执行，防止错误路径跳过 stop 和 close。
 #[test]
 fn disconnect_preserves_status_and_cleanup_still_runs() {
     let mock = MockDriver::new();
@@ -105,6 +108,7 @@ fn disconnect_preserves_status_and_cleanup_still_runs() {
     assert_eq!(&log[log.len() - 2..], ["stop", "close"]);
 }
 
+// 验证 Measurement Drop 恢复 Open 状态并先 stop 再 close，防止活动采集遗留。
 #[test]
 fn dropped_measurement_stops_before_device_close() {
     let mock = MockDriver::new();
@@ -119,6 +123,7 @@ fn dropped_measurement_stops_before_device_close() {
     assert_eq!(&log[log.len() - 2..], ["stop", "close"]);
 }
 
+// 验证显式 stop 失败使设备 Faulted 且 close 重试清理，防止不确定采集状态被复用。
 #[test]
 fn failed_explicit_stop_faults_device_and_close_retries_cleanup_stop() {
     let mock = MockDriver::new();
@@ -138,6 +143,7 @@ fn failed_explicit_stop_faults_device_and_close_retries_cleanup_stop() {
     );
 }
 
+// 验证 Drop stop 失败使设备 Faulted 且 close 仅重试一次，防止重复清理扩大不确定性。
 #[test]
 fn failed_drop_stop_faults_device_and_close_retries_once() {
     let mock = MockDriver::new();
@@ -153,6 +159,7 @@ fn failed_drop_stop_faults_device_and_close_retries_once() {
     assert_eq!(&log[log.len() - 3..], ["stop", "stop", "close"]);
 }
 
+// 验证 SDK 无限超时 sentinel 在 driver 前被拒绝，防止安全 API 产生永久阻塞。
 #[test]
 fn infinite_timeout_sentinel_is_rejected_before_driver() {
     let mock = MockDriver::new();
@@ -172,6 +179,7 @@ fn infinite_timeout_sentinel_is_rejected_before_driver() {
     device.close().unwrap();
 }
 
+// 验证 trigger 与 clear 错误不结束采集，防止普通控制失败污染会话状态。
 #[test]
 fn trigger_and_clear_errors_do_not_end_the_session() {
     let mock = MockDriver::new();

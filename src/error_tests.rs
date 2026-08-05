@@ -10,6 +10,7 @@ use super::{
     map_internal_operation,
 };
 
+// 验证内部 Operation 完整映射到公开符号，防止新增 FFI 操作遗漏错误上下文。
 #[test]
 fn every_internal_operation_maps_to_the_public_operation_and_name() {
     let cases = [
@@ -73,6 +74,7 @@ fn every_internal_operation_maps_to_the_public_operation_and_name() {
     }
 }
 
+// 验证生命周期与 SDK 错误转换为公开类型，防止内部实现类型泄漏。
 #[test]
 fn lifecycle_and_sdk_errors_map_without_exposing_internal_types() {
     assert_eq!(
@@ -101,6 +103,7 @@ fn lifecycle_and_sdk_errors_map_without_exposing_internal_types() {
     );
 }
 
+// 验证版本错误保留有效文本并拒绝畸形值，防止错误诊断丢失 ABI 信息。
 #[test]
 fn incompatible_versions_retain_valid_text_and_reject_malformed_text() {
     let error = Error::map_internal_error(InternalError::IncompatibleSdkVersion {
@@ -150,6 +153,7 @@ fn incompatible_versions_retain_valid_text_and_reject_malformed_text() {
     );
 }
 
+// 验证状态错误携带正确操作与期望状态，防止调用方收到误导性诊断。
 #[test]
 fn invalid_states_map_the_operation_and_expected_state() {
     let cases = [
@@ -195,6 +199,7 @@ fn invalid_states_map_the_operation_and_expected_state() {
     }
 }
 
+// 验证图像契约错误保留字段和长度上下文，防止 FFI 数据错误难以定位。
 #[test]
 fn image_contract_violations_retain_context() {
     let cases = [
@@ -276,6 +281,7 @@ fn image_contract_violations_retain_context() {
     }
 }
 
+// 验证图像输入错误映射为公开 violation，防止底层校验细节泄漏。
 #[test]
 fn invalid_image_inputs_map_to_public_violations() {
     let cases = [
@@ -379,6 +385,7 @@ fn invalid_image_inputs_map_to_public_violations() {
     }
 }
 
+// 验证显示输入错误归属公开 DisplayImage 操作，防止 feature 分支改变错误上下文。
 #[test]
 fn display_input_errors_use_the_public_display_operation() {
     let cases = [
@@ -424,6 +431,7 @@ fn display_input_errors_use_the_public_display_operation() {
     }
 }
 
+// 验证组合清理错误递归保留 source，防止 stop、close 与 open 根因丢失。
 #[test]
 fn cleanup_and_open_failure_sources_map_recursively() {
     let error = Error::map_device_cleanup_error(mv3d_lp_internal::DeviceCleanupError {

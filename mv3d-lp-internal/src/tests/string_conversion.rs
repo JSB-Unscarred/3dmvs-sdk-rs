@@ -5,6 +5,7 @@ use crate::parameter::ParameterValueRecord;
 
 use super::mock_driver::{MockDriver, active_runtime};
 
+// 验证非法参数 key 在 driver 前被拒绝，防止 NUL 截断或空 key 进入 SDK。
 #[test]
 fn invalid_parameter_keys_never_reach_the_driver() {
     let mock = MockDriver::new();
@@ -22,6 +23,7 @@ fn invalid_parameter_keys_never_reach_the_driver() {
     assert_eq!(mock.logs(), before);
 }
 
+// 验证过长或含 NUL 的参数字符串本地拒绝，防止写入固定 C 字符串缓冲区失败。
 #[test]
 fn oversized_or_nul_parameter_strings_are_rejected_locally() {
     let mock = MockDriver::new();

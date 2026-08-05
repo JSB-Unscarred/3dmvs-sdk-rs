@@ -6,21 +6,7 @@ use crate::error::Error;
 
 use super::mock_driver::{FfiOp, MockDriver, active_runtime};
 
-#[test]
-fn drop_stops_before_closing_a_measuring_device() {
-    let mock = MockDriver::new();
-    let (runtime, _) = active_runtime(&mock);
-    {
-        let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-        let measurement = device.start().unwrap();
-        drop(measurement);
-    }
-
-    let log = mock.logs();
-    let cleanup = &log[log.len() - 2..];
-    assert_eq!(cleanup, ["stop", "close"]);
-}
-
+// 验证 cleanup stop 失败后仍尝试 close，防止单步失败跳过后续资源释放。
 #[test]
 fn close_is_attempted_even_when_cleanup_stop_fails() {
     let mock = MockDriver::new();
@@ -47,6 +33,7 @@ fn close_is_attempted_even_when_cleanup_stop_fails() {
     assert!(!mock.logs().contains(&"finalize"));
 }
 
+// 验证一个设备 close 失败不阻塞健康设备清理，防止进程故障扩大到现有 handle。
 #[test]
 fn failed_close_does_not_block_a_healthy_device() {
     let mock = MockDriver::new();
@@ -101,6 +88,7 @@ fn failed_close_does_not_block_a_healthy_device() {
     mock.assert_no_pending_failures();
 }
 
+// 验证显式 close 成功后 Drop 不重复关闭，防止 native handle 被二次释放。
 #[test]
 fn explicit_close_is_not_repeated_by_drop() {
     let mock = MockDriver::new();
@@ -125,6 +113,7 @@ fn explicit_close_is_not_repeated_by_drop() {
     );
 }
 
+// 验证遗忘 Device 时拒绝 finalize，防止 SDK 在活跃 handle 存续期间卸载。
 #[test]
 fn forgotten_device_prevents_finalize() {
     let mock = MockDriver::new();
@@ -147,6 +136,7 @@ fn forgotten_device_prevents_finalize() {
     assert!(retry_mock.operations().is_empty());
 }
 
+// 验证隐式 Drop 严格执行 stop、close、finalize 一次，防止遗漏或重复清理。
 #[test]
 fn implicit_drop_has_one_exact_stop_close_finalize_sequence() {
     let mock = MockDriver::new();
@@ -170,6 +160,7 @@ fn implicit_drop_has_one_exact_stop_close_finalize_sequence() {
     );
 }
 
+// 验证 start 失败后直接 close 再 finalize，防止对未启动采集调用 stop。
 #[test]
 fn failed_start_closes_without_stop_before_finalize() {
     let mock = MockDriver::new();
@@ -196,6 +187,7 @@ fn failed_start_closes_without_stop_before_finalize() {
     mock.assert_no_pending_failures();
 }
 
+// 验证 cleanup stop 失败但 close 成功时仍可 finalize，防止已释放 handle 阻塞退出。
 #[test]
 fn failed_cleanup_stop_still_closes_and_a_successful_close_allows_finalize() {
     let mock = MockDriver::new();
@@ -225,6 +217,7 @@ fn failed_cleanup_stop_still_closes_and_a_successful_close_allows_finalize() {
     mock.assert_no_pending_failures();
 }
 
+// 验证 close 失败只消费一次并持续禁止 finalize，防止重试不确定 handle。
 #[test]
 fn failed_close_is_consumed_once_and_permanently_suppresses_finalize() {
     let mock = MockDriver::new();
@@ -257,6 +250,7 @@ fn failed_close_is_consumed_once_and_permanently_suppresses_finalize() {
     mock.assert_no_pending_failures();
 }
 
+// 验证 finalize 等待所有独立设备关闭，防止任一活跃 handle 被提前失效。
 #[test]
 fn finalize_waits_for_every_distinct_device_close() {
     let mock = MockDriver::new();
@@ -287,6 +281,7 @@ fn finalize_waits_for_every_distinct_device_close() {
     );
 }
 
+// 验证 Drop 中的 stop 与 close 状态错误不触发 unwind，防止析构期间双重 panic。
 #[test]
 fn cleanup_status_failures_never_unwind_from_drop() {
     let mock = MockDriver::new();
@@ -317,6 +312,7 @@ fn cleanup_status_failures_never_unwind_from_drop() {
     mock.assert_no_pending_failures();
 }
 
+// 验证 finalize 失败在 Runtime Drop 中不 unwind 且不重试，防止重复终结不确定状态。
 #[test]
 fn finalize_status_failure_never_unwinds_from_runtime_drop_or_retries() {
     let mock = MockDriver::new();

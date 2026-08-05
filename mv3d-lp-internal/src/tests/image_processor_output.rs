@@ -4,6 +4,7 @@ use crate::error::ContractViolation;
 use crate::ffi::{processed_image_from_test_buffers, zeroed_image};
 use crate::frame::ImageTypeRecord;
 
+// 验证 round point-cloud 输出丢弃首个输入的辅助指针，防止错误继承无关 payload。
 #[test]
 fn round_output_discards_first_input_auxiliary_pointers() {
     let data = [0_u8; 48];
@@ -32,6 +33,7 @@ fn round_output_discards_first_input_auxiliary_pointers() {
     assert_eq!(output.exposure_timestamps, None);
 }
 
+// 验证 mosaic 输出复制自身 intensity 平面，防止误用首个输入的辅助数据。
 #[test]
 fn mosaic_output_copies_its_real_intensity_plane() {
     let data = [0_u8; 8];
@@ -59,6 +61,7 @@ fn mosaic_output_copies_its_real_intensity_plane() {
     assert_eq!(output.exposure_timestamps, None);
 }
 
+// 验证处理后的未压缩输出要求精确长度，防止接受含尾部或缺失字节的 frame。
 #[test]
 fn processed_uncompressed_output_requires_exact_length() {
     let data = [0_u8; 9];
@@ -86,6 +89,7 @@ fn processed_uncompressed_output_requires_exact_length() {
     ));
 }
 
+// 验证处理输出类型不匹配归类为 SDK 契约错误，防止将厂商异常归责于调用方。
 #[test]
 fn processed_output_type_mismatch_remains_a_contract_violation() {
     let data = [0_u8; 8];

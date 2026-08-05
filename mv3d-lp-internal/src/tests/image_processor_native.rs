@@ -7,6 +7,7 @@ use crate::frame::{ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 #[cfg(feature = "display-windows")]
 use std::num::NonZeroIsize;
 
+// 验证 native 边界在调用 SDK 前拒绝错误类型与数量，防止无效 descriptor 进入 FFI。
 #[test]
 fn native_boundary_rejects_wrong_types_and_counts_before_calling_sdk() {
     let mono = [0_u8; 1];
@@ -67,6 +68,7 @@ fn native_boundary_rejects_wrong_types_and_counts_before_calling_sdk() {
     ));
 }
 
+// 验证 native 边界要求紧密排列输入，防止 SDK 按连续布局读取缺失字节。
 #[test]
 fn native_boundary_requires_tightly_packed_inputs() {
     let padded_mono = [0_u8; 2];
@@ -122,6 +124,7 @@ fn native_boundary_requires_tightly_packed_inputs() {
     ));
 }
 
+// 验证 native 输入上限归类为 InvalidInput，防止用户数据错误被误报为 SDK 契约错误。
 #[test]
 fn native_boundary_reports_input_limits_as_invalid_input() {
     const LIMIT: usize = 512 * 1024 * 1024;
@@ -136,6 +139,7 @@ fn native_boundary_reports_input_limits_as_invalid_input() {
     );
 }
 
+// 验证 native 与公开层采用相同校验优先级，防止同一输入因入口不同返回不同错误。
 #[test]
 fn native_boundary_matches_public_validation_priority() {
     let depth = [0_u8; 2];
@@ -198,6 +202,7 @@ fn native_boundary_matches_public_validation_priority() {
 }
 
 #[cfg(feature = "display-windows")]
+// 验证无效显示请求在 SDK 调用前被拒绝，防止 Windows 显示接口接收未支持参数。
 #[test]
 fn native_boundary_reports_invalid_display_requests_as_input() {
     let byte = [0_u8; 1];
