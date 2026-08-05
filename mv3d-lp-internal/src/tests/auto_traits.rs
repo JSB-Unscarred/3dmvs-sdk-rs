@@ -1,8 +1,8 @@
 use crate::driver::Handle;
 use crate::runtime::RuntimeInner;
 use crate::{
-    CallbackMeasurement, Device, DeviceRecord, ExceptionRecord, FileTransfer, FrameRecord,
-    IpConfiguration, Measurement, ParameterRecord, ParameterValueRecord, Runtime,
+    Device, DeviceRecord, ExceptionRecord, FrameRecord, IpConfiguration, ParameterRecord,
+    ParameterValueRecord, Runtime,
 };
 
 macro_rules! assert_not_impl {
@@ -26,19 +26,13 @@ assert_not_impl!(Runtime: Send);
 assert_not_impl!(Runtime: Sync);
 assert_not_impl!(Handle: Sync);
 assert_not_impl!(Device<'static>: Sync);
-assert_not_impl!(Measurement<'static>: Sync);
-assert_not_impl!(CallbackMeasurement<'static>: Sync);
-assert_not_impl!(FileTransfer<'static>: Sync);
 
-// 验证内部设备与活动 guard 可跨线程转移，防止无依据地限制独占所有权 handoff。
+// 验证内部设备可跨线程转移，防止无依据地限制独占所有权 handoff。
 #[test]
 fn internal_device_ownership_can_move_between_threads() {
     fn assert_send<T: Send>() {}
 
     assert_send::<Device<'static>>();
-    assert_send::<Measurement<'static>>();
-    assert_send::<CallbackMeasurement<'static>>();
-    assert_send::<FileTransfer<'static>>();
 }
 
 // 验证 opaque handle 可转移且保持非共享，防止同一 native handle 被并发调用。

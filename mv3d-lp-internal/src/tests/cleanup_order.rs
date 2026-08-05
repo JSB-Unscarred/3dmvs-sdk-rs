@@ -14,8 +14,7 @@ fn close_is_attempted_even_when_cleanup_stop_fails() {
     mock.push_close(Err(DriverError::Status(0x8006_0000_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    let measurement = device.start().unwrap();
-    std::mem::forget(measurement);
+    device.start().unwrap();
 
     let error = device.close().unwrap_err();
     assert!(error.stop.is_some());
@@ -44,8 +43,7 @@ fn failed_close_does_not_block_a_healthy_device() {
     let (runtime, _) = active_runtime(&mock);
     let first = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
     let mut second = runtime.open_by_serial(b"SECOND").unwrap();
-    let measurement = second.start().unwrap();
-    std::mem::forget(measurement);
+    second.start().unwrap();
 
     assert!(first.close().is_err());
     second.clear_buffer().unwrap();
@@ -113,12 +111,13 @@ fn explicit_close_is_not_repeated_by_drop() {
     );
 }
 
-// 验证遗忘 Device 时拒绝 finalize，防止 SDK 在活跃 handle 存续期间卸载。
+// 验证遗忘 active Device 时拒绝 finalize，防止 SDK 在采集 handle 存续期间卸载。
 #[test]
 fn forgotten_device_prevents_finalize() {
     let mock = MockDriver::new();
     let (runtime, gate) = active_runtime(&mock);
-    let device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    device.start().unwrap();
     std::mem::forget(device);
 
     assert!(matches!(
@@ -142,7 +141,7 @@ fn implicit_drop_has_one_exact_stop_close_finalize_sequence() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    drop(device.start().unwrap());
+    device.start().unwrap();
     drop(device);
     drop(runtime);
 
@@ -193,8 +192,7 @@ fn failed_cleanup_stop_still_closes_and_a_successful_close_allows_finalize() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    let measurement = device.start().unwrap();
-    std::mem::forget(measurement);
+    device.start().unwrap();
     mock.fail_next(
         FfiOp::StopMeasure,
         DriverError::Status(0x8006_0003_u32 as i32),
@@ -297,8 +295,7 @@ fn cleanup_status_failures_never_unwind_from_drop() {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         let (runtime, _) = active_runtime(&mock);
         let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-        let measurement = device.start().unwrap();
-        std::mem::forget(measurement);
+        device.start().unwrap();
         drop(device);
         drop(runtime);
     }));

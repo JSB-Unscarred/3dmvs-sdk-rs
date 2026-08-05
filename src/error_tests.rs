@@ -173,6 +173,16 @@ fn invalid_states_map_the_operation_and_expected_state() {
             "measuring",
         ),
         (
+            InternalOperation::StopMeasure,
+            Operation::StopMeasure,
+            "measuring or callback measuring",
+        ),
+        (
+            InternalOperation::SoftTrigger,
+            Operation::SoftTrigger,
+            "measuring or callback measuring",
+        ),
+        (
             InternalOperation::GetFileAccessProgress,
             Operation::GetFileAccessProgress,
             "transferring",

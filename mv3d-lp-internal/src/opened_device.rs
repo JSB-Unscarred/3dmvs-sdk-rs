@@ -11,7 +11,7 @@ use crate::callback::{
 };
 use crate::driver::Handle;
 use crate::error::{Error, InvalidInput, Operation};
-use crate::file_transfer::{FileProgress, FileTransferDirection, FileTransferStatus};
+use crate::file_transfer::{FileProgress, FileTransferStatus};
 use crate::frame::FrameRecord;
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 use crate::runtime::RuntimeInner;
@@ -39,7 +39,7 @@ impl DeviceState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FaultOrigin {
-    MeasurementStopUncertain,
+    AcquisitionStopUncertain,
     FileTransferStartUncertain,
 }
 
@@ -103,7 +103,7 @@ pub struct Device<'runtime> {
     runtime: &'runtime RuntimeInner,
     handle: Option<Handle>,
     state: DevicePhase,
-    pending_transfer: Option<ActiveFileTransfer>,
+    pending_transfer: Option<FileNameBundle>,
     image_registration: Option<CallbackRegistration>,
     exception_registration: Option<CallbackRegistration>,
 }
@@ -124,56 +124,89 @@ impl<'runtime> Device<'runtime> {
         self.state.observable()
     }
 
-    pub fn start(&mut self) -> Result<Measurement<'_>, Error> {
+    /// Starts pull acquisition while keeping the session state on the device.
+    pub fn start(&mut self) -> Result<(), Error> {
         self.require_state(Operation::StartMeasure, &[DeviceState::Open])?;
         self.runtime.call(Operation::StartMeasure, |driver| {
             driver.start(self.handle())
         })?;
         self.state = DevicePhase::Measuring;
-        let handle = self.handle();
-        Ok(Measurement {
-            runtime: self.runtime,
-            handle,
-            state: &mut self.state,
-        })
+        Ok(())
     }
 
-    pub fn start_callback(
-        &mut self,
-        sink: FrameCallbackSink,
-    ) -> Result<CallbackMeasurement<'_>, Error> {
+    /// Starts callback acquisition and retains the registration until stop or close.
+    pub fn start_callback(&mut self, sink: FrameCallbackSink) -> Result<(), Error> {
         const OPERATION: Operation = Operation::RegisterImageDataCallback;
         self.require_state(OPERATION, &[DeviceState::Open])?;
 
         let registration = CallbackRegistration::image(sink)?;
-        let register = self.runtime.call(OPERATION, |driver| {
+        self.runtime.call(OPERATION, |driver| {
             driver.register_image_callback(self.handle(), registration.cookie())
-        });
-        if let Err(error) = register {
-            drop(registration);
-            return Err(error);
-        }
-
-        let start = self.runtime.call(Operation::StartMeasure, |driver| {
+        })?;
+        self.runtime.call(Operation::StartMeasure, |driver| {
             driver.start(self.handle())
-        });
-        match start {
+        })?;
+        self.image_registration = Some(registration);
+        self.state = DevicePhase::CallbackMeasuring;
+        Ok(())
+    }
+
+    /// Stops the active acquisition; callback delivery is revoked and drained first.
+    pub fn stop(&mut self) -> Result<(), Error> {
+        self.require_state(
+            Operation::StopMeasure,
+            &[DeviceState::Measuring, DeviceState::CallbackMeasuring],
+        )?;
+
+        drop(self.image_registration.take());
+        let result = self
+            .runtime
+            .call(Operation::StopMeasure, |driver| driver.stop(self.handle()));
+        match result {
             Ok(()) => {
-                self.state = DevicePhase::CallbackMeasuring;
-                let handle = self.handle();
-                self.image_registration = Some(registration);
-                Ok(CallbackMeasurement {
-                    runtime: self.runtime,
-                    handle,
-                    state: &mut self.state,
-                    registration: &mut self.image_registration,
-                })
+                self.state = DevicePhase::Open;
+                Ok(())
             }
             Err(error) => {
-                drop(registration);
+                self.state = DevicePhase::Faulted(FaultOrigin::AcquisitionStopUncertain);
                 Err(error)
             }
         }
+    }
+
+    /// Issues a software trigger only while pull or callback acquisition is active.
+    pub fn soft_trigger(&mut self) -> Result<(), Error> {
+        self.require_state(
+            Operation::SoftTrigger,
+            &[DeviceState::Measuring, DeviceState::CallbackMeasuring],
+        )?;
+        self.runtime.call(Operation::SoftTrigger, |driver| {
+            driver.soft_trigger(self.handle())
+        })
+    }
+
+    /// Returns one pull frame; callback acquisition uses its registered sink instead.
+    pub fn get_image(&mut self, timeout_ms: u32) -> Result<FrameRecord, Error> {
+        self.require_state(Operation::GetImage, &[DeviceState::Measuring])?;
+        if timeout_ms == u32::MAX {
+            return Err(Error::InvalidInput {
+                operation: Operation::GetImage,
+                kind: InvalidInput::TimeoutTooLong {
+                    maximum_millis: u32::MAX - 1,
+                    actual_millis: u128::from(timeout_ms),
+                },
+            });
+        }
+        self.runtime.call(Operation::GetImage, |driver| {
+            driver.get_image(self.handle(), timeout_ms)
+        })
+    }
+
+    /// Returns callback counters while callback acquisition owns a live registration.
+    pub fn image_callback_stats(&self) -> Option<CallbackStatsRecord> {
+        self.image_registration
+            .as_ref()
+            .map(CallbackRegistration::stats)
     }
 
     pub fn register_exception_callback(
@@ -184,25 +217,22 @@ impl<'runtime> Device<'runtime> {
         self.require_state(OPERATION, &[DeviceState::Open])?;
 
         let registration = CallbackRegistration::exception(sink)?;
-        let register = self.runtime.call(OPERATION, |driver| {
+        self.runtime.call(OPERATION, |driver| {
             driver.register_exception_callback(self.handle(), registration.cookie())
-        });
-        match register {
-            Ok(()) => {
-                drop(self.exception_registration.replace(registration));
-                Ok(())
-            }
-            Err(error) => {
-                drop(registration);
-                Err(error)
-            }
-        }
+        })?;
+        drop(self.exception_registration.replace(registration));
+        Ok(())
     }
 
     pub fn exception_callback_stats(&self) -> Option<CallbackStatsRecord> {
         self.exception_registration
             .as_ref()
             .map(CallbackRegistration::stats)
+    }
+
+    /// Revokes exception delivery and drains callbacks already using the sink.
+    pub fn disable_exception_delivery(&mut self) {
+        drop(self.exception_registration.take());
     }
 
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
@@ -240,77 +270,55 @@ impl<'runtime> Device<'runtime> {
         })
     }
 
+    /// Starts a download and retains both names until completion or device close.
     pub fn download_file(
         &mut self,
         device_file_name: &[u8],
         user_file_name: &[u8],
-    ) -> Result<FileTransfer<'_>, Error> {
-        self.begin_file_transfer(
-            Operation::FileAccessRead,
-            FileTransferDirection::DeviceToHost,
-            user_file_name,
-            device_file_name,
-        )
+    ) -> Result<(), Error> {
+        self.begin_file_transfer(Operation::FileAccessRead, user_file_name, device_file_name)
     }
 
+    /// Starts an upload and retains both names until completion or device close.
     pub fn upload_file(
         &mut self,
         user_file_name: &[u8],
         device_file_name: &[u8],
-    ) -> Result<FileTransfer<'_>, Error> {
-        self.begin_file_transfer(
-            Operation::FileAccessWrite,
-            FileTransferDirection::HostToDevice,
-            user_file_name,
-            device_file_name,
-        )
+    ) -> Result<(), Error> {
+        self.begin_file_transfer(Operation::FileAccessWrite, user_file_name, device_file_name)
     }
 
+    /// Stores native filename pointers before entering the asynchronous SDK call.
     fn begin_file_transfer(
         &mut self,
         operation: Operation,
-        direction: FileTransferDirection,
         user_file_name: &[u8],
         device_file_name: &[u8],
-    ) -> Result<FileTransfer<'_>, Error> {
+    ) -> Result<(), Error> {
         self.require_state(operation, &[DeviceState::Open])?;
         let user_file_name = validated_file_name(operation, user_file_name)?;
         let device_file_name = validated_file_name(operation, device_file_name)?;
-        self.pending_transfer = Some(ActiveFileTransfer::new(
-            user_file_name,
-            device_file_name,
-            direction,
-        ));
+        self.pending_transfer = Some(FileNameBundle::new(user_file_name, device_file_name));
 
         let pending = self
             .pending_transfer
             .as_ref()
             .expect("the transfer names were stored before the SDK call");
         let handle = self.handle();
-        let result = self.runtime.call(operation, |driver| match direction {
-            FileTransferDirection::DeviceToHost => driver.file_access_read(
-                handle,
-                &pending.names.user_file_name,
-                &pending.names.device_file_name,
-            ),
-            FileTransferDirection::HostToDevice => driver.file_access_write(
-                handle,
-                &pending.names.user_file_name,
-                &pending.names.device_file_name,
-            ),
+        let result = self.runtime.call(operation, |driver| match operation {
+            Operation::FileAccessRead => {
+                driver.file_access_read(handle, &pending.user_file_name, &pending.device_file_name)
+            }
+            Operation::FileAccessWrite => {
+                driver.file_access_write(handle, &pending.user_file_name, &pending.device_file_name)
+            }
+            _ => unreachable!("begin_file_transfer accepts only file access operations"),
         });
 
         match result {
             Ok(()) => {
                 self.state = DevicePhase::Transferring;
-                let handle = self.handle();
-                Ok(FileTransfer {
-                    runtime: self.runtime,
-                    handle,
-                    state: &mut self.state,
-                    pending_transfer: &mut self.pending_transfer,
-                    direction,
-                })
+                Ok(())
             }
             Err(start) => {
                 self.state = DevicePhase::Faulted(FaultOrigin::FileTransferStartUncertain);
@@ -319,19 +327,68 @@ impl<'runtime> Device<'runtime> {
         }
     }
 
-    pub fn active_file_transfer(&mut self) -> Option<FileTransfer<'_>> {
-        if self.state != DevicePhase::Transferring {
-            return None;
+    /// Returns the current native file-transfer progress.
+    pub fn file_transfer_progress(&mut self) -> Result<FileTransferStatus, Error> {
+        const OPERATION: Operation = Operation::GetFileAccessProgress;
+        self.require_state(OPERATION, &[DeviceState::Transferring])?;
+
+        let raw = self.runtime.call(OPERATION, |driver| {
+            driver.file_access_progress(self.handle())
+        })?;
+        if raw.completed < 0 || raw.total < 0 {
+            return Err(Error::ContractViolation {
+                operation: OPERATION,
+                kind: crate::error::ContractViolation::NegativeFileProgress {
+                    completed: raw.completed,
+                    total: raw.total,
+                },
+            });
         }
-        let direction = self.pending_transfer.as_ref()?.direction;
-        let handle = self.handle();
-        Some(FileTransfer {
-            runtime: self.runtime,
-            handle,
-            state: &mut self.state,
-            pending_transfer: &mut self.pending_transfer,
-            direction,
-        })
+        let progress = FileProgress {
+            completed: raw.completed as u64,
+            total: raw.total as u64,
+        };
+        if progress.completed > progress.total {
+            return Err(Error::ContractViolation {
+                operation: OPERATION,
+                kind: crate::error::ContractViolation::FileProgressExceedsTotal {
+                    completed: progress.completed,
+                    total: progress.total,
+                },
+            });
+        }
+
+        if progress.total > 0 && progress.completed == progress.total {
+            self.pending_transfer
+                .take()
+                .expect("active transfer retains its file names until completion is observed");
+            self.state = DevicePhase::Open;
+            Ok(FileTransferStatus::Completed(progress))
+        } else {
+            Ok(FileTransferStatus::Running(progress))
+        }
+    }
+
+    /// Polls the active transfer until completion or a local timeout.
+    pub fn wait_file_transfer(
+        &mut self,
+        poll_interval: Duration,
+        timeout: Duration,
+    ) -> Result<Option<FileProgress>, Error> {
+        let started = Instant::now();
+        let poll_interval = poll_interval.max(Duration::from_millis(1));
+        loop {
+            match self.file_transfer_progress()? {
+                FileTransferStatus::Completed(progress) => return Ok(Some(progress)),
+                FileTransferStatus::Running(_) => {}
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                return Ok(None);
+            }
+            let remaining = timeout.saturating_sub(elapsed);
+            std::thread::sleep(poll_interval.min(remaining));
+        }
     }
 
     pub fn close(mut self) -> Result<(), DeviceCleanupError> {
@@ -342,7 +399,7 @@ impl<'runtime> Device<'runtime> {
     pub(crate) fn retained_file_name_addresses_for_test(&self) -> Vec<(usize, usize)> {
         self.pending_transfer
             .iter()
-            .map(|pending| pending.names.addresses())
+            .map(FileNameBundle::addresses)
             .collect()
     }
 
@@ -357,7 +414,7 @@ impl<'runtime> Device<'runtime> {
             self.state,
             DevicePhase::Measuring
                 | DevicePhase::CallbackMeasuring
-                | DevicePhase::Faulted(FaultOrigin::MeasurementStopUncertain)
+                | DevicePhase::Faulted(FaultOrigin::AcquisitionStopUncertain)
         ) {
             self.runtime
                 .call(Operation::StopMeasure, |driver| driver.stop(handle))
@@ -372,7 +429,12 @@ impl<'runtime> Device<'runtime> {
             .err()
             .map(Box::new);
 
-        self.pending_transfer.take();
+        if let Some(names) = self.pending_transfer.take() {
+            if close.is_some() {
+                // Close 失败时原生异步读取是否结束仍不确定；保留字符串以防悬空指针。
+                std::mem::forget(names);
+            }
+        }
 
         if stop.is_none() && close.is_none() {
             Ok(())
@@ -397,24 +459,6 @@ impl<'runtime> Device<'runtime> {
                 operation,
                 state: self.state.as_str(),
             })
-        }
-    }
-}
-
-struct ActiveFileTransfer {
-    names: FileNameBundle,
-    direction: FileTransferDirection,
-}
-
-impl ActiveFileTransfer {
-    fn new(
-        user_file_name: CString,
-        device_file_name: CString,
-        direction: FileTransferDirection,
-    ) -> Self {
-        Self {
-            names: FileNameBundle::new(user_file_name, device_file_name),
-            direction,
         }
     }
 }
@@ -464,94 +508,6 @@ pub(crate) fn take_file_name_lifetimes_for_test() -> Vec<Weak<()>> {
     FILE_NAME_LIFETIMES.with(|lifetimes| std::mem::take(&mut *lifetimes.borrow_mut()))
 }
 
-/// An asynchronous file transfer that exclusively borrows its device state.
-///
-/// Unique ownership of the transfer may move between threads. It remains `!Sync`, so polling and
-/// device access cannot run concurrently. Dropping this guard does not cancel the native transfer;
-/// [`Device::active_file_transfer`] can resume progress polling.
-#[must_use = "dropping FileTransfer does not cancel the device transfer"]
-pub struct FileTransfer<'device> {
-    runtime: &'device RuntimeInner,
-    handle: Handle,
-    state: &'device mut DevicePhase,
-    pending_transfer: &'device mut Option<ActiveFileTransfer>,
-    direction: FileTransferDirection,
-}
-
-impl FileTransfer<'_> {
-    pub fn direction(&self) -> FileTransferDirection {
-        self.direction
-    }
-
-    pub fn progress(&mut self) -> Result<FileTransferStatus, Error> {
-        const OPERATION: Operation = Operation::GetFileAccessProgress;
-
-        if *self.state != DevicePhase::Transferring {
-            return Err(Error::InvalidState {
-                operation: OPERATION,
-                state: self.state.as_str(),
-            });
-        }
-
-        let raw = self
-            .runtime
-            .call(OPERATION, |driver| driver.file_access_progress(self.handle))?;
-        if raw.completed < 0 || raw.total < 0 {
-            return Err(Error::ContractViolation {
-                operation: OPERATION,
-                kind: crate::error::ContractViolation::NegativeFileProgress {
-                    completed: raw.completed,
-                    total: raw.total,
-                },
-            });
-        }
-        let progress = FileProgress {
-            completed: raw.completed as u64,
-            total: raw.total as u64,
-        };
-        if progress.completed > progress.total {
-            return Err(Error::ContractViolation {
-                operation: OPERATION,
-                kind: crate::error::ContractViolation::FileProgressExceedsTotal {
-                    completed: progress.completed,
-                    total: progress.total,
-                },
-            });
-        }
-
-        if progress.total > 0 && progress.completed == progress.total {
-            self.pending_transfer
-                .take()
-                .expect("active transfer retains its file names until completion is observed");
-            *self.state = DevicePhase::Open;
-            Ok(FileTransferStatus::Completed(progress))
-        } else {
-            Ok(FileTransferStatus::Running(progress))
-        }
-    }
-
-    pub fn wait_timeout(
-        &mut self,
-        poll_interval: Duration,
-        timeout: Duration,
-    ) -> Result<Option<FileProgress>, Error> {
-        let started = Instant::now();
-        let poll_interval = poll_interval.max(Duration::from_millis(1));
-        loop {
-            match self.progress()? {
-                FileTransferStatus::Completed(progress) => return Ok(Some(progress)),
-                FileTransferStatus::Running(_) => {}
-            }
-            let elapsed = started.elapsed();
-            if elapsed >= timeout {
-                return Ok(None);
-            }
-            let remaining = timeout.saturating_sub(elapsed);
-            std::thread::sleep(poll_interval.min(remaining));
-        }
-    }
-}
-
 fn validated_file_name(operation: Operation, bytes: &[u8]) -> Result<CString, Error> {
     if bytes.is_empty() {
         return Err(Error::InvalidInput {
@@ -563,163 +519,6 @@ fn validated_file_name(operation: Operation, bytes: &[u8]) -> Result<CString, Er
         operation,
         kind: InvalidInput::InteriorNul,
     })
-}
-
-/// An active native-callback acquisition session.
-///
-/// This guard deliberately does not expose pull acquisition or buffer clearing. Its callback
-/// registration is revoked and drained before `MV3D_LP_StopMeasure` is called.
-pub struct CallbackMeasurement<'device> {
-    runtime: &'device RuntimeInner,
-    handle: Handle,
-    state: &'device mut DevicePhase,
-    registration: &'device mut Option<CallbackRegistration>,
-}
-
-impl CallbackMeasurement<'_> {
-    pub fn state(&self) -> DeviceState {
-        self.state.observable()
-    }
-
-    pub fn soft_trigger(&mut self) -> Result<(), Error> {
-        self.runtime.call(Operation::SoftTrigger, |driver| {
-            driver.soft_trigger(self.handle)
-        })
-    }
-
-    pub fn callback_stats(&self) -> CallbackStatsRecord {
-        self.registration
-            .as_ref()
-            .map(CallbackRegistration::stats)
-            .unwrap_or_default()
-    }
-
-    pub fn stop(mut self) -> Result<(), Error> {
-        self.stop_inner()
-    }
-
-    fn stop_inner(&mut self) -> Result<(), Error> {
-        self.deactivate_callback();
-        let result = self
-            .runtime
-            .call(Operation::StopMeasure, |driver| driver.stop(self.handle));
-        match result {
-            Ok(()) => {
-                *self.state = DevicePhase::Open;
-                Ok(())
-            }
-            Err(error) => {
-                *self.state = DevicePhase::Faulted(FaultOrigin::MeasurementStopUncertain);
-                Err(error)
-            }
-        }
-    }
-
-    fn deactivate_callback(&mut self) {
-        drop(self.registration.take());
-    }
-}
-
-impl Drop for CallbackMeasurement<'_> {
-    fn drop(&mut self) {
-        if *self.state == DevicePhase::CallbackMeasuring {
-            let _ = self.stop_inner();
-        } else {
-            self.deactivate_callback();
-        }
-    }
-}
-
-/// A measuring session that exclusively borrows its device state.
-///
-/// Dropping the value makes a best-effort call to `MV3D_LP_StopMeasure`.
-pub struct Measurement<'device> {
-    runtime: &'device RuntimeInner,
-    handle: Handle,
-    state: &'device mut DevicePhase,
-}
-
-impl Measurement<'_> {
-    pub fn state(&self) -> DeviceState {
-        self.state.observable()
-    }
-
-    pub fn soft_trigger(&mut self) -> Result<(), Error> {
-        self.runtime.call(Operation::SoftTrigger, |driver| {
-            driver.soft_trigger(self.handle)
-        })
-    }
-
-    pub fn clear_buffer(&mut self) -> Result<(), Error> {
-        self.runtime.call(Operation::ClearDataBuffer, |driver| {
-            driver.clear_buffer(self.handle)
-        })
-    }
-
-    pub fn get_image(&mut self, timeout_ms: u32) -> Result<FrameRecord, Error> {
-        if timeout_ms == u32::MAX {
-            return Err(Error::InvalidInput {
-                operation: Operation::GetImage,
-                kind: InvalidInput::TimeoutTooLong {
-                    maximum_millis: u32::MAX - 1,
-                    actual_millis: u128::from(timeout_ms),
-                },
-            });
-        }
-        self.runtime.call(Operation::GetImage, |driver| {
-            driver.get_image(self.handle, timeout_ms)
-        })
-    }
-
-    pub fn get_parameter(&mut self, key: &[u8]) -> Result<ParameterRecord, Error> {
-        let key = RuntimeInner::parameter_key(Operation::GetParam, key)?;
-        self.runtime.call(Operation::GetParam, |driver| {
-            driver.get_parameter(self.handle, &key)
-        })
-    }
-
-    pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValueRecord) -> Result<(), Error> {
-        validate_parameter_value(Operation::SetParam, value)?;
-        let key = RuntimeInner::parameter_key(Operation::SetParam, key)?;
-        self.runtime.call(Operation::SetParam, |driver| {
-            driver.set_parameter(self.handle, &key, value)
-        })
-    }
-
-    pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
-        let key = RuntimeInner::parameter_key(Operation::Execute, key)?;
-        self.runtime.call(Operation::Execute, |driver| {
-            driver.execute(self.handle, &key)
-        })
-    }
-
-    pub fn stop(mut self) -> Result<(), Error> {
-        self.stop_inner()
-    }
-
-    fn stop_inner(&mut self) -> Result<(), Error> {
-        let result = self
-            .runtime
-            .call(Operation::StopMeasure, |driver| driver.stop(self.handle));
-        match result {
-            Ok(()) => {
-                *self.state = DevicePhase::Open;
-                Ok(())
-            }
-            Err(error) => {
-                *self.state = DevicePhase::Faulted(FaultOrigin::MeasurementStopUncertain);
-                Err(error)
-            }
-        }
-    }
-}
-
-impl Drop for Measurement<'_> {
-    fn drop(&mut self) {
-        if *self.state == DevicePhase::Measuring {
-            let _ = self.stop_inner();
-        }
-    }
 }
 
 fn validate_parameter_value(

@@ -1,9 +1,9 @@
 use std::sync::mpsc::Receiver;
 
 use mv3d_lp::{
-    CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Device, DeviceException,
-    DeviceExceptionType, DeviceInfo, FileProgress, FileTransfer, ImageProcessor, ImageRef,
-    IpConfiguration, Measurement, OwnedFrame, OwnedImage, Parameter, ParameterValue, Sdk, SdkText,
+    CallbackOptions, CallbackStats, CallbackWorker, Device, DeviceException, DeviceExceptionType,
+    DeviceInfo, FileProgress, FileTransferStatus, ImageProcessor, ImageRef, IpConfiguration,
+    OwnedFrame, OwnedImage, Parameter, ParameterValue, Sdk, SdkText,
 };
 
 macro_rules! assert_not_impl {
@@ -26,24 +26,18 @@ macro_rules! assert_not_impl {
 assert_not_impl!(Sdk: Send);
 assert_not_impl!(Sdk: Sync);
 assert_not_impl!(Device<'static>: Sync);
-assert_not_impl!(Measurement<'static>: Sync);
-assert_not_impl!(CallbackMeasurement<'static>: Sync);
-assert_not_impl!(FileTransfer<'static>: Sync);
 assert_not_impl!(ImageProcessor<'static>: Send);
 assert_not_impl!(ImageProcessor<'static>: Sync);
 assert_not_impl!(OwnedFrame: Clone);
 assert_not_impl!(OwnedImage: Clone);
 assert_not_impl!(Receiver<OwnedFrame>: Sync);
 
-// 验证设备及活动 guard 可转移线程且保持独占访问，防止跨线程并发调用同一 handle。
+// 验证设备可转移线程且保持独占访问，防止跨线程并发调用同一 handle。
 #[test]
-fn public_device_owners_are_send_but_not_sync() {
+fn public_device_is_send_but_not_sync() {
     fn assert_send<T: Send>() {}
 
     assert_send::<Device<'static>>();
-    assert_send::<Measurement<'static>>();
-    assert_send::<CallbackMeasurement<'static>>();
-    assert_send::<FileTransfer<'static>>();
 }
 
 // 验证 owned 数据可安全跨线程传递与共享，防止 callback 输出携带线程绑定状态。
@@ -58,6 +52,7 @@ fn owned_frames_can_move_and_be_shared_between_threads() {
     assert_send_sync::<DeviceException>();
     assert_send_sync::<DeviceExceptionType>();
     assert_send_sync::<FileProgress>();
+    assert_send_sync::<FileTransferStatus>();
     assert_send_sync::<ImageRef<'static>>();
     assert_send_sync::<IpConfiguration>();
     assert_send_sync::<Parameter>();

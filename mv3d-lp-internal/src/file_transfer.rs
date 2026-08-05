@@ -11,12 +11,6 @@ pub struct FileProgress {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FileTransferDirection {
-    DeviceToHost,
-    HostToDevice,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileTransferStatus {
     Running(FileProgress),
     Completed(FileProgress),

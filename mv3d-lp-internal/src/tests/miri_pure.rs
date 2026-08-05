@@ -77,8 +77,7 @@ fn fake_backend_exercises_drop_cleanup_without_native_ffi() {
 
     {
         let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-        let measurement = device.start().unwrap();
-        drop(measurement);
+        device.start().unwrap();
     }
     runtime.shutdown().unwrap();
 

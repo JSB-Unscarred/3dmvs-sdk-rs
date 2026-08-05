@@ -167,9 +167,8 @@ pub struct CallbackWorker {
 }
 
 impl CallbackWorker {
-    /// Spawns a named Rust thread that invokes `handler` serially for events
-    /// received from `receiver`.
-    pub fn spawn<T, F>(receiver: Receiver<T>, mut handler: F) -> io::Result<Self>
+    /// Spawns the worker used by the device callback convenience methods.
+    pub(crate) fn spawn<T, F>(receiver: Receiver<T>, mut handler: F) -> io::Result<Self>
     where
         T: Send + 'static,
         F: FnMut(T) + Send + 'static,
@@ -197,9 +196,9 @@ impl CallbackWorker {
 
     /// Waits for the channel to close or the handler to panic.
     ///
-    /// A live callback registration retains a channel sender. Stop or drop the corresponding
-    /// callback measurement before joining an image worker; replace the exception registration or
-    /// close its device before joining an exception worker.
+    /// A live callback registration retains a channel sender. Call [`crate::Device::stop`] before
+    /// joining an image worker; call [`crate::Device::disable_exception_delivery`] before joining
+    /// an exception worker.
     ///
     /// This method should not be called while holding an SDK call lock. It can
     /// wait indefinitely while a sender remains live or when a user handler does not return.

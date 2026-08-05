@@ -30,9 +30,9 @@
 # 索引
 
 - 生命周期与时序图总览：[生命周期与时序图.md](生命周期与时序图.md)
-- 标准生命周期与 pull 采集：[标准生命周期与-pull-采集.md](生命周期与时序图/标准生命周期与-pull-采集.md)
-- callback 采集与停止：[callback-采集与停止.md](生命周期与时序图/callback-采集与停止.md)
-- 文件上传与下载：[文件上传与下载.md](生命周期与时序图/文件上传与下载.md)
+- 标准生命周期与 pull 采集：[标准生命周期与-pull-采集.md](时序图/标准生命周期与-pull-采集.md)
+- callback 采集与停止：[callback-采集与停止.md](时序图/callback-采集与停止.md)
+- 文件上传与下载：[文件上传与下载.md](时序图/文件上传与下载.md)
 - SDK的环境变量： MV3DLP_DEV_ENV
 - SDK说明文档：C:\Program Files (x86)\3DMVS\Development\Documentations\3D激光轮廓传感器SDK开发指南V1.3.2（C）.chm
 - SDK的头文件目录：C:\Program Files (x86)\3DMVS\Development\Includes

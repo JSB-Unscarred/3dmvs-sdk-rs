@@ -1,11 +1,12 @@
 use std::net::Ipv4Addr;
 use std::num::NonZeroUsize;
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
 
 use mv3d_lp::{
-    CallbackMeasurement, CallbackOptions, CallbackStats, CallbackWorker, Device, DeviceException,
-    DeviceExceptionType, DeviceState, FileTransfer, ImageFileFormat, ImageProcessor, ImageType,
-    Measurement, OwnedFrame, Result, Sdk, SdkText,
+    CallbackOptions, CallbackStats, CallbackWorker, Device, DeviceException, DeviceExceptionType,
+    DeviceState, FileProgress, FileTransferStatus, ImageFileFormat, ImageProcessor, ImageType,
+    OwnedFrame, Result, Sdk, SdkText,
 };
 
 // 验证公开生命周期与控制函数保持安全签名，防止借用关系或所有权约定退化。
@@ -18,18 +19,16 @@ fn public_lifecycle_and_control_methods_have_safe_signatures() {
         Sdk::open_by_serial;
     let _: fn(Sdk) -> Result<()> = Sdk::shutdown;
     let _: for<'sdk> fn(&'sdk Sdk) -> ImageProcessor<'sdk> = Sdk::image_processor;
-    let _ = Device::start;
-    let _: for<'device> fn(
-        &'device mut Device<'static>,
-        CallbackOptions,
-    ) -> Result<(CallbackMeasurement<'device>, Receiver<OwnedFrame>)> =
+    let _: fn(&Device<'static>) -> DeviceState = Device::<'static>::state;
+    let _: fn(&mut Device<'static>) -> Result<()> = Device::<'static>::start;
+    let _: fn(&mut Device<'static>, Duration) -> Result<OwnedFrame> = Device::<'static>::get_image;
+    let _: fn(&mut Device<'static>) -> Result<()> = Device::<'static>::soft_trigger;
+    let _: fn(&mut Device<'static>) -> Result<()> = Device::<'static>::stop;
+    let _: fn(&mut Device<'static>, CallbackOptions) -> Result<Receiver<OwnedFrame>> =
         Device::<'static>::start_receiving;
-    let _: for<'device> fn(
-        &'device mut Device<'static>,
-        CallbackOptions,
-        fn(OwnedFrame),
-    ) -> Result<(CallbackMeasurement<'device>, CallbackWorker)> =
+    let _: fn(&mut Device<'static>, CallbackOptions, fn(OwnedFrame)) -> Result<CallbackWorker> =
         Device::<'static>::start_with_callback::<fn(OwnedFrame)>;
+    let _: fn(&Device<'static>) -> Option<CallbackStats> = Device::<'static>::image_callback_stats;
     let _: for<'device> fn(
         &'device mut Device<'static>,
         CallbackOptions,
@@ -39,29 +38,17 @@ fn public_lifecycle_and_control_methods_have_safe_signatures() {
         CallbackOptions,
         fn(DeviceException),
     ) -> Result<CallbackWorker> = Device::<'static>::on_exception::<fn(DeviceException)>;
+    let _: fn(&Device<'static>) -> Option<CallbackStats> =
+        Device::<'static>::exception_callback_stats;
+    let _: fn(&mut Device<'static>) = Device::<'static>::disable_exception_delivery;
     let _ = Device::clear_buffer;
-    let _: fn(&CallbackMeasurement<'static>) -> DeviceState = CallbackMeasurement::<'static>::state;
-    let _: fn(&mut CallbackMeasurement<'static>) -> Result<()> =
-        CallbackMeasurement::<'static>::soft_trigger;
-    let _: fn(&CallbackMeasurement<'static>) -> CallbackStats =
-        CallbackMeasurement::<'static>::callback_stats;
-    let _: fn(CallbackMeasurement<'static>) -> Result<()> = CallbackMeasurement::<'static>::stop;
-    let _ = Measurement::get_image;
-    let _ = Measurement::soft_trigger;
-    let _ = Measurement::clear_buffer;
-    let _ = Measurement::stop;
-    let _: for<'device> fn(
-        &'device mut Device<'static>,
-        &[u8],
-        &[u8],
-    ) -> Result<FileTransfer<'device>> = Device::<'static>::download_file;
-    let _: for<'device> fn(
-        &'device mut Device<'static>,
-        &[u8],
-        &[u8],
-    ) -> Result<FileTransfer<'device>> = Device::<'static>::upload_file;
-    let _: for<'device> fn(&'device mut Device<'static>) -> Option<FileTransfer<'device>> =
-        Device::<'static>::active_file_transfer;
+    let _: fn(&mut Device<'static>, &[u8], &[u8]) -> Result<()> = Device::<'static>::download_file;
+    let _: fn(&mut Device<'static>, &[u8], &[u8]) -> Result<()> = Device::<'static>::upload_file;
+    let _: fn(&mut Device<'static>) -> Result<FileTransferStatus> =
+        Device::<'static>::file_transfer_progress;
+    let _: fn(&mut Device<'static>, Duration, Duration) -> Result<Option<FileProgress>> =
+        Device::<'static>::wait_file_transfer;
+    let _: fn(Device<'static>) -> Result<()> = Device::<'static>::close;
     let _ = ImageProcessor::depth_to_point_cloud;
     let _ = ImageProcessor::depth_to_round_point_cloud;
     let _ = ImageProcessor::convert;

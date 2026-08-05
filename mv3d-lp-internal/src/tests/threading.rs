@@ -31,9 +31,9 @@ fn moved_device_supports_a_complete_pull_acquisition() {
                     ParameterRecord::Bool(true)
                 );
 
-                let mut measurement = device.start().unwrap();
-                assert_eq!(measurement.get_image(37).unwrap().data, [1, 2, 3]);
-                measurement.stop().unwrap();
+                device.start().unwrap();
+                assert_eq!(device.get_image(37).unwrap().data, [1, 2, 3]);
+                device.stop().unwrap();
                 device.close().unwrap();
             })
             .join()
@@ -70,7 +70,7 @@ fn moved_device_cleans_up_on_target_thread_panic() {
             scope
                 .spawn(move || {
                     let mut device = device;
-                    let _measurement = device.start().unwrap();
+                    device.start().unwrap();
                     panic!("intentional target-thread panic");
                 })
                 .join()
@@ -86,30 +86,31 @@ fn moved_device_cleans_up_on_target_thread_panic() {
     runtime.shutdown().unwrap();
 }
 
-// 验证移动 Measurement 后显式 stop 与 Drop 都归还设备，防止线程 handoff 破坏 guard。
+// 验证 active Device 可移动后显式 stop 或直接 Drop，防止线程 handoff 破坏清理顺序。
 #[test]
-fn moved_measurement_supports_explicit_stop_and_drop() {
+fn moved_active_device_supports_explicit_stop_and_drop() {
     for explicit_stop in [true, false] {
         let mock = MockDriver::new();
         let (runtime, _) = active_runtime(&mock);
         let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
+        device.start().unwrap();
         thread::scope(|scope| {
-            let measurement = device.start().unwrap();
             scope
                 .spawn(move || {
+                    let mut device = device;
                     if explicit_stop {
-                        measurement.stop().unwrap();
+                        device.stop().unwrap();
+                        assert_eq!(device.state(), DeviceState::Open);
+                        device.close().unwrap();
                     } else {
-                        drop(measurement);
+                        drop(device);
                     }
                 })
                 .join()
                 .unwrap();
         });
 
-        assert_eq!(device.state(), DeviceState::Open);
-        device.close().unwrap();
         runtime.shutdown().unwrap();
         assert_eq!(
             mock.logs()
@@ -121,9 +122,9 @@ fn moved_measurement_supports_explicit_stop_and_drop() {
     }
 }
 
-// 验证移动 CallbackMeasurement 停止前排空在途 callback，防止 sink 仍执行时停止 SDK。
+// 验证移动 active Device 停止前排空在途 callback，防止 sink 仍执行时停止 SDK。
 #[test]
-fn moved_callback_measurement_drains_an_in_flight_callback_before_stop() {
+fn moved_callback_device_drains_an_in_flight_callback_before_stop() {
     let mock = MockDriver::new();
     let stop_entered = Arc::new(AtomicBool::new(false));
     mock.set_stop_entered(Arc::clone(&stop_entered));
@@ -143,18 +144,20 @@ fn moved_callback_measurement_drains_an_in_flight_callback_before_stop() {
         }
         CallbackDelivery::Delivered
     });
-    let measurement = device.start_callback(sink).unwrap();
+    device.start_callback(sink).unwrap();
     let cookie = only_cookie(mock.image_callback_cookies());
     let stop_started = Arc::new(Signal::default());
 
-    thread::scope(|scope| {
+    let device = thread::scope(|scope| {
         let callback = scope.spawn(move || invoke_mono(cookie, 1, 7));
         callback_entered.wait();
 
         let worker_started = Arc::clone(&stop_started);
         let stopper = scope.spawn(move || {
+            let mut device = device;
             worker_started.signal();
-            measurement.stop().unwrap();
+            device.stop().unwrap();
+            device
         });
         stop_started.wait();
 
@@ -175,7 +178,7 @@ fn moved_callback_measurement_drains_an_in_flight_callback_before_stop() {
 
         release_callback.signal();
         callback.join().unwrap();
-        stopper.join().unwrap();
+        stopper.join().unwrap()
     });
 
     assert!(stop_entered.load(Ordering::SeqCst));

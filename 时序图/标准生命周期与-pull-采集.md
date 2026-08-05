@@ -43,7 +43,7 @@ sequenceDiagram
     Native-->>Core: 原生 handle
     Core->>Core: 记录 live_handles，state = Open
     Core-->>Public: internal Device
-    Public-->>App: Device guard
+    Public-->>App: Device
 
     opt 采集前配置
         App->>Public: device.set_parameter(key, value)
@@ -59,12 +59,12 @@ sequenceDiagram
     Core->>Native: MV3D_LP_StartMeasure(handle)
     Native-->>Core: status
     Core->>Core: state = Measuring
-    Core-->>Public: internal Measurement
-    Public-->>App: Measurement guard
+    Core-->>Public: Result
+    Public-->>App: Result
 
     loop 按需获取帧
-        App->>Public: measurement.get_image(timeout)
-        Public->>Core: get_image(timeout_ms)
+        App->>Public: device.get_image(timeout)
+        Public->>Core: Device::get_image(timeout_ms)
         Core->>Native: MV3D_LP_GetImage(handle, descriptor, timeout_ms)
         Native-->>Core: 图像描述符和临时 payload 指针
         Core->>Core: 校验判别值、指针、长度与算术
@@ -73,16 +73,27 @@ sequenceDiagram
         Public-->>App: OwnedFrame
     end
 
-    App->>Public: measurement.stop()
-    Public->>Core: Measurement::stop()
+    App->>Public: device.stop()
+    Public->>Core: Device::stop()
     Core->>Native: MV3D_LP_StopMeasure(handle)
     Native-->>Core: status
-    Core->>Core: state = Open
-    Core-->>Public: Result
-    Public-->>App: Result
+    alt Stop 成功
+        Core->>Core: state = Open
+        Core-->>Public: Ok
+        Public-->>App: Ok
+    else Stop 结果异常
+        Core->>Core: state = Faulted
+        Core-->>Public: Err
+        Public-->>App: Err
+    end
 
     App->>Public: device.close()
     Public->>Core: Device::close()
+    opt 前一次 Stop 失败，state = Faulted
+        Core->>Native: MV3D_LP_StopMeasure(handle) 再尝试一次
+        Native-->>Core: retry status
+        Note over Core,Native: retry 成败都继续 Close，并汇总可观察的清理错误
+    end
     Core->>Native: MV3D_LP_CloseDevice(handle)
     Native-->>Core: status
     Core->>Core: 减少 live_handles
@@ -103,3 +114,5 @@ sequenceDiagram
         Public-->>App: Err
     end
 ```
+
+`Device` 始终由调用方持有，pull 采集只切换其内部状态。`get_image()` 在返回前完成 payload 校验与复制，`OwnedFrame` 可独立于设备使用。进入 `Faulted` 后只接受 `close()` 或 `Drop`；清理会再尝试一次 Stop，并且无论该重试结果如何都会继续尝试关闭 handle。完整状态图见[生命周期与时序图总览](../生命周期与时序图.md)。

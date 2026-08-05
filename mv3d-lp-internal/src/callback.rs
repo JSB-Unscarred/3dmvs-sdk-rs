@@ -301,7 +301,7 @@ fn registry() -> &'static CallbackRegistry {
     REGISTRY.get_or_init(CallbackRegistry::new)
 }
 
-pub struct CallbackRegistration {
+pub(crate) struct CallbackRegistration {
     cookie: CallbackCookie,
     entry: Arc<CallbackEntry>,
 }
@@ -330,7 +330,7 @@ impl CallbackRegistration {
         self.cookie
     }
 
-    pub fn stats(&self) -> CallbackStatsRecord {
+    pub(crate) fn stats(&self) -> CallbackStatsRecord {
         self.entry.stats()
     }
 }

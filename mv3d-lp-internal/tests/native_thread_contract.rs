@@ -11,8 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use mv3d_lp_internal::{
-    CallbackDelivery, Device, DeviceState, Error, ExceptionCallbackSink, FileTransfer,
-    FrameCallbackSink, Measurement, Runtime,
+    CallbackDelivery, Device, DeviceState, Error, ExceptionCallbackSink, FrameCallbackSink, Runtime,
 };
 
 const EXPECTED_VERSION: &[u8] = b"1.3.3.3";
@@ -82,12 +81,13 @@ fn run_scenarios(
     scenario("1 device control and close/drop on thread B", || {
         device_control_and_drop(runtime, serial)
     })?;
-    scenario("2 acquisition guards stop/drop on thread B", || {
-        acquisition_guard_handoff(runtime, serial)
+    scenario("2 active Devices stop/drop on thread B", || {
+        acquisition_device_handoff(runtime, serial)
     })?;
-    scenario("3 exception callback closes on thread B", || {
-        exception_callback_handoff(runtime, serial)
-    })?;
+    scenario(
+        "3 exception callback disables and closes on thread B",
+        || exception_callback_handoff(runtime, serial),
+    )?;
 
     let started_on_b = scratch.target("started-on-thread-b.bin")?;
     scenario("4 FileAccess starts and completes on thread B", || {
@@ -101,24 +101,31 @@ fn run_scenarios(
     })?;
     require_regular_file(&started_on_a.path, "thread-A FileAccess output")?;
 
-    let resumed_after_drop = scratch.target("resumed-after-drop.bin")?;
-    scenario(
-        "6 FileAccess guard starts/drops on thread B and resumes on A",
-        || dropped_transfer_resumes(runtime, serial, device_file, &resumed_after_drop),
+    let started_on_b_completed_on_a = scratch.target("started-on-b-completed-on-a.bin")?;
+    scenario("6 FileAccess starts on thread B and completes on A", || {
+        transfer_started_on_b_completed_on_a(
+            runtime,
+            serial,
+            device_file,
+            &started_on_b_completed_on_a,
+        )
+    })?;
+    require_regular_file(
+        &started_on_b_completed_on_a.path,
+        "cross-thread FileAccess output",
     )?;
-    require_regular_file(&resumed_after_drop.path, "resumed FileAccess output")?;
 
-    let closed_after_drop = scratch.target("closed-after-guard-drop.bin")?;
-    let device_dropped_after_guard = scratch.target("device-dropped-after-guard.bin")?;
+    let closed_while_active = scratch.target("closed-while-active.bin")?;
+    let dropped_while_active = scratch.target("dropped-while-active.bin")?;
     scenario(
-        "7 Device closes/drops immediately after FileAccess guard Drop on thread B",
+        "7 Device closes/drops during active FileAccess on thread B",
         || {
-            immediate_device_cleanup_after_guard_drop(
+            immediate_device_cleanup_during_transfer(
                 runtime,
                 serial,
                 device_file,
-                &closed_after_drop,
-                &device_dropped_after_guard,
+                &closed_while_active,
+                &dropped_while_active,
             )
         },
     )?;
@@ -135,9 +142,9 @@ fn device_control_and_drop(runtime: &Runtime, serial: &[u8]) -> TestResult {
             "query ExposureTime on thread B",
             device.get_parameter(b"ExposureTime"),
         )?;
-        let mut measurement = sdk("start pull acquisition on thread B", device.start())?;
-        let image = wait_for_image(&mut measurement);
-        let stop = sdk("stop pull acquisition on thread B", measurement.stop());
+        sdk("start pull acquisition on thread B", device.start())?;
+        let image = wait_for_image(&mut device);
+        let stop = sdk("stop pull acquisition on thread B", device.stop());
         let acquisition = merge_results(image, stop, "pull acquisition cleanup");
         let close = sdk("explicitly close Device on thread B", device.close());
         merge_results(acquisition, close, "Device cleanup after pull acquisition")
@@ -146,17 +153,16 @@ fn device_control_and_drop(runtime: &Runtime, serial: &[u8]) -> TestResult {
     let device = open_device(runtime, serial)?;
     on_thread_b("native-device-drop", move || {
         let mut device = device;
-        let mut measurement = sdk("start pull acquisition before Device drop", device.start())?;
-        match wait_for_image(&mut measurement) {
+        sdk("start pull acquisition before Device drop", device.start())?;
+        match wait_for_image(&mut device) {
             Ok(()) => {
-                drop(measurement);
                 drop(device);
                 Ok(())
             }
             Err(error) => {
                 let stop = sdk(
                     "stop pull acquisition after GetImage failure",
-                    measurement.stop(),
+                    device.stop(),
                 );
                 let acquisition = merge_results(Err(error), stop, "pull acquisition cleanup");
                 let close = sdk("close Device after GetImage failure", device.close());
@@ -166,31 +172,26 @@ fn device_control_and_drop(runtime: &Runtime, serial: &[u8]) -> TestResult {
     })
 }
 
-fn acquisition_guard_handoff(runtime: &Runtime, serial: &[u8]) -> TestResult {
+fn acquisition_device_handoff(runtime: &Runtime, serial: &[u8]) -> TestResult {
     let mut device = open_device(runtime, serial)?;
-    let measurement = sdk("start Measurement on thread A", device.start())?;
-    let worker = on_thread_b("native-measurement-stop", move || {
-        let mut measurement = measurement;
-        let image = wait_for_image(&mut measurement);
-        let stop = sdk("stop moved Measurement on thread B", measurement.stop());
-        merge_results(image, stop, "moved Measurement cleanup")
-    });
-    let close = sdk("close Device after moved Measurement", device.close());
-    merge_results(worker, close, "Device cleanup after moved Measurement")?;
+    sdk("start pull acquisition on thread A", device.start())?;
+    on_thread_b("native-active-device-stop", move || {
+        let image = wait_for_image(&mut device);
+        let stop = sdk("stop moved Device on thread B", device.stop());
+        let acquisition = merge_results(image, stop, "moved Device acquisition cleanup");
+        let close = sdk("close moved Device on thread B", device.close());
+        merge_results(acquisition, close, "moved Device cleanup")
+    })?;
 
     let mut device = open_device(runtime, serial)?;
-    let measurement = sdk("start Measurement for moved Drop", device.start())?;
-    let worker = on_thread_b("native-measurement-drop", move || {
-        drop(measurement);
+    sdk(
+        "start pull acquisition for moved Device Drop",
+        device.start(),
+    )?;
+    on_thread_b("native-active-device-drop", move || {
+        drop(device);
         Ok(())
-    });
-    let worker = merge_results(
-        worker,
-        expect_device_state(&device, DeviceState::Open, "moved Measurement Drop"),
-        "Measurement Drop state check",
-    );
-    let close = sdk("close Device after moved Measurement Drop", device.close());
-    merge_results(worker, close, "Device cleanup after Measurement Drop")?;
+    })?;
 
     let mut device = open_device(runtime, serial)?;
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -199,59 +200,40 @@ fn acquisition_guard_handoff(runtime: &Runtime, serial: &[u8]) -> TestResult {
         Err(mpsc::TrySendError::Full(_)) => CallbackDelivery::Full,
         Err(mpsc::TrySendError::Disconnected(_)) => CallbackDelivery::Disconnected,
     });
-    let measurement = sdk(
-        "start CallbackMeasurement on thread A",
+    sdk(
+        "start callback acquisition on thread A",
         device.start_callback(sink),
     )?;
-    let worker = on_thread_b("native-callback-stop", move || {
+    on_thread_b("native-callback-stop", move || {
         let received = receiver.recv_timeout(CALLBACK_DEADLINE);
-        if received.is_err() {
-            let cleanup = sdk(
-                "stop CallbackMeasurement after callback timeout",
-                measurement.stop(),
-            );
-            return merge_results(
+        let stop = sdk("revoke, drain, and stop moved Device", device.stop());
+        let acquisition = if received.is_err() {
+            merge_results(
                 Err(String::from(
                     "no native image callback arrived before the deadline",
                 )),
-                cleanup,
-                "CallbackMeasurement timeout cleanup",
-            );
-        }
-        // Receiving from this channel proves that a native frame was copied and reached the
-        // sink. Stop may race the sink's return, so it is also the bounded drain assertion.
-        sdk(
-            "revoke, drain, and stop moved CallbackMeasurement on thread B",
-            measurement.stop(),
-        )
-    });
-    let close = sdk("close Device after callback drain", device.close());
-    merge_results(worker, close, "Device cleanup after callback drain")?;
+                stop,
+                "callback timeout cleanup",
+            )
+        } else {
+            // Receiving proves a native frame reached the sink. Stop may race the sink's return,
+            // so the same call also checks bounded in-flight drain on the moved Device.
+            stop
+        };
+        let close = sdk("close Device after callback drain", device.close());
+        merge_results(acquisition, close, "Device cleanup after callback drain")
+    })?;
 
     let mut device = open_device(runtime, serial)?;
     let sink: FrameCallbackSink = Arc::new(|_| CallbackDelivery::Delivered);
-    let measurement = sdk(
-        "start CallbackMeasurement for moved Drop",
+    sdk(
+        "start callback acquisition for moved Device Drop",
         device.start_callback(sink),
     )?;
-    let worker = on_thread_b("native-callback-drop", move || {
-        drop(measurement);
+    on_thread_b("native-callback-device-drop", move || {
+        drop(device);
         Ok(())
-    });
-    let worker = merge_results(
-        worker,
-        expect_device_state(&device, DeviceState::Open, "moved CallbackMeasurement Drop"),
-        "CallbackMeasurement Drop state check",
-    );
-    let close = sdk(
-        "close Device after CallbackMeasurement Drop",
-        device.close(),
-    );
-    merge_results(
-        worker,
-        close,
-        "Device cleanup after CallbackMeasurement Drop",
-    )
+    })
 }
 
 fn exception_callback_handoff(runtime: &Runtime, serial: &[u8]) -> TestResult {
@@ -262,8 +244,14 @@ fn exception_callback_handoff(runtime: &Runtime, serial: &[u8]) -> TestResult {
         device.register_exception_callback(sink),
     )?;
     on_thread_b("native-exception-close", move || {
+        device.disable_exception_delivery();
+        if device.exception_callback_stats().is_some() {
+            return Err(String::from(
+                "exception delivery remained active after local disable",
+            ));
+        }
         sdk(
-            "close exception-registered Device on thread B",
+            "close exception-disabled Device on thread B",
             device.close(),
         )
     })
@@ -280,12 +268,11 @@ fn file_access_started_on_b(
     let device_file = device_file.to_vec();
     on_thread_b("native-file-start", move || {
         let mut device = device;
-        let mut transfer = sdk(
+        sdk(
             "start read-only FileAccess on thread B",
             device.download_file(&device_file, &local_name),
         )?;
-        let completion = complete_transfer(&mut transfer);
-        drop(transfer);
+        let completion = complete_transfer(&mut device);
         let reuse = completion.and_then(|()| {
             sdk(
                 "reuse FileAccess Device on its start thread",
@@ -305,62 +292,59 @@ fn active_transfer_handoff(
     target: &LocalTarget,
 ) -> TestResult {
     let mut device = open_device(runtime, serial)?;
-    let transfer = sdk(
+    sdk(
         "start read-only FileAccess on thread A",
         device.download_file(device_file, &target.sdk_name),
     )?;
-    let worker = on_thread_b("native-transfer-handoff", move || {
-        let mut transfer = transfer;
-        complete_transfer(&mut transfer)
-    });
-    let reuse = worker.and_then(|()| {
-        sdk(
-            "reuse Device on thread A after FileAccess guard join",
-            device.get_parameter(b"ExposureTime"),
-        )
-        .map(|_| ())
-    });
-    let close = sdk("close Device on thread A after guard join", device.close());
-    merge_results(reuse, close, "Device cleanup after FileAccess handoff")
+    on_thread_b("native-transfer-handoff", move || {
+        let completion = complete_transfer(&mut device);
+        let reuse = completion.and_then(|()| {
+            sdk(
+                "reuse moved Device after FileAccess completion",
+                device.get_parameter(b"ExposureTime"),
+            )
+            .map(|_| ())
+        });
+        let close = sdk("close moved Device after FileAccess", device.close());
+        merge_results(reuse, close, "moved Device cleanup after FileAccess")
+    })
 }
 
-fn dropped_transfer_resumes(
+fn transfer_started_on_b_completed_on_a(
     runtime: &Runtime,
     serial: &[u8],
     device_file: &[u8],
     target: &LocalTarget,
 ) -> TestResult {
     let mut device = open_device(runtime, serial)?;
-    let worker = on_thread_b("native-transfer-drop", || {
-        let transfer = sdk(
-            "start FileAccess on thread B before guard Drop",
+    let worker = on_thread_b("native-transfer-start-on-b", || {
+        sdk(
+            "start FileAccess on thread B",
             device.download_file(device_file, &target.sdk_name),
-        )?;
-        drop(transfer);
-        Ok(())
+        )
     });
     let worker = merge_results(
         worker,
         expect_device_state(
             &device,
             DeviceState::Transferring,
-            "FileAccess guard Drop on thread B",
+            "FileAccess start on thread B",
         ),
-        "FileAccess guard Drop state check",
+        "FileAccess cross-thread state check",
     );
-    let completion = worker.and_then(|()| complete_active_transfer(&mut device));
+    let completion = worker.and_then(|()| complete_transfer(&mut device));
     let reuse = completion.and_then(|()| {
         sdk(
-            "reuse Device on thread A after resumed FileAccess",
+            "reuse Device on thread A after FileAccess completion",
             device.get_parameter(b"ExposureTime"),
         )
         .map(|_| ())
     });
-    let close = sdk("close Device after resumed FileAccess", device.close());
-    merge_results(reuse, close, "Device cleanup after resumed FileAccess")
+    let close = sdk("close Device after cross-thread FileAccess", device.close());
+    merge_results(reuse, close, "Device cleanup after cross-thread FileAccess")
 }
 
-fn immediate_device_cleanup_after_guard_drop(
+fn immediate_device_cleanup_during_transfer(
     runtime: &Runtime,
     serial: &[u8],
     device_file: &[u8],
@@ -370,51 +354,39 @@ fn immediate_device_cleanup_after_guard_drop(
     let mut device = open_device(runtime, serial)?;
     let device_file_for_close = device_file.to_vec();
     let local_name = close_target.sdk_name.clone();
-    on_thread_b("native-transfer-close-after-drop", move || {
-        let transfer = sdk(
-            "start FileAccess before immediate guard Drop and Device close",
+    on_thread_b("native-transfer-close-active", move || {
+        sdk(
+            "start FileAccess before immediate Device close",
             device.download_file(&device_file_for_close, &local_name),
         )?;
-        drop(transfer);
-        sdk(
-            "close Device immediately after FileAccess guard Drop",
-            device.close(),
-        )
+        sdk("close Device during active FileAccess", device.close())
     })?;
 
     let mut device = open_device(runtime, serial)?;
     let device_file_for_drop = device_file.to_vec();
     let local_name = drop_target.sdk_name.clone();
     on_thread_b("native-transfer-device-drop", move || {
-        let transfer = sdk(
-            "start FileAccess before immediate guard and Device Drop",
+        sdk(
+            "start FileAccess before immediate Device Drop",
             device.download_file(&device_file_for_drop, &local_name),
         )?;
-        drop(transfer);
         drop(device);
         Ok(())
     })
 }
 
-fn complete_transfer(transfer: &mut FileTransfer<'_>) -> TestResult {
-    match transfer.wait_timeout(FILE_POLL_INTERVAL, FILE_DEADLINE) {
+fn complete_transfer(device: &mut Device<'_>) -> TestResult {
+    match device.wait_file_transfer(FILE_POLL_INTERVAL, FILE_DEADLINE) {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(String::from("FileAccess exceeded its total deadline")),
         Err(error) => Err(format!("FileAccess progress failed: {error}")),
     }
 }
 
-fn complete_active_transfer(device: &mut Device<'_>) -> TestResult {
-    let mut transfer = device.active_file_transfer().ok_or_else(|| {
-        String::from("FileAccess guard Drop did not leave an active transfer to resume")
-    })?;
-    complete_transfer(&mut transfer)
-}
-
-fn wait_for_image(measurement: &mut Measurement<'_>) -> TestResult {
+fn wait_for_image(device: &mut Device<'_>) -> TestResult {
     let deadline = Instant::now() + GET_IMAGE_DEADLINE;
     loop {
-        match measurement.get_image(GET_IMAGE_SLICE_MS) {
+        match device.get_image(GET_IMAGE_SLICE_MS) {
             Ok(_) => return Ok(()),
             Err(Error::Sdk { status, .. }) if status as u32 == NO_DATA_STATUS => {
                 if Instant::now() >= deadline {

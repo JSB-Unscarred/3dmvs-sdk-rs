@@ -17,9 +17,9 @@ sequenceDiagram
     Native-->>Core: status
     Core->>Native: MV3D_LP_StartMeasure(handle)
     Native-->>Core: status
-    Core->>Core: state = CallbackMeasuring
-    Core-->>Public: CallbackMeasurement
-    Public-->>App: CallbackMeasurement + OwnedFrame receiver
+    Core->>Core: Device 保存 registration，state = CallbackMeasuring
+    Core-->>Public: Ok
+    Public-->>App: OwnedFrame receiver
 
     loop 每次原生图像回调
         Native->>Core: image_trampoline(image_ptr, cookie)
@@ -52,8 +52,8 @@ sequenceDiagram
         Queue-->>App: OwnedFrame
     end
 
-    App->>Public: callback_measurement.stop()
-    Public->>Core: CallbackMeasurement::stop()
+    App->>Public: device.stop()
+    Public->>Core: Device::stop()
     Core->>Core: 停止准入并从 registry 移除 cookie
     Core->>Core: 等待全部 in-flight callback 退出
     Core->>Queue: 释放 registration 持有的 sender
@@ -68,4 +68,40 @@ sequenceDiagram
         Core-->>Public: Err
         Public-->>App: Err
     end
+
+    opt Stop 失败后显式 close 或 Drop
+        App->>Public: device.close() 或 drop(device)
+        Public->>Core: Device cleanup
+        Core->>Native: MV3D_LP_StopMeasure(handle) 再尝试一次
+        Native-->>Core: retry status
+        Core->>Native: MV3D_LP_CloseDevice(handle)
+        Native-->>Core: close status
+        Note over Core,Native: retry Stop 成败都继续 Close；显式 close 汇总清理错误
+    end
 ```
+
+`Receiver` 与 `OwnedFrame` 只持有 Rust owned 数据，SDK handle、registration、cookie 与清理责任都留在 `Device`。已审计的原生 callback 接口只包含 register；wrapper 通过撤销 cookie 准入并等待 in-flight callback 退出来隔离晚到调用。若同一 handle 再次注册被厂商 runtime 接受，下一次 `start_receiving()` 会使用全新的 cookie；wrapper 不额外承诺设备或固件一定支持重复注册。完整状态图见[生命周期与时序图总览](../生命周期与时序图.md)。
+
+## exception delivery 停止
+
+```mermaid
+sequenceDiagram
+    actor App as 业务代码
+    participant Worker as Rust worker / receiver
+    participant Core as callback registry
+    participant Native as 厂商 LPSDK
+
+    App->>Core: device.disable_exception_delivery()
+    Core->>Core: 停止准入并移除唯一 cookie
+    Core->>Core: 等待已准入的 in-flight callback 返回
+    Core->>Worker: 释放 sender
+    Core-->>App: return
+    App->>Worker: worker.join() 或等待 channel 断开
+    opt 原生晚到 exception callback
+        Native->>Core: exception_trampoline(info, retired_cookie)
+        Core->>Core: registry 查询失败，忽略
+        Core-->>Native: return
+    end
+```
+
+厂商接口只提供 exception callback register，因此 `disable_exception_delivery()` 只撤销 Rust delivery。它可重复调用；原生侧仍可能使用旧 cookie 调用 trampoline，registry 会安全忽略。显式 disable 后再 join exception worker，可让 sender 正常释放。

@@ -29,18 +29,18 @@ fn frame(data: Vec<u8>) -> FrameRecord {
 
 // 验证 pull 采集路由 trigger、clear、get 与显式 stop，防止控制调用落到错误 handle 状态。
 #[test]
-fn measurement_routes_pull_controls_and_explicit_stop() {
+fn device_routes_pull_controls_and_explicit_stop() {
     let mock = MockDriver::new();
     mock.push_get_image(Ok(frame(vec![1, 2, 3])));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
-    let mut measurement = device.start().unwrap();
-    measurement.soft_trigger().unwrap();
-    measurement.clear_buffer().unwrap();
-    let returned = measurement.get_image(37).unwrap();
+    device.start().unwrap();
+    device.soft_trigger().unwrap();
+    device.clear_buffer().unwrap();
+    let returned = device.get_image(37).unwrap();
     assert_eq!(returned.data, [1, 2, 3]);
-    measurement.stop().unwrap();
+    device.stop().unwrap();
     assert_eq!(device.state(), DeviceState::Open);
     device.close().unwrap();
 
@@ -63,23 +63,23 @@ fn measurement_routes_pull_controls_and_explicit_stop() {
 
 // 验证 NO_DATA 精确保留且采集可重试，防止暂时缺帧被误作会话终止。
 #[test]
-fn no_data_is_exact_and_the_measurement_can_retry() {
+fn no_data_is_exact_and_pull_acquisition_can_retry() {
     let mock = MockDriver::new();
     mock.push_get_image(Err(DriverError::Status(0x8006_0006_u32 as i32)));
     mock.push_get_image(Ok(frame(vec![9])));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    let mut measurement = device.start().unwrap();
+    device.start().unwrap();
 
     assert!(matches!(
-        measurement.get_image(5),
+        device.get_image(5),
         Err(Error::Sdk {
             operation: Operation::GetImage,
             status,
         }) if status as u32 == 0x8006_0006
     ));
-    assert_eq!(measurement.get_image(6).unwrap().data, [9]);
-    measurement.stop().unwrap();
+    assert_eq!(device.get_image(6).unwrap().data, [9]);
+    device.stop().unwrap();
     device.close().unwrap();
 
     assert_eq!(mock.image_timeouts(), [5, 6]);
@@ -92,31 +92,31 @@ fn disconnect_preserves_status_and_cleanup_still_runs() {
     mock.push_get_image(Err(DriverError::Status(0x8006_000D_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    let mut measurement = device.start().unwrap();
+    device.start().unwrap();
 
     assert!(matches!(
-        measurement.get_image(25),
+        device.get_image(25),
         Err(Error::Sdk {
             operation: Operation::GetImage,
             status,
         }) if status as u32 == 0x8006_000D
     ));
-    measurement.stop().unwrap();
+    device.stop().unwrap();
     device.close().unwrap();
 
     let log = mock.logs();
     assert_eq!(&log[log.len() - 2..], ["stop", "close"]);
 }
 
-// 验证 Measurement Drop 恢复 Open 状态并先 stop 再 close，防止活动采集遗留。
+// 验证 active Device close 先 stop 再 close，防止活动采集遗留。
 #[test]
-fn dropped_measurement_stops_before_device_close() {
+fn active_device_stops_before_close() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
-    drop(device.start().unwrap());
-    assert_eq!(device.state(), DeviceState::Open);
+    device.start().unwrap();
+    assert_eq!(device.state(), DeviceState::Measuring);
     device.close().unwrap();
 
     let log = mock.logs();
@@ -131,8 +131,8 @@ fn failed_explicit_stop_faults_device_and_close_retries_cleanup_stop() {
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
-    let measurement = device.start().unwrap();
-    assert!(matches!(measurement.stop(), Err(Error::Sdk { .. })));
+    device.start().unwrap();
+    assert!(matches!(device.stop(), Err(Error::Sdk { .. })));
     assert_eq!(device.state(), DeviceState::Faulted);
     device.close().unwrap();
 
@@ -143,20 +143,19 @@ fn failed_explicit_stop_faults_device_and_close_retries_cleanup_stop() {
     );
 }
 
-// 验证 Drop stop 失败使设备 Faulted 且 close 仅重试一次，防止重复清理扩大不确定性。
+// 验证 Device Drop 遇到 stop 失败仍继续 close，防止清理失败触发 unwind。
 #[test]
-fn failed_drop_stop_faults_device_and_close_retries_once() {
+fn failed_drop_stop_still_closes_once() {
     let mock = MockDriver::new();
     mock.push_stop(Err(DriverError::Status(0x8006_0003_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
-    drop(device.start().unwrap());
-    assert_eq!(device.state(), DeviceState::Faulted);
-    device.close().unwrap();
+    device.start().unwrap();
+    drop(device);
 
     let log = mock.logs();
-    assert_eq!(&log[log.len() - 3..], ["stop", "stop", "close"]);
+    assert_eq!(&log[log.len() - 2..], ["stop", "close"]);
 }
 
 // 验证 SDK 无限超时 sentinel 在 driver 前被拒绝，防止安全 API 产生永久阻塞。
@@ -165,17 +164,17 @@ fn infinite_timeout_sentinel_is_rejected_before_driver() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    let mut measurement = device.start().unwrap();
+    device.start().unwrap();
 
     assert!(matches!(
-        measurement.get_image(u32::MAX),
+        device.get_image(u32::MAX),
         Err(Error::InvalidInput {
             kind: InvalidInput::TimeoutTooLong { .. },
             ..
         })
     ));
     assert!(mock.image_timeouts().is_empty());
-    measurement.stop().unwrap();
+    device.stop().unwrap();
     device.close().unwrap();
 }
 
@@ -187,11 +186,11 @@ fn trigger_and_clear_errors_do_not_end_the_session() {
     mock.push_clear_buffer(Err(DriverError::Status(0x8006_0005_u32 as i32)));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    let mut measurement = device.start().unwrap();
+    device.start().unwrap();
 
-    assert!(matches!(measurement.soft_trigger(), Err(Error::Sdk { .. })));
-    assert!(matches!(measurement.clear_buffer(), Err(Error::Sdk { .. })));
-    assert_eq!(measurement.state(), DeviceState::Measuring);
-    measurement.stop().unwrap();
+    assert!(matches!(device.soft_trigger(), Err(Error::Sdk { .. })));
+    assert!(matches!(device.clear_buffer(), Err(Error::Sdk { .. })));
+    assert_eq!(device.state(), DeviceState::Measuring);
+    device.stop().unwrap();
     device.close().unwrap();
 }

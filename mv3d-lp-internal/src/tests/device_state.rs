@@ -1,5 +1,7 @@
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
+use crate::callback::{CallbackDelivery, FrameCallbackSink};
 use crate::driver::DriverError;
 use crate::error::{ContractViolation, Error};
 use crate::opened_device::DeviceState;
@@ -14,9 +16,9 @@ fn start_and_stop_update_state_only_after_success() {
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
     assert_eq!(device.state(), DeviceState::Open);
-    let measurement = device.start().unwrap();
-    assert_eq!(measurement.state(), DeviceState::Measuring);
-    measurement.stop().unwrap();
+    device.start().unwrap();
+    assert_eq!(device.state(), DeviceState::Measuring);
+    device.stop().unwrap();
     assert_eq!(device.state(), DeviceState::Open);
     device.close().unwrap();
     assert_eq!(
@@ -43,7 +45,78 @@ fn failed_start_leaves_device_open_and_is_retryable() {
     assert!(matches!(device.start(), Err(Error::Sdk { .. })));
     assert_eq!(device.state(), DeviceState::Open);
     device.clear_buffer().unwrap();
-    device.start().unwrap().stop().unwrap();
+    device.start().unwrap();
+    device.stop().unwrap();
+    device.close().unwrap();
+}
+
+// 验证 Open 状态拒绝仅限采集期的操作，防止错序调用进入 FFI。
+#[test]
+fn open_state_rejects_acquisition_only_operations_before_ffi() {
+    let mock = MockDriver::new();
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let operations = mock.operations();
+
+    assert!(matches!(device.stop(), Err(Error::InvalidState { .. })));
+    assert!(matches!(
+        device.soft_trigger(),
+        Err(Error::InvalidState { .. })
+    ));
+    assert!(matches!(
+        device.get_image(1),
+        Err(Error::InvalidState { .. })
+    ));
+    assert_eq!(mock.operations(), operations);
+
+    device.close().unwrap();
+}
+
+// 验证 pull 与 callback 的动态访问矩阵，防止混用两种采集模式。
+#[test]
+fn acquisition_modes_enforce_their_dynamic_access_matrix() {
+    let mock = MockDriver::new();
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let sink: FrameCallbackSink = Arc::new(|_| CallbackDelivery::Delivered);
+
+    device.start().unwrap();
+    assert!(matches!(device.start(), Err(Error::InvalidState { .. })));
+    assert!(matches!(
+        device.start_callback(Arc::clone(&sink)),
+        Err(Error::InvalidState { .. })
+    ));
+    assert!(matches!(
+        device.download_file(b"device", b"user"),
+        Err(Error::InvalidState { .. })
+    ));
+    device.soft_trigger().unwrap();
+    device.stop().unwrap();
+
+    device.start_callback(sink).unwrap();
+    assert_eq!(device.state(), DeviceState::CallbackMeasuring);
+    assert!(device.image_callback_stats().is_some());
+    assert!(matches!(
+        device.get_image(1),
+        Err(Error::InvalidState { .. })
+    ));
+    assert!(matches!(
+        device.clear_buffer(),
+        Err(Error::InvalidState { .. })
+    ));
+    assert!(matches!(
+        device.get_parameter(b"AcquisitionEnabled"),
+        Err(Error::InvalidState { .. })
+    ));
+    assert!(matches!(
+        device.upload_file(b"user", b"device"),
+        Err(Error::InvalidState { .. })
+    ));
+    device.soft_trigger().unwrap();
+    device.stop().unwrap();
+    assert_eq!(device.state(), DeviceState::Open);
+    assert!(device.image_callback_stats().is_none());
+
     device.close().unwrap();
 }
 

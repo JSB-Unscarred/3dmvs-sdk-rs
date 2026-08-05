@@ -393,14 +393,14 @@ fn failed_image_registration_retires_the_cookie_before_late_delivery() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(device.state(), DeviceState::Open);
 
-    let measurement = device.start_callback(sink).unwrap();
+    device.start_callback(sink).unwrap();
     let cookies = mock.image_callback_cookies();
     assert_eq!(cookies.len(), 2);
     assert_ne!(cookies[0], cookies[1]);
     invoke_mono(cookies[0], 2, 2);
     invoke_mono(cookies[1], 3, 3);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    measurement.stop().unwrap();
+    device.stop().unwrap();
 
     device.close().unwrap();
     runtime.shutdown().unwrap();
@@ -443,7 +443,7 @@ fn failed_exception_registration_retires_the_cookie_before_late_delivery() {
 
 // 验证 callback 测量停止后使用新 cookie 重启，防止旧注册状态污染下一次采集。
 #[test]
-fn callback_measurement_can_restart_with_a_fresh_cookie_after_stop() {
+fn callback_device_can_restart_with_a_fresh_cookie_after_stop() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
@@ -454,12 +454,14 @@ fn callback_measurement_can_restart_with_a_fresh_cookie_after_stop() {
         CallbackDelivery::Delivered
     });
 
-    let first = device.start_callback(first_sink).unwrap();
+    device.start_callback(first_sink).unwrap();
+    assert!(device.image_callback_stats().is_some());
     let first_cookie = only_cookie(mock.image_callback_cookies());
     invoke_mono(first_cookie, 1, 1);
     assert_eq!(first_calls.load(Ordering::SeqCst), 1);
-    first.stop().unwrap();
+    device.stop().unwrap();
     assert_eq!(device.state(), DeviceState::Open);
+    assert!(device.image_callback_stats().is_none());
     invoke_mono(first_cookie, 2, 2);
     assert_eq!(first_calls.load(Ordering::SeqCst), 1);
 
@@ -469,7 +471,7 @@ fn callback_measurement_can_restart_with_a_fresh_cookie_after_stop() {
         second_sink_calls.fetch_add(1, Ordering::SeqCst);
         CallbackDelivery::Delivered
     });
-    let second = device.start_callback(second_sink).unwrap();
+    device.start_callback(second_sink).unwrap();
     let cookies = mock.image_callback_cookies();
     assert_eq!(cookies.len(), 2);
     assert_ne!(cookies[0], cookies[1]);
@@ -477,7 +479,7 @@ fn callback_measurement_can_restart_with_a_fresh_cookie_after_stop() {
     invoke_mono(cookies[1], 4, 4);
     assert_eq!(first_calls.load(Ordering::SeqCst), 1);
     assert_eq!(second_calls.load(Ordering::SeqCst), 1);
-    second.stop().unwrap();
+    device.stop().unwrap();
     assert_eq!(device.state(), DeviceState::Open);
 
     device.close().unwrap();
@@ -494,7 +496,8 @@ fn repeated_image_registration_forwards_the_native_error() {
     let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
     let first_sink: FrameCallbackSink = Arc::new(|_| CallbackDelivery::Delivered);
-    device.start_callback(first_sink).unwrap().stop().unwrap();
+    device.start_callback(first_sink).unwrap();
+    device.stop().unwrap();
 
     let calls = Arc::new(AtomicUsize::new(0));
     let sink_calls = Arc::clone(&calls);
@@ -540,16 +543,49 @@ fn failed_callback_start_retires_its_cookie_and_can_be_retried() {
     invoke_mono(first_cookie, 1, 1);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-    let measurement = device.start_callback(sink).unwrap();
+    device.start_callback(sink).unwrap();
     let cookies = mock.image_callback_cookies();
     assert_eq!(cookies.len(), 2);
     assert_ne!(cookies[0], cookies[1]);
     invoke_mono(cookies[0], 2, 2);
     invoke_mono(cookies[1], 3, 3);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    measurement.stop().unwrap();
+    device.stop().unwrap();
 
     device.close().unwrap();
+    runtime.shutdown().unwrap();
+}
+
+// 验证 callback stop 失败仍先注销 cookie，随后 close 重试 stop，防止 Faulted 设备继续投递。
+#[test]
+fn failed_callback_stop_retires_its_cookie_and_close_retries_stop() {
+    let mock = MockDriver::new();
+    mock.push_stop(Err(DriverError::Status(0x8006_0003_u32 as i32)));
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sink_calls = Arc::clone(&calls);
+    let sink: FrameCallbackSink = Arc::new(move |_| {
+        sink_calls.fetch_add(1, Ordering::SeqCst);
+        CallbackDelivery::Delivered
+    });
+
+    device.start_callback(sink).unwrap();
+    let cookie = only_cookie(mock.image_callback_cookies());
+    invoke_mono(cookie, 1, 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    assert!(matches!(device.stop(), Err(Error::Sdk { .. })));
+    assert_eq!(device.state(), DeviceState::Faulted);
+    assert!(device.image_callback_stats().is_none());
+    invoke_mono(cookie, 2, 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    device.close().unwrap();
+    assert_eq!(
+        mock.logs().iter().filter(|entry| **entry == "stop").count(),
+        2
+    );
     runtime.shutdown().unwrap();
 }
 
@@ -628,16 +664,91 @@ fn failed_exception_callback_replacement_keeps_the_previous_cookie_active() {
     runtime.shutdown().unwrap();
 }
 
-// 验证显式 stop 与 Drop 都先停用 callback，防止停止采集期间接纳新事件。
+// 验证停用异常投递先拒绝新事件并排空在途 callback，防止 sink 释放期间继续访问。
 #[test]
-fn callback_measurement_deactivates_before_explicit_and_drop_stop() {
+fn disabling_exception_delivery_drains_in_flight_and_rejects_late_cookie() {
+    let mock = MockDriver::new();
+    let (runtime, _) = active_runtime(&mock);
+    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sink_calls = Arc::clone(&calls);
+    let (entered_sender, entered_receiver) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let sink_release = Arc::clone(&release);
+    let sink: ExceptionCallbackSink = Arc::new(move |_| {
+        if sink_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            entered_sender.send(()).unwrap();
+            let (released, wake) = &*sink_release;
+            let mut released = released
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            while !*released {
+                released = wake
+                    .wait(released)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+        }
+        CallbackDelivery::Delivered
+    });
+    device.register_exception_callback(sink).unwrap();
+    let cookie = only_cookie(mock.exception_callback_cookies());
+
+    let mut device = thread::scope(|scope| {
+        let callback = scope.spawn(move || invoke_disconnect(cookie));
+        entered_receiver.recv().unwrap();
+
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (done_sender, done_receiver) = mpsc::channel();
+        let disable = scope.spawn(move || {
+            started_sender.send(()).unwrap();
+            device.disable_exception_delivery();
+            done_sender.send(()).unwrap();
+            device
+        });
+        started_receiver.recv().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let before = calls.load(Ordering::SeqCst);
+            invoke_disconnect(cookie);
+            if calls.load(Ordering::SeqCst) == before {
+                break;
+            }
+            if Instant::now() >= deadline {
+                release_callback(&release);
+                panic!("exception delivery was not revoked");
+            }
+            thread::yield_now();
+        }
+        assert_eq!(done_receiver.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+        release_callback(&release);
+        callback.join().unwrap();
+        let device = disable.join().unwrap();
+        done_receiver.recv().unwrap();
+        device
+    });
+
+    assert!(device.exception_callback_stats().is_none());
+    device.disable_exception_delivery();
+    let calls_after_disable = calls.load(Ordering::SeqCst);
+    invoke_disconnect(cookie);
+    assert_eq!(calls.load(Ordering::SeqCst), calls_after_disable);
+
+    device.close().unwrap();
+    runtime.shutdown().unwrap();
+}
+
+// 验证显式 stop 与 active Device Drop 都先停用 callback，防止停止采集期间接纳新事件。
+#[test]
+fn callback_device_deactivates_before_explicit_and_drop_stop() {
     assert_callback_stop_order(false);
     assert_callback_stop_order(true);
 }
 
-// 验证关闭设备会注销被遗忘 guard 的 cookie，防止 handle 关闭后继续投递。
+// 验证关闭 active callback Device 会注销 cookie，防止 handle 关闭后继续投递。
 #[test]
-fn device_close_retires_the_cookie_of_a_forgotten_callback_measurement() {
+fn device_close_retires_the_cookie_of_active_callback_acquisition() {
     let mock = MockDriver::new();
     let stop_entered = Arc::new(AtomicBool::new(false));
     mock.set_stop_entered(Arc::clone(&stop_entered));
@@ -655,10 +766,9 @@ fn device_close_retires_the_cookie_of_a_forgotten_callback_measurement() {
         sink_calls.fetch_add(1, Ordering::SeqCst);
         CallbackDelivery::Delivered
     });
-    let measurement = device.start_callback(sink).unwrap();
+    device.start_callback(sink).unwrap();
     let cookie = only_cookie(mock.image_callback_cookies());
 
-    std::mem::forget(measurement);
     assert!(matches!(
         device.clear_buffer(),
         Err(Error::InvalidState { .. })
@@ -687,7 +797,7 @@ fn exception_registration_deactivates_before_close_and_survives_late_callbacks()
     assert_exception_close_order(Err(DriverError::Status(0x8006_0000_u32 as i32)));
 }
 
-fn assert_callback_stop_order(drop_measurement: bool) {
+fn assert_callback_stop_order(drop_device: bool) {
     let mock = MockDriver::new();
     let stop_entered = Arc::new(AtomicBool::new(false));
     mock.set_stop_entered(Arc::clone(&stop_entered));
@@ -705,15 +815,18 @@ fn assert_callback_stop_order(drop_measurement: bool) {
         sink_calls.fetch_add(1, Ordering::SeqCst);
         CallbackDelivery::Delivered
     });
-    let measurement = device.start_callback(sink).unwrap();
+    device.start_callback(sink).unwrap();
     let cookie = only_cookie(mock.image_callback_cookies());
     invoke_mono(cookie, 1, 1);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    if drop_measurement {
-        drop(measurement);
+    if drop_device {
+        drop(device);
     } else {
-        measurement.stop().unwrap();
+        device.stop().unwrap();
+        assert_eq!(device.state(), DeviceState::Open);
+        assert!(device.image_callback_stats().is_none());
+        device.close().unwrap();
     }
 
     assert!(sink_dropped.load(Ordering::SeqCst));
@@ -724,9 +837,6 @@ fn assert_callback_stop_order(drop_measurement: bool) {
         mock.logs().iter().filter(|entry| **entry == "stop").count(),
         1
     );
-    assert_eq!(device.state(), DeviceState::Open);
-
-    device.close().unwrap();
     runtime.shutdown().unwrap();
 }
 

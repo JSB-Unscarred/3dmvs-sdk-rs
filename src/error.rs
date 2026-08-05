@@ -664,9 +664,10 @@ impl Error {
                     | Operation::StartMeasure
                     | Operation::FileAccessRead
                     | Operation::FileAccessWrite => "open",
-                    Operation::StopMeasure | Operation::SoftTrigger | Operation::GetImage => {
-                        "measuring"
+                    Operation::StopMeasure | Operation::SoftTrigger => {
+                        "measuring or callback measuring"
                     }
+                    Operation::GetImage => "measuring",
                     Operation::GetFileAccessProgress => "transferring",
                     _ => "open or measuring",
                 };

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::driver::DriverError;
 use crate::error::{ContractViolation, Error, InvalidInput, Operation};
-use crate::file_transfer::{FileProgressRaw, FileTransferDirection, FileTransferStatus};
+use crate::file_transfer::{FileProgressRaw, FileTransferStatus};
 use crate::opened_device::{DeviceState, take_file_name_lifetimes_for_test};
 
 use super::mock_driver::{FfiOp, MockDriver, active_runtime};
@@ -31,9 +31,9 @@ fn operation_count(mock: &MockDriver, expected: FfiOp) -> usize {
         .count()
 }
 
-// 验证 transfer guard Drop 后文件名仍存活且可恢复轮询，防止异步 SDK 读取悬空指针。
+// 验证 Device 在整个传输期间保活文件名，防止异步 SDK 读取悬空指针。
 #[test]
-fn guard_drop_keeps_names_live_and_active_transfer_can_resume() {
+fn device_keeps_names_live_until_transfer_completion() {
     let mock = MockDriver::new();
     mock.push_file_access_progress(Ok(FileProgressRaw {
         completed: 4,
@@ -46,10 +46,9 @@ fn guard_drop_keeps_names_live_and_active_transfer_can_resume() {
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
 
-    let transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
+    device.download_file(b"device.cfg", b"host.cfg").unwrap();
     let names = take_only_file_name_lifetime();
     assert!(names.upgrade().is_some());
-    assert_eq!(transfer.direction(), FileTransferDirection::DeviceToHost);
 
     let calls = mock.file_access_calls();
     assert_eq!(calls.len(), 1);
@@ -59,28 +58,23 @@ fn guard_drop_keeps_names_live_and_active_transfer_can_resume() {
     assert_ne!(calls[0].user_file_name_address, 0);
     assert_ne!(calls[0].device_file_name_address, 0);
 
-    drop(transfer);
     assert_eq!(device.state(), DeviceState::Transferring);
     assert!(names.upgrade().is_some());
 
-    let mut resumed = device.active_file_transfer().unwrap();
-    assert_eq!(resumed.direction(), FileTransferDirection::DeviceToHost);
     assert!(matches!(
-        resumed.progress().unwrap(),
+        device.file_transfer_progress().unwrap(),
         FileTransferStatus::Running(progress)
             if progress.completed == 4 && progress.total == 10
     ));
     assert!(names.upgrade().is_some());
     assert!(matches!(
-        resumed.progress().unwrap(),
+        device.file_transfer_progress().unwrap(),
         FileTransferStatus::Completed(progress)
             if progress.completed == 10 && progress.total == 10
     ));
     assert!(names.upgrade().is_none());
-    drop(resumed);
 
     assert_eq!(device.state(), DeviceState::Open);
-    assert!(device.active_file_transfer().is_none());
     device.clear_buffer().unwrap();
     device.close().unwrap();
     assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 1);
@@ -90,7 +84,7 @@ fn guard_drop_keeps_names_live_and_active_transfer_can_resume() {
 
 // 验证 wait 超时只返回诊断且可继续轮询，防止本地等待截止时间终止 native 传输。
 #[test]
-fn wait_timeout_can_retry_after_progress_diagnostic() {
+fn timed_out_wait_can_retry_after_progress_diagnostic() {
     let mock = MockDriver::new();
     mock.push_file_access_progress(Ok(FileProgressRaw {
         completed: 0,
@@ -106,17 +100,17 @@ fn wait_timeout_can_retry_after_progress_diagnostic() {
     }));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-    let mut transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
+    device.download_file(b"device.cfg", b"host.cfg").unwrap();
     let names = take_only_file_name_lifetime();
 
     assert_eq!(
-        transfer
-            .wait_timeout(Duration::ZERO, Duration::ZERO)
+        device
+            .wait_file_transfer(Duration::ZERO, Duration::ZERO)
             .unwrap(),
         None
     );
     assert!(matches!(
-        transfer.progress(),
+        device.file_transfer_progress(),
         Err(Error::ContractViolation {
             kind: ContractViolation::NegativeFileProgress {
                 completed: -1,
@@ -127,11 +121,10 @@ fn wait_timeout_can_retry_after_progress_diagnostic() {
     ));
     assert!(names.upgrade().is_some());
     assert!(matches!(
-        transfer.wait_timeout(Duration::ZERO, Duration::ZERO),
+        device.wait_file_transfer(Duration::ZERO, Duration::ZERO),
         Ok(Some(progress)) if progress.completed == 10 && progress.total == 10
     ));
     assert!(names.upgrade().is_none());
-    drop(transfer);
 
     assert_eq!(device.state(), DeviceState::Open);
     device.close().unwrap();
@@ -151,18 +144,20 @@ fn ordinary_sdk_progress_error_is_retryable() {
     }));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-    let mut transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
+    device.download_file(b"device.cfg", b"host.cfg").unwrap();
     let names = take_only_file_name_lifetime();
 
-    assert!(matches!(transfer.progress(), Err(Error::Sdk { .. })));
+    assert!(matches!(
+        device.file_transfer_progress(),
+        Err(Error::Sdk { .. })
+    ));
     assert!(names.upgrade().is_some());
     assert!(matches!(
-        transfer.progress().unwrap(),
+        device.file_transfer_progress().unwrap(),
         FileTransferStatus::Completed(progress)
             if progress.completed == 8 && progress.total == 8
     ));
     assert!(names.upgrade().is_none());
-    drop(transfer);
 
     device.close().unwrap();
     assert_eq!(operation_count(&mock, FfiOp::GetFileAccessProgress), 2);
@@ -183,11 +178,11 @@ fn progress_exceeding_its_current_total_is_retryable() {
     }));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-    let mut transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
+    device.download_file(b"device.cfg", b"host.cfg").unwrap();
     let names = take_only_file_name_lifetime();
 
     assert_eq!(
-        transfer.progress().unwrap_err(),
+        device.file_transfer_progress().unwrap_err(),
         Error::ContractViolation {
             operation: Operation::GetFileAccessProgress,
             kind: ContractViolation::FileProgressExceedsTotal {
@@ -198,12 +193,11 @@ fn progress_exceeding_its_current_total_is_retryable() {
     );
     assert!(names.upgrade().is_some());
     assert!(matches!(
-        transfer.progress().unwrap(),
+        device.file_transfer_progress().unwrap(),
         FileTransferStatus::Completed(progress)
             if progress.completed == 10 && progress.total == 10
     ));
     assert!(names.upgrade().is_none());
-    drop(transfer);
 
     assert_eq!(device.state(), DeviceState::Open);
     device.close().unwrap();
@@ -235,26 +229,25 @@ fn progress_snapshots_need_not_be_monotonic_or_keep_a_fixed_total() {
     }
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-    let mut transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
+    device.download_file(b"device.cfg", b"host.cfg").unwrap();
     let names = take_only_file_name_lifetime();
 
     assert!(matches!(
-        transfer.progress().unwrap(),
+        device.file_transfer_progress().unwrap(),
         FileTransferStatus::Running(progress)
             if progress.completed == 4 && progress.total == 10
     ));
     assert!(matches!(
-        transfer.progress().unwrap(),
+        device.file_transfer_progress().unwrap(),
         FileTransferStatus::Running(progress)
             if progress.completed == 3 && progress.total == 12
     ));
     assert!(matches!(
-        transfer.progress().unwrap(),
+        device.file_transfer_progress().unwrap(),
         FileTransferStatus::Completed(progress)
             if progress.completed == 4 && progress.total == 4
     ));
     assert!(names.upgrade().is_none());
-    drop(transfer);
 
     assert_eq!(device.state(), DeviceState::Open);
     device.close().unwrap();
@@ -273,35 +266,32 @@ fn filename_bundles_are_released_on_each_completion_and_never_accumulate() {
         completed: 1,
         total: 1,
     }));
-    let mut first = device
+    device
         .download_file(b"device-a.cfg", b"host-a.cfg")
         .unwrap();
     let first_names = take_only_file_name_lifetime();
     assert!(first_names.upgrade().is_some());
     assert!(matches!(
-        first.progress().unwrap(),
+        device.file_transfer_progress().unwrap(),
         FileTransferStatus::Completed(_)
     ));
     assert!(first_names.upgrade().is_none());
-    drop(first);
     assert_eq!(device.state(), DeviceState::Open);
 
     mock.push_file_access_progress(Ok(FileProgressRaw {
         completed: 2,
         total: 2,
     }));
-    let mut second = device.upload_file(b"host-b.cfg", b"device-b.cfg").unwrap();
+    device.upload_file(b"host-b.cfg", b"device-b.cfg").unwrap();
     let second_names = take_only_file_name_lifetime();
-    assert_eq!(second.direction(), FileTransferDirection::HostToDevice);
     assert!(first_names.upgrade().is_none());
     assert!(second_names.upgrade().is_some());
     assert!(matches!(
-        second.progress().unwrap(),
+        device.file_transfer_progress().unwrap(),
         FileTransferStatus::Completed(_)
     ));
     assert!(first_names.upgrade().is_none());
     assert!(second_names.upgrade().is_none());
-    drop(second);
 
     assert!(device.retained_file_name_addresses_for_test().is_empty());
     device.close().unwrap();
@@ -360,7 +350,10 @@ fn failure_after_driver_entry_faults_device_and_retains_names_until_close() {
     let names = take_only_file_name_lifetime();
     assert!(matches!(error, Error::Sdk { .. }));
     assert_eq!(device.state(), DeviceState::Faulted);
-    assert!(device.active_file_transfer().is_none());
+    assert!(matches!(
+        device.file_transfer_progress(),
+        Err(Error::InvalidState { .. })
+    ));
     assert!(names.upgrade().is_some());
     assert_eq!(device.retained_file_name_addresses_for_test().len(), 1);
 
@@ -377,9 +370,9 @@ fn failure_after_driver_entry_faults_device_and_retains_names_until_close() {
     runtime.shutdown().unwrap();
 }
 
-// 验证启动失败会释放文件名，即使后续 close 失败，防止未开始传输长期占用存储。
+// 验证启动与 close 都失败时保留文件名，防止不确定的异步读取形成悬空指针。
 #[test]
-fn failed_start_releases_names_even_when_device_close_fails() {
+fn failed_start_retains_names_when_close_is_uncertain() {
     const HANDLE: usize = 0x3456_789A;
 
     let mock = MockDriver::new();
@@ -398,7 +391,7 @@ fn failed_start_releases_names_even_when_device_close_fails() {
     let cleanup = device.close().unwrap_err();
     assert!(cleanup.stop.is_none());
     assert!(cleanup.close.is_some());
-    assert!(names.upgrade().is_none());
+    assert!(names.upgrade().is_some());
     assert_eq!(mock.closed_handles(), [HANDLE]);
     assert_eq!(operation_count(&mock, FfiOp::FileAccessWrite), 1);
     assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 1);
@@ -419,10 +412,9 @@ fn closing_an_active_transfer_releases_names_on_success() {
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
 
-    let transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
+    device.download_file(b"device.cfg", b"host.cfg").unwrap();
     let names = take_only_file_name_lifetime();
     assert!(names.upgrade().is_some());
-    drop(transfer);
 
     device.close().unwrap();
     assert!(names.upgrade().is_none());
@@ -431,23 +423,22 @@ fn closing_an_active_transfer_releases_names_on_success() {
     runtime.shutdown().unwrap();
 }
 
-// 验证关闭活动传输失败后仍释放 Rust 文件名，防止不确定 native 状态泄漏内存。
+// 验证关闭活动传输失败后保留文件名，防止不确定的 native 状态继续读取已释放内存。
 #[test]
-fn closing_an_active_transfer_releases_names_on_failure() {
+fn closing_an_active_transfer_retains_names_on_failure() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
 
-    let transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
+    device.download_file(b"device.cfg", b"host.cfg").unwrap();
     let names = take_only_file_name_lifetime();
     assert!(names.upgrade().is_some());
-    drop(transfer);
 
     mock.push_close(Err(DriverError::Status(STATUS_CLOSE_FAILED)));
     let cleanup = device.close().unwrap_err();
     assert!(cleanup.stop.is_none());
     assert!(cleanup.close.is_some());
-    assert!(names.upgrade().is_none());
+    assert!(names.upgrade().is_some());
     assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 1);
     assert_eq!(operation_count(&mock, FfiOp::StopMeasure), 0);
     assert!(matches!(
@@ -470,18 +461,17 @@ fn teardown_uncertainty_does_not_block_existing_transfer_progress() {
     let (runtime, _) = active_runtime(&mock);
     let first = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
     let mut second = runtime.open_by_serial(b"SECOND").unwrap();
-    let mut transfer = second.download_file(b"device.cfg", b"host.cfg").unwrap();
+    second.download_file(b"device.cfg", b"host.cfg").unwrap();
     let names = take_only_file_name_lifetime();
 
     mock.push_close(Err(DriverError::Status(STATUS_CLOSE_FAILED)));
     assert!(first.close().is_err());
     assert!(matches!(
-        transfer.progress().unwrap(),
+        second.file_transfer_progress().unwrap(),
         FileTransferStatus::Running(progress)
             if progress.completed == 1 && progress.total == 2
     ));
     assert_eq!(operation_count(&mock, FfiOp::GetFileAccessProgress), 1);
-    drop(transfer);
 
     second.close().unwrap();
     assert!(names.upgrade().is_none());
@@ -496,9 +486,9 @@ fn teardown_uncertainty_does_not_block_existing_transfer_progress() {
     ));
 }
 
-// 验证借用式 transfer 可转移到 scoped thread 并归还设备，防止线程 handoff 破坏复用。
+// 验证活动传输随 Device 跨线程转移并完成，防止线程 handoff 破坏复用。
 #[test]
-fn borrowed_transfer_can_move_to_a_scoped_thread_then_device_is_reused() {
+fn active_transfer_device_can_move_to_a_scoped_thread_then_be_reused() {
     let mock = MockDriver::new();
     mock.push_file_access_progress(Ok(FileProgressRaw {
         completed: 1,
@@ -506,20 +496,21 @@ fn borrowed_transfer_can_move_to_a_scoped_thread_then_device_is_reused() {
     }));
     let (runtime, _) = active_runtime(&mock);
     let mut device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-    let transfer = device.download_file(b"device.cfg", b"host.cfg").unwrap();
+    device.download_file(b"device.cfg", b"host.cfg").unwrap();
     let names = take_only_file_name_lifetime();
 
-    std::thread::scope(|scope| {
+    let mut device = std::thread::scope(|scope| {
         scope
             .spawn(move || {
-                let mut transfer = transfer;
+                let mut device = device;
                 assert!(matches!(
-                    transfer.progress().unwrap(),
+                    device.file_transfer_progress().unwrap(),
                     FileTransferStatus::Completed(_)
                 ));
+                device
             })
             .join()
-            .unwrap();
+            .unwrap()
     });
 
     assert!(names.upgrade().is_none());

@@ -41,17 +41,45 @@ fn main() -> Result<()> {
     }
 
     let mut device = sdk.open_by_ip(Ipv4Addr::new(192, 168, 1, 100))?;
-    let mut measurement = device.start()?;
-    let frame = measurement.get_image(Duration::from_millis(100))?;
+    device.start()?;
+    let frame = device.get_image(Duration::from_millis(100))?;
     println!("{}x{}, {} bytes", frame.width, frame.height, frame.data.len());
 
-    measurement.stop()?;
+    device.stop()?;
     device.close()?;
     sdk.shutdown()
 }
 ```
 
 设备也可通过 `SerialNumber` 与 `Sdk::open_by_serial()` 打开。SDK 文本使用 `SdkText` 保存原始有界字节，可按需调用 `to_str()` 或 `to_string_lossy()`。
+
+## 状态 API 迁移
+
+采集状态现由 `Device` 自身持有，`Measurement` 与 `CallbackMeasurement` 已移除：
+
+| 旧调用 | 当前调用 |
+| --- | --- |
+| `let mut measurement = device.start()?` | `device.start()?` |
+| `measurement.get_image(timeout)?` | `device.get_image(timeout)?` |
+| `measurement.soft_trigger()?` | `device.soft_trigger()?` |
+| `measurement.stop()?` | `device.stop()?` |
+| `let (measurement, receiver) = device.start_receiving(options)?` | `let receiver = device.start_receiving(options)?` |
+| `let (measurement, worker) = device.start_with_callback(options, handler)?` | `let worker = device.start_with_callback(options, handler)?` |
+
+`Receiver<OwnedFrame>`、`CallbackWorker` 与 `OwnedFrame` 都不借用 `Device`。callback 仍由 `device.stop()` 显式结束；需要等待 worker 时，先 stop，再调用 `worker.join()`。
+
+文件传输也由 `Device` 持有状态和文件名：
+
+| 旧调用 | 当前调用 |
+| --- | --- |
+| `let mut transfer = device.download_file(device_name, local_name)?` | `device.download_file(device_name, local_name)?` |
+| `let mut transfer = device.upload_file(local_name, device_name)?` | `device.upload_file(local_name, device_name)?` |
+| `transfer.progress()?` | `device.file_transfer_progress()?` |
+| `transfer.wait_timeout(interval, timeout)?` | `device.wait_file_transfer(interval, timeout)?` |
+| `drop(transfer); device.active_file_transfer()` | 直接继续使用 `device` 轮询 |
+| `FileTransferDirection` | 由 `download_file()` 与 `upload_file()` 的方法名表达方向 |
+
+`download_file()` 与 `upload_file()` 只启动传输。设备随后处于 `Transferring`；观察到完成时恢复 `Open`。轮询错误或本地等待超时保留传输状态，可以继续调用进度接口。活动传输需要跨线程时，直接移动 `Device`。
 
 ## SDK 接口对应表
 
@@ -68,21 +96,21 @@ fn main() -> Result<()> {
 | `MV3D_LP_OpenDeviceBySN` | `Sdk::open_by_serial()` | 使用校验后的 `SerialNumber` |
 | `MV3D_LP_CloseDevice` | `Device::close()`、`Device` 的 `Drop` | 关闭后句柄不可再用 |
 | `MV3D_LP_SetIpConfig` | `Sdk::set_ip_config()` | 使用 `IpConfiguration` 表达配置模式 |
-| `MV3D_LP_RegisterExceptionCallBack` | `Device::exception_receiver()`、`Device::on_exception()` | 回调数据先复制，再交给 Rust channel 或 worker |
-| `MV3D_LP_StartMeasure` | `Device::start()`、`Device::start_receiving()`、`Device::start_with_callback()` | 返回独占借用设备的采集 guard |
-| `MV3D_LP_StopMeasure` | `Measurement::stop()`、`CallbackMeasurement::stop()` 及各自 `Drop` | callback 停止前先撤销并排空 Rust 回调 |
-| `MV3D_LP_SoftTrigger` | `Measurement::soft_trigger()`、`CallbackMeasurement::soft_trigger()` | 仅在采集中可用 |
-| `MV3D_LP_GetImage` | `Measurement::get_image()` | 校验并复制为 `OwnedFrame` |
+| `MV3D_LP_RegisterExceptionCallBack` | `Device::exception_receiver()`、`Device::on_exception()`、`Device::disable_exception_delivery()` | 事件先复制；disable 撤销并排空 Rust delivery |
+| `MV3D_LP_StartMeasure` | `Device::start()`、`Device::start_receiving()`、`Device::start_with_callback()` | `Device` 持有采集状态，start 只短暂借用 `&mut self` |
+| `MV3D_LP_StopMeasure` | `Device::stop()`、`Device::close()` 及 `Drop` 兜底 | callback 停止前先撤销并排空 Rust 回调 |
+| `MV3D_LP_SoftTrigger` | `Device::soft_trigger()` | 仅在采集中可用 |
+| `MV3D_LP_GetImage` | `Device::get_image()` | 仅用于 pull 采集，校验并复制为 `OwnedFrame` |
 | `MV3D_LP_RegisterImageDataCallBack` | `Device::start_receiving()`、`Device::start_with_callback()` | 使用有界、非阻塞 callback queue |
-| `MV3D_LP_ClearDataBuffer` | `Device::clear_buffer()`、`Measurement::clear_buffer()` | callback 采集 guard 不公开该操作 |
-| `MV3D_LP_GetParam` | `Device::get_parameter()`、`Measurement::get_parameter()` | 返回 `Parameter` |
-| `MV3D_LP_SetParam` | `Device::set_parameter()`、`Measurement::set_parameter()` | 接收 `ParameterValue` |
-| `MV3D_LP_Execute` | `Device::execute()`、`Measurement::execute()` | key 使用 `CommandKey` 校验 |
-| `MV3D_LP_FileAccessRead` | `Device::download_file()` | 返回 `FileTransfer` guard |
-| `MV3D_LP_FileAccessWrite` | `Device::upload_file()` | 返回 `FileTransfer` guard |
-| `MV3D_LP_GetFileAccessProgress` | `FileTransfer::progress()`、`FileTransfer::wait_timeout()` | 返回校验后的进度快照 |
+| `MV3D_LP_ClearDataBuffer` | `Device::clear_buffer()` | Open 或 pull 采集状态可用 |
+| `MV3D_LP_GetParam` | `Device::get_parameter()` | 返回 `Parameter` |
+| `MV3D_LP_SetParam` | `Device::set_parameter()` | 接收 `ParameterValue` |
+| `MV3D_LP_Execute` | `Device::execute()` | key 使用 `CommandKey` 校验 |
+| `MV3D_LP_FileAccessRead` | `Device::download_file()` | 启动下载，`Device` 保持 `Transferring` |
+| `MV3D_LP_FileAccessWrite` | `Device::upload_file()` | 启动上传，`Device` 保持 `Transferring` |
+| `MV3D_LP_GetFileAccessProgress` | `Device::file_transfer_progress()`、`Device::wait_file_transfer()` | 返回校验后的进度快照；观察到完成后恢复 `Open` |
 | `MV3D_LP_GetDeviceIP`、`MV3D_LP_GetDeviceSN` | `Sdk::devices()` | 统一从 `DeviceInfo` 读取 IP 与序列号 |
-| `MV3D_LP_GetProfile`、`MV3D_LP_GetBatchProfile`、`MV3D_LP_GetIntensityData` | `Measurement::get_image()` | 暂不直接封装，采集统一使用 `OwnedFrame` |
+| `MV3D_LP_GetProfile`、`MV3D_LP_GetBatchProfile`、`MV3D_LP_GetIntensityData` | `Device::get_image()` | 暂不直接封装，采集统一使用 `OwnedFrame` |
 | `MV3D_LP_RegisterProfileCallBack`、`MV3D_LP_RegisterBatchProfileCallBack` | `Device::start_receiving()`、`Device::start_with_callback()` | 暂不直接封装，回调统一使用 `OwnedFrame` |
 | `MV3D_LP_MapDepthToPointCloud` | `ImageProcessor::depth_to_point_cloud()` | 返回 `OwnedImage` |
 | `MV3D_LP_MapDepthToPointCloudRound` | `ImageProcessor::depth_to_round_point_cloud()` | 输入数量限制为 1 至 8 |
@@ -104,7 +132,7 @@ fn main() -> Result<()> {
 | `MV3D_LP_STRINGPARAM` | `Parameter::String`、`ParameterValue::String` | 内容使用 `SdkText` 保存 |
 | `MV3D_LP_PARAM_INFO`、`MV3D_LP_PARAM` | `Parameter`、`ParameterValue` | 通过 enum 取代 C union 与判别字段 |
 | `MV3D_LP_EXCEPTION_INFO` | `DeviceException`、`DeviceExceptionType` | 拥有化描述并保留未知类型值 |
-| `MV3D_LP_FILE_ACCESS` | `Device::download_file()`、`Device::upload_file()`、`FileTransfer<'_>` | 文件名借用由内部层转换并保活 |
+| `MV3D_LP_FILE_ACCESS` | `Device::download_file()`、`Device::upload_file()` | `Device` 在原生异步传输期间保活文件名 |
 | `MV3D_LP_FILE_ACCESS_PROGRESS` | `FileProgress`、`FileTransferStatus` | 使用非负计数表示运行或完成 |
 | `MVB3D_LP_POINT_XYZ_S16`、`MVB3D_LP_POINT_XYZ_F32` | `OwnedFrame`、`OwnedImage` 的字节载荷 | 暂不公开单点结构体 |
 | `MV3D_LP_PROFILE_DATA`、`MV3D_LP_DEPTH_DATA`、`MV3D_LP_INTENSITY_DATA` | `OwnedFrame` | 暂不直接映射旧采集结构体 |
@@ -116,12 +144,21 @@ SDK 的 reserved 字段、原始指针、回调函数指针和设备句柄只存
 
 - 公共 crate 使用 `#![forbid(unsafe_code)]`；FFI、指针校验、C union 读取和 callback trampoline 位于 `mv3d-lp-internal`。
 - SDK 输出先校验判别值、指针、长度和算术，再复制到 Rust 所有值。
-- `Device` 借用 `Sdk`；采集与文件传输 guard 独占借用 `Device`，用生命周期限制调用顺序。
-- `Sdk` 与 `ImageProcessor` 为 `!Send + !Sync`；`Device` 及其 guard 为 `Send + !Sync`，只允许转移唯一所有权。
-- callback cookie 永不复用，用户 handler 在独立 Rust worker 上运行；队列满时丢弃最新事件。
-- 清理结果不确定时进程生命周期进入 `Degraded`，后续初始化、新设备 open 与 `Finalize` 会被拒绝。
+- `Device` 借用 `Sdk`，防止设备仍打开时提前 Finalize；采集、文件传输状态和异步文件名都由 `Device` 持有。Close 失败时原生传输的终止状态不确定，文件名存储会被故意保留以防悬空指针。
+- `Sdk` 与 `ImageProcessor` 为 `!Send + !Sync`；`Device` 为 `Send + !Sync`，活动采集或传输可随设备的唯一所有权跨线程移动。
+- callback registration 和永不复用的 cookie 由 `Device` 持有；`stop()` 先撤销准入并排空 in-flight callback，再调用原生 Stop。用户 handler 在独立 Rust worker 上运行，队列满时丢弃最新事件。
+- 厂商 exception callback 接口只提供 register。`disable_exception_delivery()` 在本地撤销 cookie 并排空 in-flight callback；原生晚到调用仍可能发生，由 registry 忽略已撤销 cookie。
+- Stop 失败会把设备置为 `Faulted`；除本地撤销 exception delivery 外，此后只允许 `close()` 或 `Drop` 兜底重试 Stop 并尝试关闭句柄，晚到 callback 按已撤销 cookie 隔离。
+- Close/Finalize 失败、仍有 live handle 时请求 shutdown 或 handle ledger 不确定会使进程生命周期进入 `Degraded`，后续初始化、新设备 open 与 `Finalize` 会被拒绝。
 
 safe API 依赖同步复制期间输入和 SDK 输出保持有效，以及 Stop/Close 对资源的厂商契约。SDK、头文件、ABI 或固件变化后应重新审计相关接口。
+
+## 生命周期文档
+
+- [生命周期与时序图总览](生命周期与时序图.md)
+- [标准生命周期与 pull 采集](时序图/标准生命周期与-pull-采集.md)
+- [callback 采集与停止](时序图/callback-采集与停止.md)
+- [文件上传与下载](时序图/文件上传与下载.md)
 
 ## 开发与验证
 

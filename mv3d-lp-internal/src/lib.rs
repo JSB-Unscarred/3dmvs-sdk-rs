@@ -26,11 +26,9 @@ pub use device::{DeviceRecord, IpConfiguration};
 #[cfg(feature = "display-windows")]
 pub use display::DisplayRangeRecord;
 pub use error::{ContractViolation, Error, InvalidInput, Operation};
-pub use file_transfer::{FileProgress, FileTransferDirection, FileTransferStatus};
+pub use file_transfer::{FileProgress, FileTransferStatus};
 pub use frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
-pub use opened_device::{
-    CallbackMeasurement, Device, DeviceCleanupError, DeviceState, FileTransfer, Measurement,
-};
+pub use opened_device::{Device, DeviceCleanupError, DeviceState};
 pub use parameter::{ParameterRecord, ParameterValueRecord};
 pub use runtime::Runtime;
 

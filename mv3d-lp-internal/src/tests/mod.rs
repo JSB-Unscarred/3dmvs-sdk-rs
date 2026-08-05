@@ -21,12 +21,12 @@ mod image_processor;
 ))]
 mod image_processor_native;
 mod image_processor_output;
-mod measurement;
 mod miri_pure;
 mod mock_driver;
 #[cfg(all(not(miri), not(feature = "native")))]
 mod native_ffi_failures;
 mod parameter_union;
+mod pull_acquisition;
 mod runtime_state;
 mod string_conversion;
 mod threading;
