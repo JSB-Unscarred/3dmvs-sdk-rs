@@ -2,8 +2,9 @@
 use std::cell::RefCell;
 use std::ffi::CString;
 use std::fmt;
+use std::sync::Arc;
 #[cfg(test)]
-use std::sync::{Arc, Weak};
+use std::sync::Weak;
 use std::time::{Duration, Instant};
 
 use crate::callback::{
@@ -14,7 +15,7 @@ use crate::error::{Error, InvalidInput, Operation};
 use crate::file_transfer::{FileProgress, FileTransferStatus};
 use crate::frame::FrameRecord;
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
-use crate::runtime::RuntimeInner;
+use crate::runtime::RuntimeCore;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceState {
@@ -99,8 +100,9 @@ impl std::error::Error for DeviceCleanupError {
     }
 }
 
-pub struct Device<'runtime> {
-    runtime: &'runtime RuntimeInner,
+/// Opened device owning a lease on the initialized native session.
+pub struct Device {
+    runtime: Arc<RuntimeCore>,
     handle: Option<Handle>,
     state: DevicePhase,
     pending_transfer: Option<FileNameBundle>,
@@ -108,8 +110,8 @@ pub struct Device<'runtime> {
     exception_registration: Option<CallbackRegistration>,
 }
 
-impl<'runtime> Device<'runtime> {
-    pub(crate) fn new(runtime: &'runtime RuntimeInner, handle: Handle) -> Self {
+impl Device {
+    pub(crate) fn new(runtime: Arc<RuntimeCore>, handle: Handle) -> Self {
         Self {
             runtime,
             handle: Some(handle),
@@ -247,7 +249,7 @@ impl<'runtime> Device<'runtime> {
 
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<ParameterRecord, Error> {
         self.require_usable(Operation::GetParam)?;
-        let key = RuntimeInner::parameter_key(Operation::GetParam, key)?;
+        let key = RuntimeCore::parameter_key(Operation::GetParam, key)?;
         self.runtime.call(Operation::GetParam, |driver| {
             driver.get_parameter(self.handle(), &key)
         })
@@ -256,7 +258,7 @@ impl<'runtime> Device<'runtime> {
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValueRecord) -> Result<(), Error> {
         self.require_usable(Operation::SetParam)?;
         validate_parameter_value(Operation::SetParam, value)?;
-        let key = RuntimeInner::parameter_key(Operation::SetParam, key)?;
+        let key = RuntimeCore::parameter_key(Operation::SetParam, key)?;
         self.runtime.call(Operation::SetParam, |driver| {
             driver.set_parameter(self.handle(), &key, value)
         })
@@ -264,7 +266,7 @@ impl<'runtime> Device<'runtime> {
 
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
         self.require_usable(Operation::Execute)?;
-        let key = RuntimeInner::parameter_key(Operation::Execute, key)?;
+        let key = RuntimeCore::parameter_key(Operation::Execute, key)?;
         self.runtime.call(Operation::Execute, |driver| {
             driver.execute(self.handle(), &key)
         })
@@ -545,7 +547,7 @@ fn validate_parameter_value(
     Ok(())
 }
 
-impl Drop for Device<'_> {
+impl Drop for Device {
     fn drop(&mut self) {
         let _ = self.cleanup();
     }

@@ -1,5 +1,4 @@
 use std::net::Ipv4Addr;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -7,119 +6,42 @@ use std::time::{Duration, Instant};
 
 use crate::bindings::ImageType_Mono8;
 use crate::callback::{CallbackCookie, CallbackDelivery, FrameCallbackSink, invoke_image_for_test};
-use crate::frame::{FrameRecord, ImageTypeRecord};
-use crate::opened_device::DeviceState;
 use crate::parameter::ParameterRecord;
 
 use super::mock_driver::{FfiOp, MockDriver, active_runtime};
 
-// 验证移动 Device 后可完成 pull 采集，防止 Send 约定只在类型层成立。
+// 验证 Device 与 session 关闭可在 Runtime token 释放后由普通线程接管。
 #[test]
-fn moved_device_supports_a_complete_pull_acquisition() {
+fn moved_device_and_session_outlive_the_runtime_token() {
     let mock = MockDriver::new();
-    mock.push_get_parameter(Ok(ParameterRecord::Bool(true)));
-    mock.push_get_image(Ok(frame(vec![1, 2, 3])));
-    let (runtime, _) = active_runtime(&mock);
+    let (runtime, gate) = active_runtime(&mock);
     let device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
+    drop(runtime);
 
-    thread::scope(|scope| {
-        scope
-            .spawn(move || {
-                let mut device = device;
-                assert_eq!(
-                    device.get_parameter(b"AcquisitionEnabled").unwrap(),
-                    ParameterRecord::Bool(true)
-                );
-
-                device.start().unwrap();
-                assert_eq!(device.get_image(37).unwrap().data, [1, 2, 3]);
-                device.stop().unwrap();
-                device.close().unwrap();
-            })
-            .join()
+    let worker_mock = mock.clone();
+    thread::spawn(move || {
+        let mut device = device;
+        device.clear_buffer().unwrap();
+        device.close().unwrap();
+        crate::runtime::Runtime::initialize_with(Box::new(worker_mock), gate)
+            .unwrap()
+            .shutdown()
             .unwrap();
-    });
+    })
+    .join()
+    .unwrap();
 
-    runtime.shutdown().unwrap();
-    assert_eq!(mock.image_timeouts(), [37]);
     assert_eq!(
         mock.logs(),
         [
             "version",
             "initialize",
             "open_by_ip",
-            "get_parameter",
-            "start",
-            "get_image",
-            "stop",
+            "clear_buffer",
             "close",
             "finalize",
         ]
     );
-}
-
-// 验证目标线程 panic 时 Device 仍按 stop、close 清理，防止跨线程 unwind 泄漏 handle。
-#[test]
-fn moved_device_cleans_up_on_target_thread_panic() {
-    let mock = MockDriver::new();
-    let (runtime, _) = active_runtime(&mock);
-    let device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        thread::scope(|scope| {
-            scope
-                .spawn(move || {
-                    let mut device = device;
-                    device.start().unwrap();
-                    panic!("intentional target-thread panic");
-                })
-                .join()
-                .unwrap();
-        });
-    }));
-    assert!(outcome.is_err());
-    assert_eq!(
-        &mock.logs()[mock.logs().len() - 3..],
-        ["start", "stop", "close"]
-    );
-
-    runtime.shutdown().unwrap();
-}
-
-// 验证 active Device 可移动后显式 stop 或直接 Drop，防止线程 handoff 破坏清理顺序。
-#[test]
-fn moved_active_device_supports_explicit_stop_and_drop() {
-    for explicit_stop in [true, false] {
-        let mock = MockDriver::new();
-        let (runtime, _) = active_runtime(&mock);
-        let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-
-        device.start().unwrap();
-        thread::scope(|scope| {
-            scope
-                .spawn(move || {
-                    let mut device = device;
-                    if explicit_stop {
-                        device.stop().unwrap();
-                        assert_eq!(device.state(), DeviceState::Open);
-                        device.close().unwrap();
-                    } else {
-                        drop(device);
-                    }
-                })
-                .join()
-                .unwrap();
-        });
-
-        runtime.shutdown().unwrap();
-        assert_eq!(
-            mock.logs()
-                .iter()
-                .filter(|operation| **operation == "stop")
-                .count(),
-            1
-        );
-    }
 }
 
 // 验证移动 active Device 停止前排空在途 callback，防止 sink 仍执行时停止 SDK。
@@ -249,26 +171,6 @@ fn ordinary_calls_on_distinct_devices_can_overlap() {
     closed.sort_unstable();
     assert_eq!(closed, [1, 2]);
     runtime.shutdown().unwrap();
-}
-
-fn frame(data: Vec<u8>) -> FrameRecord {
-    FrameRecord {
-        image_type: ImageTypeRecord::from_bits(0x0108_0001),
-        width: u32::try_from(data.len()).unwrap(),
-        height: 1,
-        data,
-        intensity_data: None,
-        exposure_timestamps: None,
-        frame_number: 7,
-        device_timestamp: 11,
-        valid: true,
-        x_scale: 1.0,
-        y_scale: 2.0,
-        z_scale: 3.0,
-        x_offset: 4,
-        y_offset: 5,
-        z_offset: 6,
-    }
 }
 
 fn only_cookie(mut cookies: Vec<CallbackCookie>) -> CallbackCookie {

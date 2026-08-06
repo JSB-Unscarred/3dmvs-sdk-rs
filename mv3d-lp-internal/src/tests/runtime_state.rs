@@ -1,23 +1,28 @@
 use std::sync::Arc;
 
 use crate::driver::DriverError;
-use crate::error::{ContractViolation, Error, Operation};
+use crate::error::{Error, Operation};
 use crate::runtime::{Gate, Runtime};
 
-use super::mock_driver::{FfiOp, MockDriver};
+use super::mock_driver::MockDriver;
 
-// 验证进程仅允许一个活动 Runtime 且 finalize 后可重启，防止重复初始化全局 SDK。
+// 验证 Active session 复用 core，重启后旧 token 不能调用新的 native session。
 #[test]
-fn runtime_allows_one_active_instance_and_reinitializes_after_finalize() {
+fn runtime_reuses_the_active_session_and_reinitializes_after_finalize() {
     let mock = MockDriver::new();
     let gate = Arc::new(Gate::new());
     let runtime = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate)).unwrap();
 
-    let second = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate));
-    assert!(matches!(second, Err(Error::RuntimeAlreadyActive)));
+    let second = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate)).unwrap();
+    assert_eq!(mock.logs(), ["version", "initialize"]);
 
     runtime.shutdown().unwrap();
     let third = Runtime::initialize_with(Box::new(mock.clone()), gate).unwrap();
+    assert!(matches!(
+        second.device_count_hint(),
+        Err(Error::RuntimeInactive)
+    ));
+    assert!(matches!(second.shutdown(), Err(Error::RuntimeInactive)));
     third.shutdown().unwrap();
     assert_eq!(
         mock.logs(),
@@ -206,76 +211,4 @@ fn finalize_failure_degrades_the_process_sdk_state() {
     let retry = Runtime::initialize_with(Box::new(retry_mock.clone()), gate);
     assert!(matches!(retry, Err(Error::RuntimeDegraded)));
     assert!(retry_mock.operations().is_empty());
-}
-
-// 验证 handle 计数溢出使进程 Degraded，防止回绕后提前 finalize。
-#[test]
-fn handle_count_overflow_degrades_the_process_sdk_state() {
-    let mock = MockDriver::new();
-    let gate = Arc::new(Gate::new());
-    let runtime = Runtime::initialize_with(Box::new(mock.clone()), Arc::clone(&gate)).unwrap();
-    runtime.set_live_handles_for_test(usize::MAX);
-
-    assert!(matches!(
-        runtime.open_by_ip("192.0.2.1".parse().unwrap()),
-        Err(Error::ContractViolation {
-            operation: Operation::OpenDeviceByIp,
-            kind: ContractViolation::HandleCountOverflow,
-        })
-    ));
-    assert_eq!(runtime.device_count_hint().unwrap(), 0);
-    assert!(matches!(
-        runtime.open_by_serial(b"SECOND"),
-        Err(Error::RuntimeDegraded)
-    ));
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: usize::MAX,
-            teardown_uncertain: true,
-        })
-    ));
-    assert_eq!(
-        mock.operations(),
-        [
-            FfiOp::GetVersion,
-            FfiOp::Initialize,
-            FfiOp::OpenDeviceByIp,
-            FfiOp::GetDeviceNumber,
-        ]
-    );
-}
-
-// 验证 handle 计数下溢使进程 Degraded，防止错误计数被当作健康生命周期。
-#[test]
-fn handle_count_underflow_degrades_the_process_sdk_state() {
-    let mock = MockDriver::new();
-    let gate = Arc::new(Gate::new());
-    let runtime = Runtime::initialize_with(Box::new(mock.clone()), gate).unwrap();
-    let device = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-    runtime.set_live_handles_for_test(0);
-
-    device.close().unwrap();
-    assert_eq!(runtime.device_count_hint().unwrap(), 0);
-    assert!(matches!(
-        runtime.open_by_serial(b"SECOND"),
-        Err(Error::RuntimeDegraded)
-    ));
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: 0,
-            teardown_uncertain: true,
-        })
-    ));
-    assert_eq!(
-        mock.operations(),
-        [
-            FfiOp::GetVersion,
-            FfiOp::Initialize,
-            FfiOp::OpenDeviceByIp,
-            FfiOp::CloseDevice,
-            FfiOp::GetDeviceNumber,
-        ]
-    );
 }

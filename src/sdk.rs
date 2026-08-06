@@ -5,33 +5,26 @@ use crate::{
     IpConfigurationMode, Operation, Result, SdkText, SdkVersion, SerialNumber,
 };
 
-/// The process-wide 3DMVS SDK session.
+/// A token for the process-wide 3DMVS SDK session.
 ///
-/// Its process-wide lifecycle is separate from each device's [`crate::DeviceState`] and has three
-/// states: `Fresh`, `Active`, and `Degraded`. `Fresh` permits one runtime to initialize; successful
-/// initialization enters `Active`. Pre-initialization version failures leave it `Fresh`, while a
-/// failed initialization returns to `Fresh` only after successful cleanup. Successful `Finalize`
-/// also returns it to `Fresh`.
-///
-/// Uncertain device teardown or `Finalize`, or ending the runtime owner with tracked handles still
-/// live, moves the process lifecycle to `Degraded`. The process lifecycle can no longer expand,
-/// finalize, or restart safely. This does not fault existing devices, sessions, file transfers, or
-/// pure image processing, but it permanently rejects new device opens, `Finalize`, and later
-/// runtime initialization. `Sdk` is intentionally neither `Send` nor `Sync`.
+/// [`Device`] and [`ImageProcessor`] own their session access and do not borrow this value.
+/// Dropping an `Sdk` leaves the session active; call [`Sdk::shutdown`] after every device closes to
+/// run `Finalize` and observe its result. Successful shutdown makes native operations through
+/// other tokens from that session return [`Error::RuntimeInactive`]. `Sdk` is `Send + Sync`.
 pub struct Sdk {
     inner: mv3d_lp_internal::Runtime,
     version: SdkVersion,
 }
 
 impl Sdk {
-    /// Initializes the process-wide SDK using the default compatible ABI version range.
+    /// Initializes the process-wide SDK or joins its active session.
     pub fn initialize() -> Result<Self> {
         let inner = mv3d_lp_internal::Runtime::initialize().map_err(Error::map_internal_error)?;
         Self::from_internal(inner)
     }
 
-    /// Initializes the process-wide SDK only when its version exactly matches the audited
-    /// bindings baseline.
+    /// Initializes or reuses the process-wide SDK only when its version exactly matches the
+    /// audited bindings baseline.
     pub fn initialize_strict() -> Result<Self> {
         let inner =
             mv3d_lp_internal::Runtime::initialize_strict().map_err(Error::map_internal_error)?;
@@ -51,6 +44,7 @@ impl Sdk {
         Ok(Self { inner, version })
     }
 
+    /// Returns the cached SDK version, including after this token's session is finalized.
     #[must_use]
     pub const fn version(&self) -> SdkVersion {
         self.version
@@ -94,26 +88,34 @@ impl Sdk {
             .map_err(Error::map_internal_error)
     }
 
-    pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device<'_>> {
+    pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device> {
         self.inner
             .open_by_ip(address)
             .map(Device::from_internal)
             .map_err(Error::map_internal_error)
     }
 
-    pub fn open_by_serial(&self, serial_number: &SerialNumber) -> Result<Device<'_>> {
+    pub fn open_by_serial(&self, serial_number: &SerialNumber) -> Result<Device> {
         self.inner
             .open_by_serial(serial_number.as_bytes())
             .map(Device::from_internal)
             .map_err(Error::map_internal_error)
     }
 
+    /// Creates an owned image-processing token for the active session.
     #[must_use]
-    pub fn image_processor(&self) -> ImageProcessor<'_> {
-        ImageProcessor { inner: &self.inner }
+    pub fn image_processor(&self) -> ImageProcessor {
+        ImageProcessor {
+            inner: self.inner.clone(),
+        }
     }
 
-    pub fn shutdown(self) -> Result<()> {
+    /// Finalizes the active session after every `Device` has closed.
+    ///
+    /// A live device returns [`Error::UnclosedDevices`] and leaves the session active. Close every
+    /// device and retry. A repeated call returns `Ok(())` while no newer session is active; an old
+    /// token cannot finalize a newer session.
+    pub fn shutdown(&self) -> Result<()> {
         self.inner.shutdown().map_err(Error::map_internal_error)
     }
 }

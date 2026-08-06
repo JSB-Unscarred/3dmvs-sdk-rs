@@ -19,20 +19,19 @@ pub enum DeviceState {
     Transferring,
 }
 
-/// An opened laser-profiler device borrowing its owning [`crate::Sdk`].
+/// An opened laser-profiler device with independent session ownership.
 ///
-/// `Device` is `Send` but not `Sync`: unique ownership may be handed to another thread, but the
-/// device cannot be shared for concurrent calls. It continues to borrow its owning [`crate::Sdk`],
-/// so direct handoff normally uses [`std::thread::scope`]. For a long-lived owner thread, create
-/// both the SDK and device inside that thread. Pull and callback acquisition are states of this
-/// value, so starting or stopping only borrows it briefly. No native handle is exposed; unique
-/// ownership serializes calls on this device while calls on different devices may run concurrently.
-pub struct Device<'sdk> {
-    inner: mv3d_lp_internal::Device<'sdk>,
+/// `Device` does not borrow [`crate::Sdk`] and remains usable after that token is dropped. A live
+/// device prevents [`crate::Sdk::shutdown`] from finalizing the session. `Device` is `Send` but not
+/// `Sync`: unique ownership can move to another thread, while calls on different devices may run
+/// concurrently. Pull and callback acquisition are states of this value, so starting and stopping
+/// only borrow it briefly.
+pub struct Device {
+    inner: mv3d_lp_internal::Device,
 }
 
-impl<'sdk> Device<'sdk> {
-    pub(crate) fn from_internal(inner: mv3d_lp_internal::Device<'sdk>) -> Self {
+impl Device {
+    pub(crate) fn from_internal(inner: mv3d_lp_internal::Device) -> Self {
         Self { inner }
     }
 

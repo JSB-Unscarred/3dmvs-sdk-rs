@@ -1,6 +1,6 @@
 # mv3d-lp
 
-海康威视 3D MVS 激光轮廓传感器 SDK 的 safe Rust 包装。公共 crate 只提供 Rust 类型、生命周期和错误模型，原始句柄、裸指针、C union 与 FFI 集中在私有 crate。
+海康威视 3D MVS 激光轮廓传感器 SDK 的 safe Rust 包装。公共 crate 只提供 Rust 类型、所有权和错误模型，原始句柄、裸指针、C union 与 FFI 集中在私有 crate。
 
 ## 支持与安装
 
@@ -53,46 +53,27 @@ fn main() -> Result<()> {
 
 设备也可通过 `SerialNumber` 与 `Sdk::open_by_serial()` 打开。SDK 文本使用 `SdkText` 保存原始有界字节，可按需调用 `to_str()` 或 `to_string_lossy()`。
 
-## 状态 API 迁移
+## 所有权与状态
 
-采集状态现由 `Device` 自身持有，`Measurement` 与 `CallbackMeasurement` 已移除：
+- `Sdk` 是 `Send + Sync` 的 session token。`initialize()` 创建或加入活动 session；`Drop` 只释放 token，`shutdown()` 显式 Finalize，并允许在新 session 启动前重复调用。
+- `Device` 不借用 `Sdk`，可在释放 `Sdk` 后继续使用，也可移动到普通 worker thread。它是 `Send + !Sync`；live device 会让 `shutdown()` 返回可重试错误。
+- `ImageProcessor` 不借用 `Sdk`，是 `Send + Sync` 的图像处理 token。
+- `shutdown()` 成功后，同一 session 的其他 token 停止接受 native 操作；缓存的 `Sdk::version()` 仍可读取。
 
-| 旧调用 | 当前调用 |
-| --- | --- |
-| `let mut measurement = device.start()?` | `device.start()?` |
-| `measurement.get_image(timeout)?` | `device.get_image(timeout)?` |
-| `measurement.soft_trigger()?` | `device.soft_trigger()?` |
-| `measurement.stop()?` | `device.stop()?` |
-| `let (measurement, receiver) = device.start_receiving(options)?` | `let receiver = device.start_receiving(options)?` |
-| `let (measurement, worker) = device.start_with_callback(options, handler)?` | `let worker = device.start_with_callback(options, handler)?` |
-
-`Receiver<OwnedFrame>`、`CallbackWorker` 与 `OwnedFrame` 都不借用 `Device`。callback 仍由 `device.stop()` 显式结束；需要等待 worker 时，先 stop，再调用 `worker.join()`。
-
-文件传输也由 `Device` 持有状态和文件名：
-
-| 旧调用 | 当前调用 |
-| --- | --- |
-| `let mut transfer = device.download_file(device_name, local_name)?` | `device.download_file(device_name, local_name)?` |
-| `let mut transfer = device.upload_file(local_name, device_name)?` | `device.upload_file(local_name, device_name)?` |
-| `transfer.progress()?` | `device.file_transfer_progress()?` |
-| `transfer.wait_timeout(interval, timeout)?` | `device.wait_file_transfer(interval, timeout)?` |
-| `drop(transfer); device.active_file_transfer()` | 直接继续使用 `device` 轮询 |
-| `FileTransferDirection` | 由 `download_file()` 与 `upload_file()` 的方法名表达方向 |
-
-`download_file()` 与 `upload_file()` 只启动传输。设备随后处于 `Transferring`；观察到完成时恢复 `Open`。轮询错误或本地等待超时保留传输状态，可以继续调用进度接口。活动传输需要跨线程时，直接移动 `Device`。
+采集与文件传输状态由 `Device` 持有。`start()`、`stop()` 和文件传输方法只短暂借用设备；`Receiver<OwnedFrame>`、`CallbackWorker`、`OwnedFrame` 与设备相互独立。callback 结束时先调用 `device.stop()`，再调用 `worker.join()`。
 
 ## SDK 接口对应表
 
-下表以项目审计的 LPSDK `1.3.3.3` 头文件为准。`Drop` 只做尽力清理；需要观察清理错误时应调用显式的 `stop()`、`close()` 和 `shutdown()`。
+下表以项目审计的 LPSDK `1.3.3.3` 头文件为准。`Device` 的 `Drop` 只做尽力清理；需要观察清理错误时应显式调用 `stop()` 与 `close()`。Finalize 及其错误只由 `shutdown()` 处理。
 
 | SDK 接口 | safe Rust 接口 | 说明 |
 | --- | --- | --- |
 | `MV3D_LP_GetVersion` | `Sdk::version()` | 初始化时读取并解析版本 |
 | `MV3D_LP_Initialize` | `Sdk::initialize()`、`Sdk::initialize_strict()` | 管理进程级 SDK 生命周期 |
-| `MV3D_LP_Finalize` | `Sdk::shutdown()`、`Sdk` 的 `Drop` | 显式关闭可返回错误 |
+| `MV3D_LP_Finalize` | `Sdk::shutdown()` | `Sdk` 的 `Drop` 只释放控制 token |
 | `MV3D_LP_GetDeviceNumber` | `Sdk::device_count_hint()` | 返回枚举容量提示 |
 | `MV3D_LP_GetDeviceList` | `Sdk::devices()` | 返回拥有化的 `Vec<DeviceInfo>` |
-| `MV3D_LP_OpenDeviceByIP` | `Sdk::open_by_ip()` | `Device<'sdk>` 绑定 SDK 生命周期 |
+| `MV3D_LP_OpenDeviceByIP` | `Sdk::open_by_ip()` | `Device` 独立持有 session 使用权 |
 | `MV3D_LP_OpenDeviceBySN` | `Sdk::open_by_serial()` | 使用校验后的 `SerialNumber` |
 | `MV3D_LP_CloseDevice` | `Device::close()`、`Device` 的 `Drop` | 关闭后句柄不可再用 |
 | `MV3D_LP_SetIpConfig` | `Sdk::set_ip_config()` | 使用 `IpConfiguration` 表达配置模式 |
@@ -144,12 +125,12 @@ SDK 的 reserved 字段、原始指针、回调函数指针和设备句柄只存
 
 - 公共 crate 使用 `#![forbid(unsafe_code)]`；FFI、指针校验、C union 读取和 callback trampoline 位于 `mv3d-lp-internal`。
 - SDK 输出先校验判别值、指针、长度和算术，再复制到 Rust 所有值。
-- `Device` 借用 `Sdk`，防止设备仍打开时提前 Finalize；采集、文件传输状态和异步文件名都由 `Device` 持有。Close 失败时原生传输的终止状态不确定，文件名存储会被故意保留以防悬空指针。
-- `Sdk` 与 `ImageProcessor` 为 `!Send + !Sync`；`Device` 为 `Send + !Sync`，活动采集或传输可随设备的唯一所有权跨线程移动。
+- `Device` 独立持有 session 使用权；live handle 会让 `shutdown()` 返回可重试错误，防止设备仍打开时 Finalize。采集、文件传输状态和异步文件名都由 `Device` 持有。Close 失败时原生传输的终止状态不确定，文件名存储会被故意保留以防悬空指针。
+- `Sdk` 与 `ImageProcessor` 为 `Send + Sync`；`Device` 为 `Send + !Sync`，活动采集或传输可随设备的唯一所有权跨线程移动。
 - callback registration 和永不复用的 cookie 由 `Device` 持有；`stop()` 先撤销准入并排空 in-flight callback，再调用原生 Stop。用户 handler 在独立 Rust worker 上运行，队列满时丢弃最新事件。
 - 厂商 exception callback 接口只提供 register。`disable_exception_delivery()` 在本地撤销 cookie 并排空 in-flight callback；原生晚到调用仍可能发生，由 registry 忽略已撤销 cookie。
 - Stop 失败会把设备置为 `Faulted`；除本地撤销 exception delivery 外，此后只允许 `close()` 或 `Drop` 兜底重试 Stop 并尝试关闭句柄，晚到 callback 按已撤销 cookie 隔离。
-- Close/Finalize 失败、仍有 live handle 时请求 shutdown 或 handle ledger 不确定会使进程生命周期进入 `Degraded`，后续初始化、新设备 open 与 `Finalize` 会被拒绝。
+- 仍有 live handle 时请求 shutdown 会保持 `Active`，设备关闭后可直接重试；token 已释放时可重新获取。Close 失败或 handle ledger 不确定会阻止新设备 open 与 `Finalize`；Finalize 失败会拒绝后续 session 操作。
 
 safe API 依赖同步复制期间输入和 SDK 输出保持有效，以及 Stop/Close 对资源的厂商契约。SDK、头文件、ABI 或固件变化后应重新审计相关接口。
 

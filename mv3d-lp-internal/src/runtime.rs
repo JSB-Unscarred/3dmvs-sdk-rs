@@ -1,11 +1,9 @@
 #![cfg_attr(not(feature = "native"), allow(dead_code))]
 
 use std::ffi::CString;
-use std::marker::PhantomData;
 use std::net::Ipv4Addr;
 #[cfg(feature = "display-windows")]
 use std::num::NonZeroIsize;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::device::{DeviceRecord, IpConfigRaw, IpConfiguration};
@@ -58,22 +56,15 @@ impl VersionPolicy {
     }
 }
 
-/// Process-wide native LPSDK session state shared by every `Runtime` instance.
-///
-/// This is deliberately separate from a device's `DeviceState`. `Degraded` blocks lifecycle
-/// expansion and finalization, but existing Rust values remain usable until their owner is gone.
-/// `live_handles` counts handles still tracked by Rust; a degraded native session may additionally
-/// retain orphaned handles that cannot be counted safely.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProcessSdkState {
+/// Process-wide owner for the current native LPSDK session.
+enum ProcessSdkState {
     Fresh,
-    Active { live_handles: usize },
-    Degraded { live_handles: usize },
+    Active(Arc<RuntimeCore>),
+    Degraded,
 }
 
 pub(crate) struct Gate {
-    // This state belongs to the process-wide native LPSDK session and survives individual
-    // Runtime values. Per-device lifecycle is tracked separately by DeviceState.
+    // Active owns the core so dropping a user-facing Runtime token cannot finalize the SDK.
     state: Mutex<ProcessSdkState>,
 }
 
@@ -88,15 +79,9 @@ impl Gate {
         match self.state.lock() {
             Ok(state) => state,
             Err(poisoned) => {
-                // A panic while this gate is held may leave a native lifecycle side effect ahead
-                // of the Rust ledger. Preserve the tracked count but forbid further expansion.
+                // A panic may leave a native lifecycle transition ahead of Rust state.
                 let mut state = poisoned.into_inner();
-                let live_handles = match *state {
-                    ProcessSdkState::Fresh => 0,
-                    ProcessSdkState::Active { live_handles }
-                    | ProcessSdkState::Degraded { live_handles } => live_handles,
-                };
-                *state = ProcessSdkState::Degraded { live_handles };
+                *state = ProcessSdkState::Degraded;
                 self.state.clear_poison();
                 state
             }
@@ -104,16 +89,20 @@ impl Gate {
     }
 }
 
-pub(crate) struct RuntimeInner {
-    driver: Box<dyn Driver>,
-    gate: Arc<Gate>,
-    image_processing: Mutex<()>,
+struct HandleLedger {
+    live_handles: usize,
+    teardown_uncertain: bool,
 }
 
-impl RuntimeInner {
-    // RuntimeInner is created only after Initialize succeeds, and every value that can call these
-    // methods borrows it. Rust therefore prevents Finalize while an existing call-capable value
-    // is alive; ordinary and image calls do not need to consult the process lifecycle gate.
+/// Owned native session shared by SDK tokens and devices.
+pub(crate) struct RuntimeCore {
+    driver: Box<dyn Driver>,
+    version: Vec<u8>,
+    handles: Mutex<HandleLedger>,
+}
+
+impl RuntimeCore {
+    /// Calls a native operation while its caller supplies the required lifecycle guard or handle.
     pub(crate) fn call<T>(
         &self,
         operation: Operation,
@@ -122,16 +111,17 @@ impl RuntimeInner {
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
     }
 
-    fn image_call<T>(
-        &self,
-        operation: Operation,
-        call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
-    ) -> Result<T, Error> {
-        let _image_processing = self
-            .image_processing
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
+    fn lock_handles(&self) -> MutexGuard<'_, HandleLedger> {
+        match self.handles.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                // A panic during open or close makes the handle ledger uncertain.
+                let mut state = poisoned.into_inner();
+                state.teardown_uncertain = true;
+                self.handles.clear_poison();
+                state
+            }
+        }
     }
 
     pub(crate) fn open_handle(
@@ -139,12 +129,10 @@ impl RuntimeInner {
         operation: Operation,
         open: impl FnOnce(&dyn Driver, &mut Option<Handle>) -> DriverResult<()>,
     ) -> Result<Handle, Error> {
-        let mut state = self.gate.lock();
-        let live_handles = match *state {
-            ProcessSdkState::Active { live_handles } => live_handles,
-            ProcessSdkState::Degraded { .. } => return Err(Error::RuntimeDegraded),
-            ProcessSdkState::Fresh => return Err(Error::RuntimeTerminal),
-        };
+        let mut state = self.lock_handles();
+        if state.teardown_uncertain {
+            return Err(Error::RuntimeDegraded);
+        }
 
         let mut handle = None;
         match open(self.driver.as_ref(), &mut handle) {
@@ -153,18 +141,18 @@ impl RuntimeInner {
                     operation,
                     kind: ContractViolation::NullHandleOnSuccess,
                 })?;
-                let Some(live_handles) = live_handles.checked_add(1) else {
-                    *state = ProcessSdkState::Degraded { live_handles };
+                let Some(live_handles) = state.live_handles.checked_add(1) else {
+                    state.teardown_uncertain = true;
                     return Err(Error::ContractViolation {
                         operation,
                         kind: ContractViolation::HandleCountOverflow,
                     });
                 };
-                *state = ProcessSdkState::Active { live_handles };
+                state.live_handles = live_handles;
                 Ok(handle)
             }
             Err(error) if handle.is_some() => {
-                *state = ProcessSdkState::Degraded { live_handles };
+                state.teardown_uncertain = true;
                 Err(Error::OpenFailedWithHandle {
                     operation,
                     source: Box::new(map_driver_error(operation, error)),
@@ -177,26 +165,18 @@ impl RuntimeInner {
     pub(crate) fn cleanup_close_handle(&self, handle: Handle) -> Result<(), Error> {
         const OPERATION: Operation = Operation::CloseDevice;
 
-        let mut state = self.gate.lock();
-        let (live_handles, was_degraded) = match *state {
-            ProcessSdkState::Active { live_handles } => (live_handles, false),
-            ProcessSdkState::Degraded { live_handles } => (live_handles, true),
-            ProcessSdkState::Fresh => return Err(Error::RuntimeTerminal),
-        };
+        let mut state = self.lock_handles();
 
         let result = self
             .driver
             .close(handle)
             .map_err(|error| map_driver_error(OPERATION, error));
-        let (live_handles, ledger_uncertain) = match live_handles.checked_sub(1) {
+        let (live_handles, ledger_uncertain) = match state.live_handles.checked_sub(1) {
             Some(live_handles) => (live_handles, false),
-            None => (live_handles, true),
+            None => (state.live_handles, true),
         };
-        *state = if was_degraded || ledger_uncertain || result.is_err() {
-            ProcessSdkState::Degraded { live_handles }
-        } else {
-            ProcessSdkState::Active { live_handles }
-        };
+        state.live_handles = live_handles;
+        state.teardown_uncertain |= ledger_uncertain || result.is_err();
         result
     }
 
@@ -205,11 +185,14 @@ impl RuntimeInner {
     }
 }
 
+#[derive(Clone)]
+/// Control token for the process-wide native session.
+///
+/// Dropping a token leaves the session active; explicit `shutdown` performs Finalize after every
+/// device closes.
 pub struct Runtime {
-    inner: RuntimeInner,
-    version: Vec<u8>,
-    finished: bool,
-    _not_send_or_sync: PhantomData<Rc<()>>,
+    core: Arc<RuntimeCore>,
+    gate: Arc<Gate>,
 }
 
 impl Runtime {
@@ -265,65 +248,49 @@ impl Runtime {
         policy: VersionPolicy,
     ) -> Result<Self, Error> {
         let mut state = gate.lock();
-        match *state {
+        match &*state {
             ProcessSdkState::Fresh => {}
-            ProcessSdkState::Active { .. } => return Err(Error::RuntimeAlreadyActive),
-            ProcessSdkState::Degraded { .. } => return Err(Error::RuntimeDegraded),
+            ProcessSdkState::Active(core) => {
+                validate_sdk_version(policy, &core.version)?;
+                return Ok(Self {
+                    core: Arc::clone(core),
+                    gate: Arc::clone(&gate),
+                });
+            }
+            ProcessSdkState::Degraded => return Err(Error::RuntimeDegraded),
         }
 
         let version = match driver.version() {
             Ok(version) => version,
             Err(error) => return Err(map_driver_error(Operation::GetVersion, error)),
         };
-        let parsed_version = parse_sdk_version(&version);
-        if !parsed_version.is_some_and(|version| policy.accepts(version)) {
-            return Err(Error::IncompatibleSdkVersion {
-                minimum: AUDITED_VERSION_TEXT,
-                maximum_exclusive: policy.maximum_exclusive(),
-                actual: version,
-            });
-        }
+        validate_sdk_version(policy, &version)?;
 
         if let Err(error) = driver.initialize() {
             let initialize = map_driver_error(Operation::Initialize, error);
             // Initialize may have partially established process-wide native state. Preserve its
             // primary error, but only leave the session Fresh when compensating cleanup succeeds.
             if driver.finalize().is_err() {
-                *state = ProcessSdkState::Degraded { live_handles: 0 };
+                *state = ProcessSdkState::Degraded;
             }
             return Err(initialize);
         }
 
-        *state = ProcessSdkState::Active { live_handles: 0 };
-        drop(state);
-        Ok(Self {
-            inner: RuntimeInner {
-                driver,
-                gate,
-                image_processing: Mutex::new(()),
-            },
+        let core = Arc::new(RuntimeCore {
+            driver,
             version,
-            finished: false,
-            _not_send_or_sync: PhantomData,
-        })
+            handles: Mutex::new(HandleLedger {
+                live_handles: 0,
+                teardown_uncertain: false,
+            }),
+        });
+        *state = ProcessSdkState::Active(Arc::clone(&core));
+        drop(state);
+        Ok(Self { core, gate })
     }
 
     pub fn version_bytes(&self) -> &[u8] {
-        &self.version
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_live_handles_for_test(&self, live_handles: usize) {
-        let mut state = self.inner.gate.lock();
-        match &mut *state {
-            ProcessSdkState::Active {
-                live_handles: current,
-            }
-            | ProcessSdkState::Degraded {
-                live_handles: current,
-            } => *current = live_handles,
-            ProcessSdkState::Fresh => panic!("an initialized Runtime cannot have a Fresh gate"),
-        }
+        &self.core.version
     }
 
     pub fn device_count_hint(&self) -> Result<u32, Error> {
@@ -403,37 +370,35 @@ impl Runtime {
         })
     }
 
-    pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device<'_>, Error> {
+    pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device, Error> {
         let address = CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
         let handle = self.open(Operation::OpenDeviceByIp, |driver, output| {
             driver.open_by_ip(&address, output)
         })?;
-        Ok(Device::new(&self.inner, handle))
+        Ok(Device::new(Arc::clone(&self.core), handle))
     }
 
-    pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device<'_>, Error> {
+    pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device, Error> {
         let serial = validated_c_string(Operation::OpenDeviceBySn, serial_number, 16, false)?;
         let handle = self.open(Operation::OpenDeviceBySn, |driver, output| {
             driver.open_by_serial(&serial, output)
         })?;
-        Ok(Device::new(&self.inner, handle))
+        Ok(Device::new(Arc::clone(&self.core), handle))
     }
 
     pub fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> Result<FrameRecord, Error> {
-        self.inner
-            .image_call(Operation::MapDepthToPointCloud, |driver| {
-                driver.map_depth_to_point_cloud(input)
-            })
+        self.call(Operation::MapDepthToPointCloud, |driver| {
+            driver.map_depth_to_point_cloud(input)
+        })
     }
 
     pub fn map_depth_to_point_cloud_round(
         &self,
         inputs: &[ImageInput<'_>],
     ) -> Result<FrameRecord, Error> {
-        self.inner
-            .image_call(Operation::MapDepthToPointCloudRound, |driver| {
-                driver.map_depth_to_point_cloud_round(inputs)
-            })
+        self.call(Operation::MapDepthToPointCloudRound, |driver| {
+            driver.map_depth_to_point_cloud_round(inputs)
+        })
     }
 
     pub fn convert_image(
@@ -441,14 +406,13 @@ impl Runtime {
         input: ImageInput<'_>,
         target: ImageTypeRecord,
     ) -> Result<FrameRecord, Error> {
-        self.inner.image_call(Operation::ImageConvert, |driver| {
+        self.call(Operation::ImageConvert, |driver| {
             driver.convert_image(input, target)
         })
     }
 
     pub fn mosaic_depth(&self, inputs: &[ImageInput<'_>]) -> Result<FrameRecord, Error> {
-        self.inner
-            .image_call(Operation::DepthMosaic, |driver| driver.mosaic_depth(inputs))
+        self.call(Operation::DepthMosaic, |driver| driver.mosaic_depth(inputs))
     }
 
     pub fn save_image(
@@ -459,7 +423,7 @@ impl Runtime {
     ) -> Result<(), Error> {
         let file_name =
             validated_c_string(Operation::SaveImage, file_name, u32::MAX as usize, false)?;
-        self.inner.image_call(Operation::SaveImage, |driver| {
+        self.call(Operation::SaveImage, |driver| {
             driver.save_image(input, format, &file_name)
         })
     }
@@ -471,13 +435,50 @@ impl Runtime {
         window: NonZeroIsize,
         range: DisplayRangeRecord,
     ) -> Result<(), Error> {
-        self.inner.image_call(Operation::DisplayImage, |driver| {
+        self.call(Operation::DisplayImage, |driver| {
             driver.display_image(input, window, range)
         })
     }
 
-    pub fn shutdown(mut self) -> Result<(), Error> {
-        self.finish()
+    /// Finalizes the native session after every owned device closes.
+    ///
+    /// Repeating the call while the process remains Fresh succeeds; a stale token cannot finalize
+    /// a newer session.
+    pub fn shutdown(&self) -> Result<(), Error> {
+        let mut process = self.gate.lock();
+        match &*process {
+            ProcessSdkState::Active(core) if Arc::ptr_eq(core, &self.core) => {}
+            ProcessSdkState::Fresh => return Ok(()),
+            ProcessSdkState::Active(_) => return Err(Error::RuntimeInactive),
+            ProcessSdkState::Degraded => return Err(Error::RuntimeDegraded),
+        }
+
+        let handles = self.core.lock_handles();
+        if handles.teardown_uncertain {
+            return Err(Error::RuntimeDegraded);
+        }
+        if handles.live_handles != 0 {
+            return Err(Error::UnclosedDevices {
+                live_handles: handles.live_handles,
+            });
+        }
+
+        let result = self
+            .core
+            .driver
+            .finalize()
+            .map_err(|error| map_driver_error(Operation::Finalize, error));
+        drop(handles);
+        match result {
+            Ok(()) => {
+                *process = ProcessSdkState::Fresh;
+                Ok(())
+            }
+            Err(error) => {
+                *process = ProcessSdkState::Degraded;
+                Err(error)
+            }
+        }
     }
 
     fn open(
@@ -485,7 +486,8 @@ impl Runtime {
         operation: Operation,
         open: impl FnOnce(&dyn Driver, &mut Option<Handle>) -> DriverResult<()>,
     ) -> Result<Handle, Error> {
-        self.inner.open_handle(operation, open)
+        let _active = self.active_state()?;
+        self.core.open_handle(operation, open)
     }
 
     fn call<T>(
@@ -493,50 +495,30 @@ impl Runtime {
         operation: Operation,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
-        self.inner.call(operation, call)
+        let _active = self.active_state()?;
+        self.core.call(operation, call)
     }
 
-    fn finish(&mut self) -> Result<(), Error> {
-        if self.finished {
-            return Err(Error::RuntimeTerminal);
-        }
-        self.finished = true;
-        let mut state = self.inner.gate.lock();
-        match *state {
-            ProcessSdkState::Fresh => return Err(Error::RuntimeTerminal),
-            ProcessSdkState::Active { live_handles: 0 } => {}
-            ProcessSdkState::Active { live_handles } => {
-                *state = ProcessSdkState::Degraded { live_handles };
-                return Err(Error::UnclosedDevices {
-                    live_handles,
-                    teardown_uncertain: false,
-                });
-            }
-            ProcessSdkState::Degraded { live_handles } => {
-                return Err(Error::UnclosedDevices {
-                    live_handles,
-                    teardown_uncertain: true,
-                });
-            }
-        }
-        match self.inner.driver.finalize() {
-            Ok(()) => {
-                *state = ProcessSdkState::Fresh;
-                Ok(())
-            }
-            Err(error) => {
-                *state = ProcessSdkState::Degraded { live_handles: 0 };
-                Err(map_driver_error(Operation::Finalize, error))
-            }
+    /// Holds the process gate across a short native call and rejects stale SDK tokens.
+    fn active_state(&self) -> Result<MutexGuard<'_, ProcessSdkState>, Error> {
+        let state = self.gate.lock();
+        match &*state {
+            ProcessSdkState::Active(core) if Arc::ptr_eq(core, &self.core) => Ok(state),
+            ProcessSdkState::Degraded => Err(Error::RuntimeDegraded),
+            ProcessSdkState::Active(_) | ProcessSdkState::Fresh => Err(Error::RuntimeInactive),
         }
     }
 }
 
-impl Drop for Runtime {
-    fn drop(&mut self) {
-        if !self.finished {
-            let _ = self.finish();
-        }
+fn validate_sdk_version(policy: VersionPolicy, bytes: &[u8]) -> Result<(), Error> {
+    if parse_sdk_version(bytes).is_some_and(|version| policy.accepts(version)) {
+        Ok(())
+    } else {
+        Err(Error::IncompatibleSdkVersion {
+            minimum: AUDITED_VERSION_TEXT,
+            maximum_exclusive: policy.maximum_exclusive(),
+            actual: bytes.to_vec(),
+        })
     }
 }
 
@@ -649,7 +631,7 @@ mod tests {
             .is_err()
         );
 
-        assert_eq!(*gate.lock(), ProcessSdkState::Degraded { live_handles: 0 });
+        assert!(matches!(*gate.lock(), ProcessSdkState::Degraded));
         assert!(!gate.state.is_poisoned());
     }
 }

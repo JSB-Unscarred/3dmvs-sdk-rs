@@ -39,10 +39,11 @@ impl ImageFileFormat {
     }
 }
 
-/// Safe access to the process-global LPSDK image-processing functions.
+/// An owned token for the process-wide LPSDK image-processing functions.
 ///
-/// Each output is validated and copied into Rust-owned storage before the dedicated
-/// image-processing lock is released.
+/// `ImageProcessor` does not borrow [`crate::Sdk`] and is `Send + Sync`. Each call verifies that
+/// its session is active, validates the input, and copies SDK output into Rust-owned storage.
+/// Successful [`crate::Sdk::shutdown`] invalidates tokens from that session.
 ///
 /// # Native contract
 ///
@@ -50,11 +51,11 @@ impl ImageFileFormat {
 /// are not modified or retained after the synchronous call, and that SDK-owned outputs remain
 /// readable and unchanged during the immediate copy. These are disclosed project assumptions,
 /// not separate written vendor guarantees.
-pub struct ImageProcessor<'sdk> {
-    pub(crate) inner: &'sdk mv3d_lp_internal::Runtime,
+pub struct ImageProcessor {
+    pub(crate) inner: mv3d_lp_internal::Runtime,
 }
 
-impl ImageProcessor<'_> {
+impl ImageProcessor {
     pub fn depth_to_point_cloud(&self, input: ImageRef<'_>) -> Result<OwnedImage> {
         require_type(Operation::MapDepthToPointCloud, input, ImageType::DEPTH)?;
         validate_layout(Operation::MapDepthToPointCloud, input)?;

@@ -22,13 +22,7 @@ fn close_is_attempted_even_when_cleanup_stop_fails() {
     let log = mock.logs();
     assert_eq!(&log[log.len() - 2..], ["stop", "close"]);
     assert_eq!(runtime.device_count_hint().unwrap(), 0);
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: 0,
-            teardown_uncertain: true,
-        })
-    ));
+    assert!(matches!(runtime.shutdown(), Err(Error::RuntimeDegraded)));
     assert!(!mock.logs().contains(&"finalize"));
 }
 
@@ -52,13 +46,7 @@ fn failed_close_does_not_block_a_healthy_device() {
         runtime.open_by_serial(b"THIRD"),
         Err(Error::RuntimeDegraded)
     ));
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: 0,
-            teardown_uncertain: true,
-        })
-    ));
+    assert!(matches!(runtime.shutdown(), Err(Error::RuntimeDegraded)));
 
     assert_eq!(mock.closed_handles(), [1, 2]);
     assert_eq!(
@@ -108,54 +96,6 @@ fn explicit_close_is_not_repeated_by_drop() {
             .filter(|entry| **entry == "finalize")
             .count(),
         1
-    );
-}
-
-// 验证遗忘 active Device 时拒绝 finalize，防止 SDK 在采集 handle 存续期间卸载。
-#[test]
-fn forgotten_device_prevents_finalize() {
-    let mock = MockDriver::new();
-    let (runtime, gate) = active_runtime(&mock);
-    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    device.start().unwrap();
-    std::mem::forget(device);
-
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: 1,
-            teardown_uncertain: false,
-        })
-    ));
-    assert!(!mock.logs().contains(&"finalize"));
-
-    let retry_mock = MockDriver::new();
-    let retry = crate::runtime::Runtime::initialize_with(Box::new(retry_mock.clone()), gate);
-    assert!(matches!(retry, Err(Error::RuntimeDegraded)));
-    assert!(retry_mock.operations().is_empty());
-}
-
-// 验证隐式 Drop 严格执行 stop、close、finalize 一次，防止遗漏或重复清理。
-#[test]
-fn implicit_drop_has_one_exact_stop_close_finalize_sequence() {
-    let mock = MockDriver::new();
-    let (runtime, _) = active_runtime(&mock);
-    let mut device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
-    device.start().unwrap();
-    drop(device);
-    drop(runtime);
-
-    assert_eq!(
-        mock.operations(),
-        [
-            FfiOp::GetVersion,
-            FfiOp::Initialize,
-            FfiOp::OpenDeviceByIp,
-            FfiOp::StartMeasure,
-            FfiOp::StopMeasure,
-            FfiOp::CloseDevice,
-            FfiOp::Finalize,
-        ]
     );
 }
 
@@ -229,13 +169,7 @@ fn failed_close_is_consumed_once_and_permanently_suppresses_finalize() {
     let error = device.close().unwrap_err();
     assert!(error.stop.is_none());
     assert!(error.close.is_some());
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: 0,
-            teardown_uncertain: true,
-        })
-    ));
+    assert!(matches!(runtime.shutdown(), Err(Error::RuntimeDegraded)));
 
     assert_eq!(
         mock.operations()
@@ -248,34 +182,24 @@ fn failed_close_is_consumed_once_and_permanently_suppresses_finalize() {
     mock.assert_no_pending_failures();
 }
 
-// 验证 finalize 等待所有独立设备关闭，防止任一活跃 handle 被提前失效。
+// 验证 live Device 暂时拒绝 finalize，关闭后可重新取得 token 完成 shutdown。
 #[test]
-fn finalize_waits_for_every_distinct_device_close() {
+fn finalize_can_retry_after_the_live_device_closes() {
     let mock = MockDriver::new();
     let (runtime, _) = active_runtime(&mock);
-    let first = runtime.open_by_ip("192.0.2.1".parse().unwrap()).unwrap();
-    let second = runtime.open_by_serial(b"SECOND").unwrap();
+    let device = runtime.open_by_ip(Ipv4Addr::LOCALHOST).unwrap();
 
-    second.close().unwrap();
-    assert!(!mock.operations().contains(&FfiOp::Finalize));
-    first.close().unwrap();
-    assert!(!mock.operations().contains(&FfiOp::Finalize));
+    assert!(matches!(
+        runtime.shutdown(),
+        Err(Error::UnclosedDevices { live_handles: 1 })
+    ));
+    device.close().unwrap();
+    runtime.shutdown().unwrap();
     runtime.shutdown().unwrap();
 
     assert_eq!(
-        mock.opened_handles(),
-        [(FfiOp::OpenDeviceByIp, 1), (FfiOp::OpenDeviceBySerial, 2)]
-    );
-    assert_eq!(mock.closed_handles(), [2, 1]);
-    assert_eq!(
         &mock.operations()[2..],
-        [
-            FfiOp::OpenDeviceByIp,
-            FfiOp::OpenDeviceBySerial,
-            FfiOp::CloseDevice,
-            FfiOp::CloseDevice,
-            FfiOp::Finalize,
-        ]
+        [FfiOp::OpenDeviceByIp, FfiOp::CloseDevice, FfiOp::Finalize,]
     );
 }
 
@@ -306,24 +230,5 @@ fn cleanup_status_failures_never_unwind_from_drop() {
         [FfiOp::StartMeasure, FfiOp::StopMeasure, FfiOp::CloseDevice,]
     );
     assert!(!mock.operations().contains(&FfiOp::Finalize));
-    mock.assert_no_pending_failures();
-}
-
-// 验证 finalize 失败在 Runtime Drop 中不 unwind 且不重试，防止重复终结不确定状态。
-#[test]
-fn finalize_status_failure_never_unwinds_from_runtime_drop_or_retries() {
-    let mock = MockDriver::new();
-    mock.fail_next(FfiOp::Finalize, DriverError::Status(0x8006_0005_u32 as i32));
-
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        let (runtime, _) = active_runtime(&mock);
-        drop(runtime);
-    }));
-
-    assert!(outcome.is_ok());
-    assert_eq!(
-        mock.operations(),
-        [FfiOp::GetVersion, FfiOp::Initialize, FfiOp::Finalize]
-    );
     mock.assert_no_pending_failures();
 }

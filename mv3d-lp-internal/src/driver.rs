@@ -46,7 +46,11 @@ impl Handle {
     }
 }
 
-pub(crate) trait Driver: Sync {
+/// Native operation surface shared by the process owner and owned device leases.
+///
+/// `Send` lets an `Arc<RuntimeCore>` travel with a uniquely owned device; `Sync` permits distinct
+/// device handles to call the process-wide driver concurrently.
+pub(crate) trait Driver: Send + Sync {
     fn version(&self) -> DriverResult<Vec<u8>>;
     fn initialize(&self) -> DriverResult<()>;
     fn finalize(&self) -> DriverResult<()>;

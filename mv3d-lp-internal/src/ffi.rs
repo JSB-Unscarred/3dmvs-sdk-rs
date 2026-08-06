@@ -148,7 +148,7 @@ impl Driver for NativeDriver {
     }
 
     fn finalize(&self) -> DriverResult<()> {
-        // SAFETY: Runtime calls Finalize once, after all borrowing Device values are gone.
+        // SAFETY: Runtime calls Finalize once, after the owned-device handle ledger reaches zero.
         status_result(unsafe { bindings::MV3D_LP_Finalize() })
     }
 

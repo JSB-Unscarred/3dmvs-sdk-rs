@@ -396,13 +396,7 @@ fn failed_start_retains_names_when_close_is_uncertain() {
     assert_eq!(operation_count(&mock, FfiOp::FileAccessWrite), 1);
     assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 1);
     assert_eq!(operation_count(&mock, FfiOp::StopMeasure), 0);
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: 0,
-            teardown_uncertain: true,
-        })
-    ));
+    assert!(matches!(runtime.shutdown(), Err(Error::RuntimeDegraded)));
 }
 
 // 验证关闭活动传输成功后释放文件名，防止完成清理后残留 retained storage。
@@ -441,13 +435,7 @@ fn closing_an_active_transfer_retains_names_on_failure() {
     assert!(names.upgrade().is_some());
     assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 1);
     assert_eq!(operation_count(&mock, FfiOp::StopMeasure), 0);
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: 0,
-            teardown_uncertain: true,
-        })
-    ));
+    assert!(matches!(runtime.shutdown(), Err(Error::RuntimeDegraded)));
 }
 
 // 验证 teardown 不确定时现有传输仍可查询进度，防止健康 handle 被进程状态误拦截。
@@ -477,13 +465,7 @@ fn teardown_uncertainty_does_not_block_existing_transfer_progress() {
     assert!(names.upgrade().is_none());
     assert_eq!(operation_count(&mock, FfiOp::CloseDevice), 2);
     assert_eq!(operation_count(&mock, FfiOp::StopMeasure), 0);
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: 0,
-            teardown_uncertain: true,
-        })
-    ));
+    assert!(matches!(runtime.shutdown(), Err(Error::RuntimeDegraded)));
 }
 
 // 验证活动传输随 Device 跨线程转移并完成，防止线程 handoff 破坏复用。

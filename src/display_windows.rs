@@ -9,7 +9,7 @@ pub enum DisplayRange {
     Manual { minimum: i32, maximum: i32 },
 }
 
-impl ImageProcessor<'_> {
+impl ImageProcessor {
     /// Draws an SDK image into a borrowed Win32 window.
     ///
     /// The window handle is held until the synchronous SDK call returns. The

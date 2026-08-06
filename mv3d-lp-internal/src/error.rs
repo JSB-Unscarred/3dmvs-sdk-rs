@@ -179,8 +179,7 @@ pub enum InvalidInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     UnsupportedPlatform,
-    RuntimeAlreadyActive,
-    RuntimeTerminal,
+    RuntimeInactive,
     RuntimeDegraded,
     IncompatibleSdkVersion {
         minimum: &'static [u8],
@@ -216,7 +215,6 @@ pub enum Error {
     },
     UnclosedDevices {
         live_handles: usize,
-        teardown_uncertain: bool,
     },
 }
 
@@ -226,10 +224,9 @@ impl fmt::Display for Error {
             Self::UnsupportedPlatform => f.write_str(
                 "native 3DMVS support requires x86_64-pc-windows-msvc and the `native` feature",
             ),
-            Self::RuntimeAlreadyActive => f.write_str("the 3DMVS runtime is already active"),
-            Self::RuntimeTerminal => f.write_str(
-                "the 3DMVS runtime cannot accept this operation in its current lifecycle state",
-            ),
+            Self::RuntimeInactive => {
+                f.write_str("this token no longer refers to the active 3DMVS runtime")
+            }
             Self::RuntimeDegraded => f.write_str(
                 "the process-wide 3DMVS SDK session is degraded and cannot open devices, finalize, or initialize another runtime",
             ),
@@ -285,12 +282,9 @@ impl fmt::Display for Error {
                     "could not allocate {requested} bytes or records for {operation}"
                 )
             }
-            Self::UnclosedDevices {
-                live_handles,
-                teardown_uncertain,
-            } => write!(
+            Self::UnclosedDevices { live_handles } => write!(
                 f,
-                "Finalize was skipped because {live_handles} device handle(s) remain live and teardown uncertainty is {teardown_uncertain}"
+                "Finalize was skipped because {live_handles} device handle(s) remain live"
             ),
         }
     }

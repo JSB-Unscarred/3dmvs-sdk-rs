@@ -23,21 +23,20 @@ macro_rules! assert_not_impl {
     };
 }
 
-assert_not_impl!(Sdk: Send);
-assert_not_impl!(Sdk: Sync);
-assert_not_impl!(Device<'static>: Sync);
-assert_not_impl!(ImageProcessor<'static>: Send);
-assert_not_impl!(ImageProcessor<'static>: Sync);
+assert_not_impl!(Device: Sync);
 assert_not_impl!(OwnedFrame: Clone);
 assert_not_impl!(OwnedImage: Clone);
 assert_not_impl!(Receiver<OwnedFrame>: Sync);
 
-// 验证设备可转移线程且保持独占访问，防止跨线程并发调用同一 handle。
+// 验证进程 token 可共享，设备保持独占访问。
 #[test]
-fn public_device_is_send_but_not_sync() {
+fn public_runtime_types_follow_the_thread_contract() {
     fn assert_send<T: Send>() {}
+    fn assert_send_sync<T: Send + Sync>() {}
 
-    assert_send::<Device<'static>>();
+    assert_send_sync::<Sdk>();
+    assert_send_sync::<ImageProcessor>();
+    assert_send::<Device>();
 }
 
 // 验证 owned 数据可安全跨线程传递与共享，防止 callback 输出携带线程绑定状态。

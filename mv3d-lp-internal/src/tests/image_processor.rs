@@ -158,13 +158,7 @@ fn teardown_uncertainty_does_not_block_pure_image_processing() {
             .count(),
         0
     );
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: 0,
-            teardown_uncertain: true,
-        })
-    ));
+    assert!(matches!(runtime.shutdown(), Err(Error::RuntimeDegraded)));
     assert!(!mock.operations().contains(&FfiOp::Finalize));
     mock.assert_no_pending_failures();
 }

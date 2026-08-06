@@ -1,7 +1,6 @@
 use crate::driver::Handle;
-use crate::runtime::RuntimeInner;
 use crate::{
-    Device, DeviceRecord, ExceptionRecord, FrameRecord, IpConfiguration, ParameterRecord,
+    DeviceRecord, ExceptionRecord, FrameRecord, IpConfiguration, ParameterRecord,
     ParameterValueRecord, Runtime,
 };
 
@@ -22,17 +21,14 @@ macro_rules! assert_not_impl {
     };
 }
 
-assert_not_impl!(Runtime: Send);
-assert_not_impl!(Runtime: Sync);
 assert_not_impl!(Handle: Sync);
-assert_not_impl!(Device<'static>: Sync);
 
-// 验证内部设备可跨线程转移，防止无依据地限制独占所有权 handoff。
+// 验证 Runtime token 可跨线程共享，支持任意线程接管进程级调用。
 #[test]
-fn internal_device_ownership_can_move_between_threads() {
-    fn assert_send<T: Send>() {}
+fn runtime_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
 
-    assert_send::<Device<'static>>();
+    assert_send_sync::<Runtime>();
 }
 
 // 验证 opaque handle 可转移且保持非共享，防止同一 native handle 被并发调用。
@@ -54,12 +50,4 @@ fn records_crossing_the_safe_driver_boundary_are_send_and_sync() {
     assert_send_sync::<IpConfiguration>();
     assert_send_sync::<ParameterRecord>();
     assert_send_sync::<ParameterValueRecord>();
-}
-
-// 验证借用的 RuntimeInner 可共享，支持不同设备并行调用同一 driver。
-#[test]
-fn borrowed_runtime_inner_is_sync() {
-    fn assert_sync<T: Sync>() {}
-
-    assert_sync::<RuntimeInner>();
 }

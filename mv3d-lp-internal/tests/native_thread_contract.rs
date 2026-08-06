@@ -375,7 +375,7 @@ fn immediate_device_cleanup_during_transfer(
     })
 }
 
-fn complete_transfer(device: &mut Device<'_>) -> TestResult {
+fn complete_transfer(device: &mut Device) -> TestResult {
     match device.wait_file_transfer(FILE_POLL_INTERVAL, FILE_DEADLINE) {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(String::from("FileAccess exceeded its total deadline")),
@@ -383,7 +383,7 @@ fn complete_transfer(device: &mut Device<'_>) -> TestResult {
     }
 }
 
-fn wait_for_image(device: &mut Device<'_>) -> TestResult {
+fn wait_for_image(device: &mut Device) -> TestResult {
     let deadline = Instant::now() + GET_IMAGE_DEADLINE;
     loop {
         match device.get_image(GET_IMAGE_SLICE_MS) {
@@ -401,7 +401,7 @@ fn wait_for_image(device: &mut Device<'_>) -> TestResult {
 }
 
 fn expect_device_state(
-    device: &Device<'_>,
+    device: &Device,
     expected: DeviceState,
     context: &'static str,
 ) -> TestResult {
@@ -432,10 +432,7 @@ fn selected_device_metadata(runtime: &Runtime, serial: &[u8]) -> TestResult<(Str
     ))
 }
 
-fn open_device<'runtime>(
-    runtime: &'runtime Runtime,
-    serial: &[u8],
-) -> TestResult<Device<'runtime>> {
+fn open_device(runtime: &Runtime, serial: &[u8]) -> TestResult<Device> {
     sdk(
         "open the configured device by its redacted serial",
         runtime.open_by_serial(serial),

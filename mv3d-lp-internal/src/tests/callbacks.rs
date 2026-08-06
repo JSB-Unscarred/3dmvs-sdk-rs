@@ -875,13 +875,7 @@ fn assert_exception_close_order(close_result: DriverResult<()>) {
     if close_succeeds {
         runtime.shutdown().unwrap();
     } else {
-        assert!(matches!(
-            runtime.shutdown(),
-            Err(Error::UnclosedDevices {
-                live_handles: 0,
-                teardown_uncertain: true,
-            })
-        ));
+        assert!(matches!(runtime.shutdown(), Err(Error::RuntimeDegraded)));
     }
 }
 

@@ -481,8 +481,7 @@ pub enum Error {
         actual: SdkVersion,
         actual_text: SdkText,
     },
-    RuntimeAlreadyActive,
-    RuntimeTerminal,
+    RuntimeInactive,
     RuntimeDegraded,
     AllocationFailed {
         operation: Operation,
@@ -494,7 +493,6 @@ pub enum Error {
     },
     UnclosedDevices {
         live_handles: usize,
-        teardown_uncertain: bool,
     },
 }
 
@@ -545,12 +543,8 @@ impl fmt::Display for Error {
                     "incompatible SDK runtime version {actual_text}; expected exactly {minimum}"
                 ),
             },
-            Self::RuntimeAlreadyActive => {
-                formatter.write_str("the process already has an active 3DMVS SDK runtime")
-            }
-            Self::RuntimeTerminal => formatter.write_str(
-                "the process-wide 3DMVS SDK runtime cannot accept this operation in its current lifecycle state",
-            ),
+            Self::RuntimeInactive => formatter
+                .write_str("this token no longer refers to the active 3DMVS SDK runtime"),
             Self::RuntimeDegraded => formatter.write_str(
                 "the process-wide 3DMVS SDK session is degraded and cannot open devices, finalize, or initialize another runtime",
             ),
@@ -572,12 +566,9 @@ impl fmt::Display for Error {
                 (None, Some(close)) => write!(formatter, "device cleanup failed: {close}"),
                 (None, None) => formatter.write_str("device cleanup failed without an SDK status"),
             },
-            Self::UnclosedDevices {
-                live_handles,
-                teardown_uncertain,
-            } => write!(
+            Self::UnclosedDevices { live_handles } => write!(
                 formatter,
-                "SDK finalization was skipped because {live_handles} handle(s) remain live and teardown uncertainty is {teardown_uncertain}"
+                "SDK finalization was skipped because {live_handles} device handle(s) remain live"
             ),
         }
     }
@@ -623,8 +614,7 @@ impl Error {
 
         match error {
             InternalError::UnsupportedPlatform => Self::UnsupportedPlatform,
-            InternalError::RuntimeAlreadyActive => Self::RuntimeAlreadyActive,
-            InternalError::RuntimeTerminal => Self::RuntimeTerminal,
+            InternalError::RuntimeInactive => Self::RuntimeInactive,
             InternalError::RuntimeDegraded => Self::RuntimeDegraded,
             InternalError::IncompatibleSdkVersion {
                 minimum,
@@ -843,13 +833,9 @@ impl Error {
             InternalError::AllocationFailed { operation, .. } => Self::AllocationFailed {
                 operation: map_internal_operation(operation),
             },
-            InternalError::UnclosedDevices {
-                live_handles,
-                teardown_uncertain,
-            } => Self::UnclosedDevices {
-                live_handles,
-                teardown_uncertain,
-            },
+            InternalError::UnclosedDevices { live_handles } => {
+                Self::UnclosedDevices { live_handles }
+            }
         }
     }
 }

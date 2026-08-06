@@ -552,10 +552,6 @@ impl MockDriver {
         self.state().operations.clone()
     }
 
-    pub(crate) fn opened_handles(&self) -> Vec<(FfiOp, usize)> {
-        self.state().opened_handles.clone()
-    }
-
     pub(crate) fn closed_handles(&self) -> Vec<usize> {
         self.state().closed_handles.clone()
     }

@@ -164,13 +164,7 @@ fn handle_returned_on_open_failure_is_never_treated_as_valid() {
         runtime.open_by_serial(b"SECOND"),
         Err(Error::RuntimeDegraded)
     ));
-    assert!(matches!(
-        runtime.shutdown(),
-        Err(Error::UnclosedDevices {
-            live_handles: 0,
-            teardown_uncertain: true,
-        })
-    ));
+    assert!(matches!(runtime.shutdown(), Err(Error::RuntimeDegraded)));
     assert_eq!(
         mock.logs(),
         ["version", "initialize", "open_by_ip", "device_number"]
