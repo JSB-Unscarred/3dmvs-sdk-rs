@@ -19,12 +19,16 @@ fn public_lifecycle_uses_owned_types() {
     let _: fn(&Sdk) -> Result<()> = Sdk::shutdown;
 }
 
-// 验证公开构造与 Clone 都深拷贝三类 payload，防止共享可变缓冲区。
+// 验证公开构造与 Clone 都复制三类 payload，使结果与源数据及副本相互独立。
 #[test]
-fn owned_outputs_copy_payloads() {
+fn owned_outputs_have_independent_payloads() {
     let mut data = DATA;
     let mut intensity_data = INTENSITY_DATA;
     let mut exposure_timestamps = EXPOSURE_TIMESTAMPS;
+    let calibration = ImageCalibration {
+        x_scale: 1.0,
+        ..ImageCalibration::default()
+    };
     let image_ref = ImageRef {
         image_type: ImageType::MONO8,
         width: 2,
@@ -35,7 +39,7 @@ fn owned_outputs_copy_payloads() {
         frame_number: 0,
         device_timestamp: 0,
         valid: true,
-        calibration: ImageCalibration::default(),
+        calibration,
     };
     let mut frame = Frame::from_image_ref(image_ref);
     let mut image = Image::from_image_ref(image_ref);
@@ -45,6 +49,8 @@ fn owned_outputs_copy_payloads() {
     exposure_timestamps.fill(0);
     assert_payloads(frame.as_image_ref());
     assert_payloads(image.as_image_ref());
+    assert_eq!(frame.as_image_ref().calibration, calibration);
+    assert_eq!(image.as_image_ref().calibration, calibration);
 
     let cloned_frame = frame.clone();
     let cloned_image = image.clone();

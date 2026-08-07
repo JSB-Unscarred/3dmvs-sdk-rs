@@ -60,9 +60,9 @@ fn main() -> Result<()> {
 - `ImageProcessor` 不借用 `Sdk`，是 `Send + Sync` 的图像处理 token。
 - `shutdown()` 成功后，同一 session 的其他 token 停止接受 native 操作；缓存的 `Sdk::version()` 仍可读取。
 
-采集与文件传输状态由 `Device` 持有。`start()`、`stop()` 和文件传输方法只短暂借用设备；`Receiver<Frame>`、`CallbackWorker` 与 `Frame` 均独立于设备。callback 结束时先调用 `device.stop()`，再调用 `worker.join()`。
+采集与文件传输状态由 `Device` 持有。`start()`、`stop()` 和文件传输方法只短暂借用设备；`Receiver<Frame>` 与 `CallbackWorker` 均不借用 `Device`。callback 结束时先调用 `device.stop()`，再调用 `worker.join()`。
 
-`Frame` 表示采集帧，`Image` 表示图像处理结果。两者都拥有 payload，可脱离 SDK 内存和设备使用；`from_image_ref()` 与 `clone()` 深拷贝主数据、亮度数据和曝光时间戳，`as_image_ref()` 返回借用视图。两者包含 `Vec`，因此保持 `!Copy`。
+`Frame` 表示采集结果，`Image` 表示图像处理结果。两者拥有主数据及可选的亮度数据、曝光时间戳，可脱离 SDK 缓冲区使用；`from_image_ref()` 与 `clone()` 深拷贝这三类 payload，`as_image_ref()` 返回借用视图。因包含 `Vec`，两者为 `Clone + !Copy`。
 
 ## SDK 接口对应表
 

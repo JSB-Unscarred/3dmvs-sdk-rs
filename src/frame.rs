@@ -140,9 +140,10 @@ impl<'a> ImageRef<'a> {
     }
 }
 
-/// An image whose pixel payload is fully owned by Rust.
+/// An image-processing result whose payload is owned by Rust.
 ///
-/// Cloning duplicates the payload buffers.
+/// Image processing copies SDK output buffers before return. Cloning deep-copies
+/// all payload buffers.
 #[derive(Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Image {
@@ -183,9 +184,7 @@ impl fmt::Debug for Image {
 }
 
 impl Image {
-    /// Deep-copies a borrowed image into owned Rust storage.
-    ///
-    /// Copying prevents later source-buffer changes from affecting this image.
+    /// Deep-copies an [`ImageRef`] so the result is independent of its source buffers.
     #[must_use]
     pub fn from_image_ref(image: ImageRef<'_>) -> Self {
         Self {
@@ -219,7 +218,7 @@ impl Image {
         }
     }
 
-    /// Moves validated internal payloads into the public image.
+    /// Moves validated internal fields into the public image without copying payload buffers.
     pub(crate) fn from_internal(record: mv3d_lp_internal::FrameRecord) -> Self {
         Self {
             image_type: ImageType::from_bits(record.image_type.bits()),
@@ -261,12 +260,12 @@ impl fmt::Display for ImageType {
     }
 }
 
-/// A frame whose payload and metadata are independent of SDK-owned memory.
+/// An acquired frame whose payload is owned by Rust.
 ///
-/// Frames returned by [`crate::Device`] contain copied SDK payloads, so they
-/// remain valid after later acquisitions or device stop, clear, and close.
-/// Cloning duplicates the payload buffers.
-#[derive(Clone)]
+/// Device acquisition copies SDK buffers before return. The frame remains valid
+/// after later acquisitions, buffer clearing, stopping, or closing the device.
+/// Cloning deep-copies all payload buffers.
+#[derive(Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Frame {
     pub image_type: ImageType,
@@ -282,9 +281,7 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// Deep-copies a borrowed image into an owned frame.
-    ///
-    /// Copying prevents later source-buffer changes from affecting this frame.
+    /// Deep-copies an [`ImageRef`] so the result is independent of its source buffers.
     #[must_use]
     pub fn from_image_ref(image: ImageRef<'_>) -> Self {
         Self {
@@ -318,7 +315,7 @@ impl Frame {
         }
     }
 
-    /// Moves validated internal payloads into the public frame.
+    /// Moves validated internal fields into the public frame without copying payload buffers.
     pub(crate) fn from_internal(record: mv3d_lp_internal::FrameRecord) -> Self {
         Self {
             image_type: ImageType::from_bits(record.image_type.bits()),
@@ -368,56 +365,36 @@ impl fmt::Debug for Frame {
 
 #[cfg(test)]
 mod tests {
-    use super::{Frame, Image, ImageCalibration, ImageType};
+    use super::{Frame, Image, ImageCalibration, ImageRef, ImageType};
 
-    // 验证 Debug 仅输出 payload 长度，防止大量或敏感图像内容进入日志。
+    // 验证 Frame 与 Image 的 Debug 仅输出 payload 长度，防止图像内容进入日志。
     #[test]
-    fn debug_reports_lengths_without_payload_contents() {
-        let frame = Frame {
+    fn owned_debug_reports_lengths_without_payload_contents() {
+        let data = [0xAA, 0xBB];
+        let intensity_data = [0xCC, 0xDD];
+        let exposure_timestamps = [123_456_789];
+        let image_ref = ImageRef {
             image_type: ImageType::MONO8,
             width: 2,
             height: 1,
-            data: vec![0xAA, 0xBB],
-            intensity_data: Some(vec![0xCC, 0xDD]),
-            exposure_timestamps: Some(vec![123_456_789]),
+            data: &data,
+            intensity_data: Some(&intensity_data),
+            exposure_timestamps: Some(&exposure_timestamps),
             frame_number: 7,
             device_timestamp: 42,
             valid: true,
             calibration: ImageCalibration::default(),
         };
+        let frame = Frame::from_image_ref(image_ref);
+        let image = Image::from_image_ref(image_ref);
 
-        let debug = format!("{frame:?}");
-
-        assert!(debug.contains("data_len: 2"));
-        assert!(debug.contains("intensity_data_len: Some(2)"));
-        assert!(debug.contains("exposure_timestamps_len: Some(1)"));
-        assert!(!debug.contains("170"));
-        assert!(!debug.contains("187"));
-        assert!(!debug.contains("123456789"));
-    }
-
-    // 验证处理结果的 Debug 同样隐藏 payload，防止转换输出进入日志。
-    #[test]
-    fn processed_image_debug_is_redacted() {
-        let image = Image {
-            image_type: ImageType::MONO8,
-            width: 2,
-            height: 1,
-            data: vec![0xAA, 0xBB],
-            intensity_data: Some(vec![0xCC, 0xDD]),
-            exposure_timestamps: Some(vec![123_456_789]),
-            frame_number: 7,
-            device_timestamp: 42,
-            valid: true,
-            calibration: ImageCalibration::default(),
-        };
-
-        let debug = format!("{image:?}");
-        assert!(debug.contains("data_len: 2"));
-        assert!(debug.contains("intensity_data_len: Some(2)"));
-        assert!(debug.contains("exposure_timestamps_len: Some(1)"));
-        assert!(!debug.contains("170"));
-        assert!(!debug.contains("187"));
-        assert!(!debug.contains("123456789"));
+        for debug in [format!("{frame:?}"), format!("{image:?}")] {
+            assert!(debug.contains("data_len: 2"));
+            assert!(debug.contains("intensity_data_len: Some(2)"));
+            assert!(debug.contains("exposure_timestamps_len: Some(1)"));
+            assert!(!debug.contains("170"));
+            assert!(!debug.contains("187"));
+            assert!(!debug.contains("123456789"));
+        }
     }
 }
