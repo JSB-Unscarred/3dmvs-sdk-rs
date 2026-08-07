@@ -70,7 +70,7 @@ sequenceDiagram
         Core->>Core: 校验判别值、指针、长度与算术
         Core->>Core: 立即复制图像、亮度和曝光时间戳
         Core-->>Public: FrameRecord（拥有 payload）
-        Public-->>App: OwnedFrame
+        Public-->>App: Frame
     end
 
     App->>Public: device.stop()
@@ -115,4 +115,4 @@ sequenceDiagram
     end
 ```
 
-`Device` 独立持有 session 使用权，pull 采集只切换其内部状态。打开设备后可释放 `Sdk` token，并把 `Device` 移入普通 worker thread；进程 session 保持 `Active`。设备关闭后，任意线程均可通过 `Sdk::initialize()` 加入该 session，再调用 `shutdown()` Finalize。`get_image()` 在返回前完成 payload 校验与复制，`OwnedFrame` 可独立于设备使用。进入 `Faulted` 后只接受 `close()` 或 `Drop`；清理会再尝试一次 Stop，并且无论该重试结果如何都会继续尝试关闭 handle。完整状态图见[生命周期与时序图总览](../生命周期与时序图.md)。
+`Device` 独立持有 session 使用权，pull 采集只切换其内部状态。打开设备后可释放 `Sdk` token，并把 `Device` 移入普通 worker thread；进程 session 保持 `Active`。设备关闭后，任意线程均可通过 `Sdk::initialize()` 加入该 session，再调用 `shutdown()` Finalize。`get_image()` 会校验并复制 payload，返回的 `Frame` 可脱离 SDK 内存和设备使用。进入 `Faulted` 后只接受 `close()` 或 `Drop`；清理会再尝试一次 Stop，并且无论该重试结果如何都会继续尝试关闭 handle。完整状态图见[生命周期与时序图总览](../生命周期与时序图.md)。

@@ -60,7 +60,9 @@ fn main() -> Result<()> {
 - `ImageProcessor` 不借用 `Sdk`，是 `Send + Sync` 的图像处理 token。
 - `shutdown()` 成功后，同一 session 的其他 token 停止接受 native 操作；缓存的 `Sdk::version()` 仍可读取。
 
-采集与文件传输状态由 `Device` 持有。`start()`、`stop()` 和文件传输方法只短暂借用设备；`Receiver<OwnedFrame>`、`CallbackWorker`、`OwnedFrame` 与设备相互独立。callback 结束时先调用 `device.stop()`，再调用 `worker.join()`。
+采集与文件传输状态由 `Device` 持有。`start()`、`stop()` 和文件传输方法只短暂借用设备；`Receiver<Frame>`、`CallbackWorker` 与 `Frame` 均独立于设备。callback 结束时先调用 `device.stop()`，再调用 `worker.join()`。
+
+`Frame` 持有复制后的 SDK payload，可脱离 SDK 内存和设备使用；`clone()` 会再次深拷贝 payload。
 
 ## SDK 接口对应表
 
@@ -81,7 +83,7 @@ fn main() -> Result<()> {
 | `MV3D_LP_StartMeasure` | `Device::start()`、`Device::start_receiving()`、`Device::start_with_callback()` | `Device` 持有采集状态，start 只短暂借用 `&mut self` |
 | `MV3D_LP_StopMeasure` | `Device::stop()`、`Device::close()` 及 `Drop` 兜底 | callback 停止前先撤销并排空 Rust 回调 |
 | `MV3D_LP_SoftTrigger` | `Device::soft_trigger()` | 仅在采集中可用 |
-| `MV3D_LP_GetImage` | `Device::get_image()` | 仅用于 pull 采集，校验并复制为 `OwnedFrame` |
+| `MV3D_LP_GetImage` | `Device::get_image()` | 仅用于 pull 采集，校验并深拷贝为 `Frame` |
 | `MV3D_LP_RegisterImageDataCallBack` | `Device::start_receiving()`、`Device::start_with_callback()` | 使用有界、非阻塞 callback queue |
 | `MV3D_LP_ClearDataBuffer` | `Device::clear_buffer()` | Open 或 pull 采集状态可用 |
 | `MV3D_LP_GetParam` | `Device::get_parameter()` | 返回 `Parameter` |
@@ -91,8 +93,8 @@ fn main() -> Result<()> {
 | `MV3D_LP_FileAccessWrite` | `Device::upload_file()` | 启动上传，`Device` 保持 `Transferring` |
 | `MV3D_LP_GetFileAccessProgress` | `Device::file_transfer_progress()`、`Device::wait_file_transfer()` | 返回校验后的进度快照；观察到完成后恢复 `Open` |
 | `MV3D_LP_GetDeviceIP`、`MV3D_LP_GetDeviceSN` | `Sdk::devices()` | 统一从 `DeviceInfo` 读取 IP 与序列号 |
-| `MV3D_LP_GetProfile`、`MV3D_LP_GetBatchProfile`、`MV3D_LP_GetIntensityData` | `Device::get_image()` | 暂不直接封装，采集统一使用 `OwnedFrame` |
-| `MV3D_LP_RegisterProfileCallBack`、`MV3D_LP_RegisterBatchProfileCallBack` | `Device::start_receiving()`、`Device::start_with_callback()` | 暂不直接封装，回调统一使用 `OwnedFrame` |
+| `MV3D_LP_GetProfile`、`MV3D_LP_GetBatchProfile`、`MV3D_LP_GetIntensityData` | `Device::get_image()` | 暂不直接封装，采集统一使用 `Frame` |
+| `MV3D_LP_RegisterProfileCallBack`、`MV3D_LP_RegisterBatchProfileCallBack` | `Device::start_receiving()`、`Device::start_with_callback()` | 暂不直接封装，回调统一使用 `Frame` |
 | `MV3D_LP_MapDepthToPointCloud` | `ImageProcessor::depth_to_point_cloud()` | 返回 `OwnedImage` |
 | `MV3D_LP_MapDepthToPointCloudRound` | `ImageProcessor::depth_to_round_point_cloud()` | 输入数量限制为 1 至 8 |
 | `MV3D_LP_ImageConvert` | `ImageProcessor::convert()` | 调用前校验转换组合与图像布局 |
@@ -106,7 +108,7 @@ fn main() -> Result<()> {
 | --- | --- | --- |
 | `MV3D_LP_DEVICE_INFO` | `DeviceInfo` | 字符串、MAC 与 IPv4 字段转为拥有值 |
 | `MV3D_LP_IP_CONFIG` | `IpConfiguration` | 用 enum 表达 Static、DHCP 与 LinkLocal |
-| `MV3D_LP_IMAGE_DATA` | `ImageRef<'_>`、`OwnedFrame`、`OwnedImage` | 输入使用借用，SDK 输出立即复制 |
+| `MV3D_LP_IMAGE_DATA` | `ImageRef<'_>`、`Frame`、`OwnedImage` | 输入使用借用，SDK 输出立即深拷贝 |
 | `MV3D_LP_INTPARAM` | `Parameter::Integer`、`ParameterValue::Integer` | 保留当前值、范围与步长 |
 | `MV3D_LP_ENUMPARAM` | `Parameter::Enumeration`、`ParameterValue::Enumeration` | 支持值复制为 `Vec<u32>` |
 | `MV3D_LP_FLOATPARAM` | `Parameter::Float`、`ParameterValue::Float` | 保留当前值与范围 |
@@ -115,8 +117,8 @@ fn main() -> Result<()> {
 | `MV3D_LP_EXCEPTION_INFO` | `DeviceException`、`DeviceExceptionType` | 拥有化描述并保留未知类型值 |
 | `MV3D_LP_FILE_ACCESS` | `Device::download_file()`、`Device::upload_file()` | `Device` 在原生异步传输期间保活文件名 |
 | `MV3D_LP_FILE_ACCESS_PROGRESS` | `FileProgress`、`FileTransferStatus` | 使用非负计数表示运行或完成 |
-| `MVB3D_LP_POINT_XYZ_S16`、`MVB3D_LP_POINT_XYZ_F32` | `OwnedFrame`、`OwnedImage` 的字节载荷 | 暂不公开单点结构体 |
-| `MV3D_LP_PROFILE_DATA`、`MV3D_LP_DEPTH_DATA`、`MV3D_LP_INTENSITY_DATA` | `OwnedFrame` | 暂不直接映射旧采集结构体 |
+| `MVB3D_LP_POINT_XYZ_S16`、`MVB3D_LP_POINT_XYZ_F32` | `Frame`、`OwnedImage` 的字节载荷 | 暂不公开单点结构体 |
+| `MV3D_LP_PROFILE_DATA`、`MV3D_LP_DEPTH_DATA`、`MV3D_LP_INTENSITY_DATA` | `Frame` | 暂不直接映射旧采集结构体 |
 | `MV3D_LP_POINTCLOUD_DATA` | `OwnedImage` | 点云统一表示为带 `ImageType` 的拥有化图像 |
 
 SDK 的 reserved 字段、原始指针、回调函数指针和设备句柄只存在于私有 crate。

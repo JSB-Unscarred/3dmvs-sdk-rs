@@ -19,7 +19,7 @@ sequenceDiagram
     Native-->>Core: status
     Core->>Core: Device 保存 registration，state = CallbackMeasuring
     Core-->>Public: Ok
-    Public-->>App: OwnedFrame receiver
+    Public-->>App: Frame receiver
 
     loop 每次原生图像回调
         Native->>Core: image_trampoline(image_ptr, cookie)
@@ -27,7 +27,7 @@ sequenceDiagram
         alt cookie 已撤销或未知
             Core-->>Native: 忽略晚到 callback
         else registration 正在接受事件
-            Core->>Core: 校验描述符并复制为 OwnedFrame
+            Core->>Core: 校验并复制 payload 到 Rust 存储
             alt payload 有效
                 Core->>Queue: try_send(frame)
                 alt 队列有空位
@@ -49,7 +49,7 @@ sequenceDiagram
     Note over App,Queue: Receiver 的消费节奏与原生 callback 解耦
     loop 按业务节奏消费
         App->>Queue: receiver.recv()
-        Queue-->>App: OwnedFrame
+        Queue-->>App: Frame
     end
 
     App->>Public: device.stop()
@@ -80,7 +80,7 @@ sequenceDiagram
     end
 ```
 
-`Receiver` 与 `OwnedFrame` 只持有 Rust owned 数据，SDK handle、registration、cookie 与清理责任都留在 `Device`。已审计的原生 callback 接口只包含 register；wrapper 通过撤销 cookie 准入并等待 in-flight callback 退出来隔离晚到调用。若同一 handle 再次注册被厂商 runtime 接受，下一次 `start_receiving()` 会使用全新的 cookie；wrapper 不额外承诺设备或固件一定支持重复注册。完整状态图见[生命周期与时序图总览](../生命周期与时序图.md)。
+`Frame` 入队前已复制 SDK payload；SDK handle、registration、cookie 与清理责任均留在 `Device`。已审计的原生 callback 接口只包含 register；wrapper 通过撤销 cookie 准入并等待 in-flight callback 退出来隔离晚到调用。若同一 handle 再次注册被厂商 runtime 接受，下一次 `start_receiving()` 会使用全新的 cookie；wrapper 不额外承诺设备或固件一定支持重复注册。完整状态图见[生命周期与时序图总览](../生命周期与时序图.md)。
 
 ## exception delivery 停止
 

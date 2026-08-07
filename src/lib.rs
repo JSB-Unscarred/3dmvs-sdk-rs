@@ -25,7 +25,7 @@ pub use error::{
     ContractViolation, Error, InputViolation, Operation, Result, SdkError, StatusCode,
 };
 pub use file_transfer::{FileProgress, FileTransferStatus};
-pub use frame::{ImageCalibration, ImageRef, ImageType, OwnedFrame, OwnedImage};
+pub use frame::{Frame, ImageCalibration, ImageRef, ImageType, OwnedImage};
 pub use image_processor::{ImageFileFormat, ImageProcessor};
 pub use opened_device::{Device, DeviceState};
 pub use parameter::{Parameter, ParameterKind, ParameterValue};

@@ -5,8 +5,8 @@ use std::time::Duration;
 use crate::file_transfer::{progress_from_internal, status_from_internal};
 use crate::{
     CallbackOptions, CallbackStats, CallbackWorker, CommandKey, DeviceException,
-    DeviceExceptionType, Error, FileProgress, FileTransferStatus, InputViolation, OwnedFrame,
-    ParamKey, Parameter, ParameterValue, Result, SdkText,
+    DeviceExceptionType, Error, FileProgress, FileTransferStatus, Frame, InputViolation, ParamKey,
+    Parameter, ParameterValue, Result, SdkText,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -62,11 +62,11 @@ impl Device {
     /// multi-camera examples support distinct handles running concurrently. The wrapper cannot
     /// control private SDK worker threads; the vendor does not separately document this stability
     /// window.
-    pub fn get_image(&mut self, timeout: Duration) -> Result<OwnedFrame> {
+    pub fn get_image(&mut self, timeout: Duration) -> Result<Frame> {
         let timeout_ms = timeout_millis(timeout)?;
         self.inner
             .get_image(timeout_ms)
-            .map(OwnedFrame::from_internal)
+            .map(Frame::from_internal)
             .map_err(Error::map_internal_error)
     }
 
@@ -95,7 +95,7 @@ impl Device {
     /// and payload remains readable and unchanged until the native callback returns. The wrapper
     /// copies every payload before returning from that callback, but the vendor does not provide
     /// a separate written guarantee for this stability window.
-    pub fn start_receiving(&mut self, options: CallbackOptions) -> Result<Receiver<OwnedFrame>> {
+    pub fn start_receiving(&mut self, options: CallbackOptions) -> Result<Receiver<Frame>> {
         let (sink, receiver) = frame_callback_channel(options);
         self.inner
             .start_callback(sink)
@@ -114,7 +114,7 @@ impl Device {
         handler: F,
     ) -> Result<CallbackWorker>
     where
-        F: FnMut(OwnedFrame) + Send + 'static,
+        F: FnMut(Frame) + Send + 'static,
     {
         let (sink, receiver) = frame_callback_channel(options);
         let worker =
@@ -273,10 +273,10 @@ impl Device {
 
 fn frame_callback_channel(
     options: CallbackOptions,
-) -> (mv3d_lp_internal::FrameCallbackSink, Receiver<OwnedFrame>) {
+) -> (mv3d_lp_internal::FrameCallbackSink, Receiver<Frame>) {
     let (sender, receiver) = sync_channel(options.queue_capacity.get());
     let sink = Arc::new(move |record| {
-        delivery_from_try_send(sender.try_send(OwnedFrame::from_internal(record)))
+        delivery_from_try_send(sender.try_send(Frame::from_internal(record)))
     });
     (sink, receiver)
 }

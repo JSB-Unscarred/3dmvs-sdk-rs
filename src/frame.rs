@@ -240,11 +240,11 @@ impl fmt::Display for ImageType {
 
 /// A frame whose payload and metadata are independent of SDK-owned memory.
 ///
-/// Every buffer is copied before this value crosses the FFI boundary. The
-/// frame therefore remains valid after another image is acquired or the
-/// device is stopped, cleared, or closed.
-#[non_exhaustive]
-pub struct OwnedFrame {
+/// Frames returned by [`crate::Device`] contain copied SDK payloads, so they
+/// remain valid after later acquisitions or device stop, clear, and close.
+/// Cloning duplicates the payload buffers.
+#[derive(Clone)]
+pub struct Frame {
     pub image_type: ImageType,
     pub width: u32,
     pub height: u32,
@@ -254,15 +254,11 @@ pub struct OwnedFrame {
     pub frame_number: u32,
     pub device_timestamp: i64,
     pub valid: bool,
-    pub x_scale: f32,
-    pub y_scale: f32,
-    pub z_scale: f32,
-    pub x_offset: i32,
-    pub y_offset: i32,
-    pub z_offset: i32,
+    pub calibration: ImageCalibration,
 }
 
-impl OwnedFrame {
+impl Frame {
+    /// Borrows this frame as an image-processing input.
     #[must_use]
     pub fn as_image(&self) -> ImageRef<'_> {
         ImageRef {
@@ -275,17 +271,11 @@ impl OwnedFrame {
             frame_number: self.frame_number,
             device_timestamp: self.device_timestamp,
             valid: self.valid,
-            calibration: ImageCalibration {
-                x_scale: self.x_scale,
-                y_scale: self.y_scale,
-                z_scale: self.z_scale,
-                x_offset: self.x_offset,
-                y_offset: self.y_offset,
-                z_offset: self.z_offset,
-            },
+            calibration: self.calibration,
         }
     }
 
+    /// Moves validated internal payloads into the public frame.
     pub(crate) fn from_internal(record: mv3d_lp_internal::FrameRecord) -> Self {
         Self {
             image_type: ImageType::from_bits(record.image_type.bits()),
@@ -297,20 +287,22 @@ impl OwnedFrame {
             frame_number: record.frame_number,
             device_timestamp: record.device_timestamp,
             valid: record.valid,
-            x_scale: record.x_scale,
-            y_scale: record.y_scale,
-            z_scale: record.z_scale,
-            x_offset: record.x_offset,
-            y_offset: record.y_offset,
-            z_offset: record.z_offset,
+            calibration: ImageCalibration {
+                x_scale: record.x_scale,
+                y_scale: record.y_scale,
+                z_scale: record.z_scale,
+                x_offset: record.x_offset,
+                y_offset: record.y_offset,
+                z_offset: record.z_offset,
+            },
         }
     }
 }
 
-impl fmt::Debug for OwnedFrame {
+impl fmt::Debug for Frame {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("OwnedFrame")
+            .debug_struct("Frame")
             .field("image_type", &self.image_type)
             .field("width", &self.width)
             .field("height", &self.height)
@@ -326,24 +318,19 @@ impl fmt::Debug for OwnedFrame {
             .field("frame_number", &self.frame_number)
             .field("device_timestamp", &self.device_timestamp)
             .field("valid", &self.valid)
-            .field("x_scale", &self.x_scale)
-            .field("y_scale", &self.y_scale)
-            .field("z_scale", &self.z_scale)
-            .field("x_offset", &self.x_offset)
-            .field("y_offset", &self.y_offset)
-            .field("z_offset", &self.z_offset)
+            .field("calibration", &self.calibration)
             .finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageCalibration, ImageType, OwnedFrame, OwnedImage};
+    use super::{Frame, ImageCalibration, ImageType, OwnedImage};
 
     // 验证 Debug 仅输出 payload 长度，防止大量或敏感图像内容进入日志。
     #[test]
     fn debug_reports_lengths_without_payload_contents() {
-        let frame = OwnedFrame {
+        let frame = Frame {
             image_type: ImageType::MONO8,
             width: 2,
             height: 1,
@@ -353,12 +340,7 @@ mod tests {
             frame_number: 7,
             device_timestamp: 42,
             valid: true,
-            x_scale: 1.0,
-            y_scale: 2.0,
-            z_scale: 3.0,
-            x_offset: 4,
-            y_offset: 5,
-            z_offset: 6,
+            calibration: ImageCalibration::default(),
         };
 
         let debug = format!("{frame:?}");
