@@ -1,4 +1,4 @@
-use crate::{Error, ImageRef, ImageType, InputViolation, Operation, OwnedImage, Result};
+use crate::{Error, Image, ImageRef, ImageType, InputViolation, Operation, Result};
 
 const MAX_MULTI_IMAGE_COUNT: usize = 8;
 const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
@@ -56,7 +56,7 @@ pub struct ImageProcessor {
 }
 
 impl ImageProcessor {
-    pub fn depth_to_point_cloud(&self, input: ImageRef<'_>) -> Result<OwnedImage> {
+    pub fn depth_to_point_cloud(&self, input: ImageRef<'_>) -> Result<Image> {
         require_type(Operation::MapDepthToPointCloud, input, ImageType::DEPTH)?;
         validate_layout(Operation::MapDepthToPointCloud, input)?;
         validate_expected_output(
@@ -67,19 +67,19 @@ impl ImageProcessor {
         )?;
         self.inner
             .map_depth_to_point_cloud(input.to_internal())
-            .map(OwnedImage::from_internal)
+            .map(Image::from_internal)
             .map_err(Error::map_internal_error)
     }
 
-    pub fn depth_to_round_point_cloud(&self, inputs: &[ImageRef<'_>]) -> Result<OwnedImage> {
+    pub fn depth_to_round_point_cloud(&self, inputs: &[ImageRef<'_>]) -> Result<Image> {
         let inputs = prepare_multi(Operation::MapDepthToPointCloudRound, inputs)?;
         self.inner
             .map_depth_to_point_cloud_round(&inputs)
-            .map(OwnedImage::from_internal)
+            .map(Image::from_internal)
             .map_err(Error::map_internal_error)
     }
 
-    pub fn convert(&self, input: ImageRef<'_>, target: ImageType) -> Result<OwnedImage> {
+    pub fn convert(&self, input: ImageRef<'_>, target: ImageType) -> Result<Image> {
         validate_layout(Operation::ImageConvert, input)?;
         if !conversion_supported(input.image_type, target) {
             return Err(invalid(
@@ -103,15 +103,15 @@ impl ImageProcessor {
                 input.to_internal(),
                 mv3d_lp_internal::ImageTypeRecord::from_bits(target.bits()),
             )
-            .map(OwnedImage::from_internal)
+            .map(Image::from_internal)
             .map_err(Error::map_internal_error)
     }
 
-    pub fn mosaic_depth(&self, inputs: &[ImageRef<'_>]) -> Result<OwnedImage> {
+    pub fn mosaic_depth(&self, inputs: &[ImageRef<'_>]) -> Result<Image> {
         let inputs = prepare_multi(Operation::DepthMosaic, inputs)?;
         self.inner
             .mosaic_depth(&inputs)
-            .map(OwnedImage::from_internal)
+            .map(Image::from_internal)
             .map_err(Error::map_internal_error)
     }
 

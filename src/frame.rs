@@ -141,9 +141,11 @@ impl<'a> ImageRef<'a> {
 }
 
 /// An image whose pixel payload is fully owned by Rust.
-#[derive(PartialEq)]
+///
+/// Cloning duplicates the payload buffers.
+#[derive(Clone, PartialEq)]
 #[non_exhaustive]
-pub struct OwnedImage {
+pub struct Image {
     pub image_type: ImageType,
     pub width: u32,
     pub height: u32,
@@ -156,10 +158,10 @@ pub struct OwnedImage {
     pub calibration: ImageCalibration,
 }
 
-impl fmt::Debug for OwnedImage {
+impl fmt::Debug for Image {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("OwnedImage")
+            .debug_struct("Image")
             .field("image_type", &self.image_type)
             .field("width", &self.width)
             .field("height", &self.height)
@@ -180,9 +182,29 @@ impl fmt::Debug for OwnedImage {
     }
 }
 
-impl OwnedImage {
+impl Image {
+    /// Deep-copies a borrowed image into owned Rust storage.
+    ///
+    /// Copying prevents later source-buffer changes from affecting this image.
     #[must_use]
-    pub fn as_image(&self) -> ImageRef<'_> {
+    pub fn from_image_ref(image: ImageRef<'_>) -> Self {
+        Self {
+            image_type: image.image_type,
+            width: image.width,
+            height: image.height,
+            data: image.data.to_vec(),
+            intensity_data: image.intensity_data.map(<[u8]>::to_vec),
+            exposure_timestamps: image.exposure_timestamps.map(<[i64]>::to_vec),
+            frame_number: image.frame_number,
+            device_timestamp: image.device_timestamp,
+            valid: image.valid,
+            calibration: image.calibration,
+        }
+    }
+
+    /// Borrows this image as an image-processing input.
+    #[must_use]
+    pub fn as_image_ref(&self) -> ImageRef<'_> {
         ImageRef {
             image_type: self.image_type,
             width: self.width,
@@ -197,6 +219,7 @@ impl OwnedImage {
         }
     }
 
+    /// Moves validated internal payloads into the public image.
     pub(crate) fn from_internal(record: mv3d_lp_internal::FrameRecord) -> Self {
         Self {
             image_type: ImageType::from_bits(record.image_type.bits()),
@@ -244,6 +267,7 @@ impl fmt::Display for ImageType {
 /// remain valid after later acquisitions or device stop, clear, and close.
 /// Cloning duplicates the payload buffers.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct Frame {
     pub image_type: ImageType,
     pub width: u32,
@@ -258,9 +282,28 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Deep-copies a borrowed image into an owned frame.
+    ///
+    /// Copying prevents later source-buffer changes from affecting this frame.
+    #[must_use]
+    pub fn from_image_ref(image: ImageRef<'_>) -> Self {
+        Self {
+            image_type: image.image_type,
+            width: image.width,
+            height: image.height,
+            data: image.data.to_vec(),
+            intensity_data: image.intensity_data.map(<[u8]>::to_vec),
+            exposure_timestamps: image.exposure_timestamps.map(<[i64]>::to_vec),
+            frame_number: image.frame_number,
+            device_timestamp: image.device_timestamp,
+            valid: image.valid,
+            calibration: image.calibration,
+        }
+    }
+
     /// Borrows this frame as an image-processing input.
     #[must_use]
-    pub fn as_image(&self) -> ImageRef<'_> {
+    pub fn as_image_ref(&self) -> ImageRef<'_> {
         ImageRef {
             image_type: self.image_type,
             width: self.width,
@@ -325,7 +368,7 @@ impl fmt::Debug for Frame {
 
 #[cfg(test)]
 mod tests {
-    use super::{Frame, ImageCalibration, ImageType, OwnedImage};
+    use super::{Frame, Image, ImageCalibration, ImageType};
 
     // 验证 Debug 仅输出 payload 长度，防止大量或敏感图像内容进入日志。
     #[test]
@@ -356,7 +399,7 @@ mod tests {
     // 验证处理结果的 Debug 同样隐藏 payload，防止转换输出进入日志。
     #[test]
     fn processed_image_debug_is_redacted() {
-        let image = OwnedImage {
+        let image = Image {
             image_type: ImageType::MONO8,
             width: 2,
             height: 1,
