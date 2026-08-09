@@ -5,27 +5,24 @@ mod device;
 #[cfg(all(windows, feature = "display-windows"))]
 mod display_windows;
 mod error;
-mod file_transfer;
 mod frame;
 mod image_processor;
 mod opened_device;
 mod parameter;
 mod sdk;
 mod text;
-mod types;
 
-pub use callback::{CallbackOptions, CallbackStats, DeviceException, DeviceExceptionType};
+pub use callback::{CallbackOptions, DeviceException, DeviceExceptionType};
 pub use device::{DeviceInfo, IpConfiguration, IpConfigurationMode};
 #[cfg(all(windows, feature = "display-windows"))]
 pub use display_windows::DisplayRange;
 pub use error::{
     ContractViolation, Error, InputViolation, Operation, Result, SdkError, StatusCode,
 };
-pub use file_transfer::{FileProgress, FileTransferStatus};
 pub use frame::{Frame, Image, ImageCalibration, ImageRef, ImageType};
 pub use image_processor::{ImageFileFormat, ImageProcessor};
-pub use opened_device::{Device, DeviceState};
-pub use parameter::{Parameter, ParameterKind, ParameterValue};
+pub use mv3d_lp_internal::FileProgress;
+pub use opened_device::Device;
+pub use parameter::{Parameter, ParameterValue};
 pub use sdk::Sdk;
-pub use text::{CommandKey, ParamKey, SdkText, SerialNumber};
-pub use types::{ParseSdkVersionError, SdkVersion};
+pub use text::{SdkText, SerialNumber};

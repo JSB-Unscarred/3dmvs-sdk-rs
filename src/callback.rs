@@ -19,29 +19,6 @@ pub struct CallbackOptions {
     pub queue_capacity: NonZeroUsize,
 }
 
-/// A snapshot of callback delivery and validation counters.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub struct CallbackStats {
-    pub delivered: u64,
-    pub dropped_full: u64,
-    pub invalid_payloads: u64,
-    pub panics: u64,
-    pub accepting: bool,
-}
-
-impl CallbackStats {
-    pub(crate) fn from_internal(record: mv3d_lp_internal::CallbackStatsRecord) -> Self {
-        Self {
-            delivered: record.delivered,
-            dropped_full: record.dropped_full,
-            invalid_payloads: record.invalid_payloads,
-            panics: record.panics,
-            accepting: record.accepting,
-        }
-    }
-}
-
 impl CallbackOptions {
     /// Default number of events retained while the consumer is delayed.
     pub const DEFAULT_QUEUE_CAPACITY: NonZeroUsize =

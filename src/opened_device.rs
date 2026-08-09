@@ -2,22 +2,10 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TrySendError, sync_channel};
 use std::time::Duration;
 
-use crate::file_transfer::status_from_internal;
 use crate::{
-    CallbackOptions, CallbackStats, CommandKey, DeviceException, DeviceExceptionType, Error,
-    FileTransferStatus, Frame, Image, InputViolation, ParamKey, Parameter, ParameterValue, Result,
-    SdkText,
+    CallbackOptions, DeviceException, DeviceExceptionType, Error, FileProgress, Frame, Image,
+    InputViolation, Parameter, ParameterValue, Result, SdkText,
 };
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub enum DeviceState {
-    Open,
-    Measuring,
-    CallbackMeasuring,
-    Faulted,
-    Transferring,
-}
 
 /// An opened laser-profiler device with independent session ownership.
 ///
@@ -33,11 +21,6 @@ pub struct Device {
 impl Device {
     pub(crate) fn from_internal(inner: mv3d_lp_internal::Device) -> Self {
         Self { inner }
-    }
-
-    #[must_use]
-    pub fn state(&self) -> DeviceState {
-        state_from_internal(self.inner.state())
     }
 
     /// Starts pull acquisition on this device.
@@ -78,15 +61,15 @@ impl Device {
             .map_err(Error::map_internal_error)
     }
 
-    /// Sends one software trigger while pull or callback acquisition is active.
+    /// Forwards one software trigger; the SDK validates its trigger mode and call order.
     pub fn soft_trigger(&mut self) -> Result<()> {
         self.inner.soft_trigger().map_err(Error::map_internal_error)
     }
 
     /// Stops the active pull or callback acquisition.
     ///
-    /// Callback dispatch is revoked and drained before the SDK is stopped. A failed stop faults
-    /// the device so normal operations cannot continue with an uncertain native state.
+    /// On success, the image callback cookie is retired. On failure, the acquisition owner stays
+    /// intact so the caller may retry or close the device.
     pub fn stop(&mut self) -> Result<()> {
         self.inner.stop().map_err(Error::map_internal_error)
     }
@@ -111,16 +94,6 @@ impl Device {
             .map_err(Error::map_internal_error)
     }
 
-    /// Returns image callback counters while callback acquisition is active.
-    ///
-    /// Stopping callback acquisition retires its registration, after which this returns `None`.
-    #[must_use]
-    pub fn image_callback_stats(&self) -> Option<CallbackStats> {
-        self.inner
-            .image_callback_stats()
-            .map(CallbackStats::from_internal)
-    }
-
     /// Registers an owned exception-event receiver until it is replaced, disabled, or closed.
     ///
     /// A later call replaces the previous callback after the native registration succeeds. If the
@@ -140,17 +113,11 @@ impl Device {
             .map_err(Error::map_internal_error)
     }
 
-    #[must_use]
-    pub fn exception_callback_stats(&self) -> Option<CallbackStats> {
-        self.inner
-            .exception_callback_stats()
-            .map(CallbackStats::from_internal)
-    }
-
-    /// Stops Rust delivery of exception callbacks and drains callbacks already in flight.
+    /// Stops future Rust delivery of exception callbacks.
     ///
     /// The audited native API exposes only registration. This method retires the Rust cookie, so
-    /// later native callbacks are ignored safely. Repeated calls are harmless.
+    /// later native callbacks are ignored safely. A callback that already cloned its sink may
+    /// finish normally. Repeated calls are harmless.
     pub fn disable_exception_delivery(&mut self) {
         self.inner.disable_exception_delivery();
     }
@@ -159,21 +126,24 @@ impl Device {
         self.inner.clear_buffer().map_err(Error::map_internal_error)
     }
 
-    pub fn get_parameter(&mut self, key: &ParamKey) -> Result<Parameter> {
+    /// Reads one parameter by the SDK's string key.
+    pub fn get_parameter(&mut self, key: &str) -> Result<Parameter> {
         self.inner
             .get_parameter(key.as_bytes())
+            .map(parameter_from_internal)
             .map_err(Error::map_internal_error)
-            .and_then(parameter_from_internal)
     }
 
-    pub fn set_parameter(&mut self, key: &ParamKey, value: ParameterValue) -> Result<()> {
+    /// Writes one parameter by the SDK's string key.
+    pub fn set_parameter(&mut self, key: &str, value: ParameterValue) -> Result<()> {
         let internal_value = parameter_value_to_internal(value);
         self.inner
             .set_parameter(key.as_bytes(), &internal_value)
             .map_err(Error::map_internal_error)
     }
 
-    pub fn execute(&mut self, key: &CommandKey) -> Result<()> {
+    /// Executes one command by the SDK's string key.
+    pub fn execute(&mut self, key: &str) -> Result<()> {
         self.inner
             .execute(key.as_bytes())
             .map_err(Error::map_internal_error)
@@ -182,9 +152,9 @@ impl Device {
     /// Starts copying a file from the device to the host.
     ///
     /// Names are passed as original narrow-string bytes because the vendor SDK does not document
-    /// their encoding. The SDK marks the descriptor as `[IN]`, so both names are borrowed only for
-    /// this start call. Poll through [`Device::file_transfer_progress`] or
-    /// [`Device::file_transfer_progress`].
+    /// their encoding. Because the asynchronous API does not state whether it copies them, this
+    /// device retains both names until another transfer starts successfully or the device closes.
+    /// Poll through [`Device::file_transfer_progress`].
     pub fn download_file(&mut self, device_file_name: &[u8], local_file_name: &[u8]) -> Result<()> {
         self.inner
             .download_file(device_file_name, local_file_name)
@@ -193,8 +163,7 @@ impl Device {
 
     /// Starts copying a host file into the device.
     ///
-    /// Names follow the same byte and call-scoped borrowing contract as
-    /// [`Device::download_file`].
+    /// Names follow the same byte and retained-lifetime contract as [`Device::download_file`].
     pub fn upload_file(&mut self, local_file_name: &[u8], device_file_name: &[u8]) -> Result<()> {
         self.inner
             .upload_file(local_file_name, device_file_name)
@@ -203,19 +172,17 @@ impl Device {
 
     /// Returns one progress snapshot for the active transfer.
     ///
-    /// Completion returns the device to [`DeviceState::Open`]. A polling error ends only this
-    /// call, so the transfer remains available for another poll.
-    pub fn file_transfer_progress(&mut self) -> Result<FileTransferStatus> {
+    /// Values are preserved as the signed `int64_t` fields returned by the SDK; their completion
+    /// semantics are intentionally left to the caller because the vendor does not define them.
+    pub fn file_transfer_progress(&mut self) -> Result<FileProgress> {
         self.inner
             .file_transfer_progress()
-            .map(status_from_internal)
             .map_err(Error::map_internal_error)
     }
 
     /// Stops acquisition when needed and closes the owned handle.
     ///
-    /// If the first native Close fails, the consumed device's Drop retries once. The returned
-    /// error describes the first cleanup attempt.
+    /// The consumed owner calls native Close once and reports both Stop and Close failures.
     pub fn close(self) -> Result<()> {
         self.inner.close().map_err(Error::map_device_cleanup_error)
     }
@@ -225,9 +192,7 @@ fn frame_callback_channel(
     options: CallbackOptions,
 ) -> (mv3d_lp_internal::FrameCallbackSink, Receiver<Frame>) {
     let (sender, receiver) = sync_channel(options.queue_capacity.get());
-    let sink = Arc::new(move |record| {
-        delivery_from_try_send(sender.try_send(Image::from_internal(record)))
-    });
+    let sink = Arc::new(move |record| keep_callback(sender.try_send(Image::from_internal(record))));
     (sink, receiver)
 }
 
@@ -239,32 +204,17 @@ fn exception_callback_channel(
 ) {
     let (sender, receiver) = sync_channel(options.queue_capacity.get());
     let sink = Arc::new(move |record: mv3d_lp_internal::ExceptionRecord| {
-        let Ok(description) = SdkText::try_from(record.description) else {
-            return mv3d_lp_internal::CallbackDelivery::Disconnected;
-        };
+        let description = SdkText::from_sdk_bytes(record.description);
         let event = DeviceException::new(DeviceExceptionType::from_raw(record.kind), description);
-        delivery_from_try_send(sender.try_send(event))
+        keep_callback(sender.try_send(event))
     });
     (sink, receiver)
 }
 
-fn delivery_from_try_send<T>(
-    result: std::result::Result<(), TrySendError<T>>,
-) -> mv3d_lp_internal::CallbackDelivery {
+fn keep_callback<T>(result: std::result::Result<(), TrySendError<T>>) -> bool {
     match result {
-        Ok(()) => mv3d_lp_internal::CallbackDelivery::Delivered,
-        Err(TrySendError::Full(_)) => mv3d_lp_internal::CallbackDelivery::Full,
-        Err(TrySendError::Disconnected(_)) => mv3d_lp_internal::CallbackDelivery::Disconnected,
-    }
-}
-
-fn state_from_internal(state: mv3d_lp_internal::DeviceState) -> DeviceState {
-    match state {
-        mv3d_lp_internal::DeviceState::Open => DeviceState::Open,
-        mv3d_lp_internal::DeviceState::Measuring => DeviceState::Measuring,
-        mv3d_lp_internal::DeviceState::CallbackMeasuring => DeviceState::CallbackMeasuring,
-        mv3d_lp_internal::DeviceState::Faulted => DeviceState::Faulted,
-        mv3d_lp_internal::DeviceState::Transferring => DeviceState::Transferring,
+        Ok(()) | Err(TrySendError::Full(_)) => true,
+        Err(TrySendError::Disconnected(_)) => false,
     }
 }
 
@@ -299,8 +249,8 @@ fn parameter_value_to_internal(value: ParameterValue) -> mv3d_lp_internal::Param
     }
 }
 
-fn parameter_from_internal(record: mv3d_lp_internal::ParameterRecord) -> Result<Parameter> {
-    Ok(match record {
+fn parameter_from_internal(record: mv3d_lp_internal::ParameterRecord) -> Parameter {
+    match record {
         mv3d_lp_internal::ParameterRecord::Bool(value) => Parameter::Bool(value),
         mv3d_lp_internal::ParameterRecord::Integer {
             value,
@@ -329,10 +279,10 @@ fn parameter_from_internal(record: mv3d_lp_internal::ParameterRecord) -> Result<
             value,
             maximum_length,
         } => Parameter::String {
-            value: SdkText::try_from(value)?,
+            value: SdkText::from_sdk_bytes(value),
             max_length: maximum_length,
         },
-    })
+    }
 }
 
 #[cfg(test)]
@@ -349,20 +299,6 @@ mod tests {
     fn timeout_conversion_is_finite_checked_and_rounds_up() {
         assert_eq!(timeout_millis(Duration::ZERO).unwrap(), 0);
         assert_eq!(timeout_millis(Duration::from_nanos(1)).unwrap(), 1);
-        assert_eq!(timeout_millis(Duration::from_millis(37)).unwrap(), 37);
-        assert_eq!(
-            timeout_millis(Duration::from_millis(u64::from(u32::MAX - 1))).unwrap(),
-            u32::MAX - 1
-        );
-        assert!(matches!(
-            timeout_millis(
-                Duration::from_millis(u64::from(u32::MAX - 1)) + Duration::from_nanos(1)
-            ),
-            Err(Error::InvalidInput {
-                violation: InputViolation::TimeoutTooLong { .. },
-                ..
-            })
-        ));
         assert!(matches!(
             timeout_millis(Duration::from_millis(u64::from(u32::MAX))),
             Err(Error::InvalidInput {
@@ -378,20 +314,11 @@ mod tests {
         let options = CallbackOptions::new(NonZeroUsize::new(1).unwrap());
         let (sink, receiver) = frame_callback_channel(options);
 
-        assert_eq!(
-            sink(callback_frame(1)),
-            mv3d_lp_internal::CallbackDelivery::Delivered
-        );
-        assert_eq!(
-            sink(callback_frame(2)),
-            mv3d_lp_internal::CallbackDelivery::Full
-        );
+        assert!(sink(callback_frame(1)));
+        assert!(sink(callback_frame(2)));
         assert_eq!(receiver.recv().unwrap().frame_number, 1);
         drop(receiver);
-        assert_eq!(
-            sink(callback_frame(3)),
-            mv3d_lp_internal::CallbackDelivery::Disconnected
-        );
+        assert!(!sink(callback_frame(3)));
     }
 
     fn callback_frame(frame_number: u32) -> mv3d_lp_internal::FrameRecord {

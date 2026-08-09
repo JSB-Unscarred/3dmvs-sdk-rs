@@ -3,28 +3,26 @@ use std::borrow::Cow;
 use std::fmt;
 use std::str::{FromStr, Utf8Error};
 
-/// SDK-originated text kept as bounded bytes without assuming an encoding.
+/// SDK-originated text kept as owned bytes without assuming an encoding.
 #[derive(Clone, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SdkText(Vec<u8>);
 
 impl SdkText {
-    /// Size of the largest fixed SDK string storage, including its terminator.
-    pub const STORAGE_CAPACITY: usize = 256;
-
-    /// Maximum bounded payload copied from SDK-owned fixed storage.
-    ///
-    /// Setters impose their own 255-byte limit so that they can append a NUL.
-    pub const MAX_LEN: usize = Self::STORAGE_CAPACITY;
-
     pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self> {
         let bytes = bytes.as_ref();
-        validate_bytes("SDK text", bytes, Self::MAX_LEN)?;
+        reject_nul("SDK text", bytes)?;
         Ok(Self(bytes.to_vec()))
     }
 
     fn from_vec(bytes: Vec<u8>) -> Result<Self> {
-        validate_bytes("SDK text", &bytes, Self::MAX_LEN)?;
+        reject_nul("SDK text", &bytes)?;
         Ok(Self(bytes))
+    }
+
+    /// Accepts bytes already truncated at NUL by the internal FFI boundary.
+    pub(crate) fn from_sdk_bytes(bytes: Vec<u8>) -> Self {
+        debug_assert!(!bytes.contains(&0));
+        Self(bytes)
     }
 
     #[must_use]
@@ -128,13 +126,19 @@ impl SerialNumber {
 
     pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self> {
         let bytes = bytes.as_ref();
-        validate_bytes("serial number", bytes, Self::MAX_LEN)?;
+        validate_serial(bytes)?;
         Ok(Self(bytes.to_vec()))
     }
 
     fn from_vec(bytes: Vec<u8>) -> Result<Self> {
-        validate_bytes("serial number", &bytes, Self::MAX_LEN)?;
+        validate_serial(&bytes)?;
         Ok(Self(bytes))
+    }
+
+    /// Accepts a serial copied from the SDK's fixed 16-byte field.
+    pub(crate) fn from_sdk_bytes(bytes: Vec<u8>) -> Self {
+        debug_assert!(bytes.len() <= Self::MAX_LEN && !bytes.contains(&0));
+        Self(bytes)
     }
 
     #[must_use]
@@ -229,17 +233,20 @@ impl FromStr for SerialNumber {
     }
 }
 
-fn validate_bytes(field: &'static str, bytes: &[u8], max: usize) -> Result<()> {
-    if bytes.len() > max {
+fn validate_serial(bytes: &[u8]) -> Result<()> {
+    if bytes.len() > SerialNumber::MAX_LEN {
         return Err(Error::InvalidInput {
-            field,
+            field: "serial number",
             violation: InputViolation::TooLong {
-                max,
+                max: SerialNumber::MAX_LEN,
                 actual: bytes.len(),
             },
         });
     }
+    reject_nul("serial number", bytes)
+}
 
+fn reject_nul(field: &'static str, bytes: &[u8]) -> Result<()> {
     if bytes.contains(&0) {
         return Err(Error::InvalidInput {
             field,
@@ -250,89 +257,23 @@ fn validate_bytes(field: &'static str, bytes: &[u8], max: usize) -> Result<()> {
     Ok(())
 }
 
-macro_rules! key_type {
-    ($name:ident, $field:literal) => {
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-        pub struct $name(String);
+#[cfg(test)]
+mod tests {
+    use super::{SdkText, SerialNumber};
+    use crate::{Error, InputViolation};
 
-        impl $name {
-            pub fn new(value: impl Into<String>) -> Result<Self> {
-                let value = value.into();
-                validate_key($field, &value)?;
-                Ok(Self(value))
-            }
-
-            #[must_use]
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-
-            #[must_use]
-            pub fn as_bytes(&self) -> &[u8] {
-                self.0.as_bytes()
-            }
-
-            #[must_use]
-            pub fn into_string(self) -> String {
-                self.0
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(&self.0)
-            }
-        }
-
-        impl AsRef<str> for $name {
-            fn as_ref(&self) -> &str {
-                self.as_str()
-            }
-        }
-
-        impl TryFrom<&str> for $name {
-            type Error = Error;
-
-            fn try_from(value: &str) -> Result<Self> {
-                Self::new(value)
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = Error;
-
-            fn try_from(value: String) -> Result<Self> {
-                Self::new(value)
-            }
-        }
-
-        impl FromStr for $name {
-            type Err = Error;
-
-            fn from_str(value: &str) -> Result<Self> {
-                Self::new(value)
-            }
-        }
-    };
-}
-
-key_type!(ParamKey, "parameter key");
-key_type!(CommandKey, "command key");
-
-fn validate_key(field: &'static str, value: &str) -> Result<()> {
-    if value.is_empty() {
-        return Err(Error::InvalidInput {
-            field,
-            violation: InputViolation::Empty,
-        });
+    // 验证 SDK 文本保留非 UTF-8 字节，输入 C 字符串拒绝 interior NUL。
+    #[test]
+    fn text_preserves_bytes_and_rejects_nul() {
+        let text = SdkText::new([0x66, 0x80, 0x6F]).unwrap();
+        assert_eq!(text.as_bytes(), &[0x66, 0x80, 0x6F]);
+        assert!(text.to_str().is_err());
+        assert!(matches!(
+            SerialNumber::new(b"a\0b"),
+            Err(Error::InvalidInput {
+                violation: InputViolation::InteriorNul,
+                ..
+            })
+        ));
     }
-
-    if value.as_bytes().contains(&0) {
-        return Err(Error::InvalidInput {
-            field,
-            violation: InputViolation::InteriorNul,
-        });
-    }
-
-    Ok(())
 }

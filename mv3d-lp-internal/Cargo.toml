@@ -19,8 +19,3 @@ path = "src/lib.rs"
 default = []
 native = []
 display-windows = ["native"]
-
-[[test]]
-name = "native_thread_contract"
-path = "tests/native_thread_contract.rs"
-required-features = ["native"]

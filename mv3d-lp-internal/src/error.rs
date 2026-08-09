@@ -78,9 +78,6 @@ impl fmt::Display for Operation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContractViolation {
     NullVersionPointer,
-    UnterminatedVersion {
-        limit: usize,
-    },
     NullHandleOnSuccess,
     DeviceListCountMismatch {
         reported: u32,
@@ -110,14 +107,6 @@ pub enum ContractViolation {
     InvalidImageValue {
         field: &'static str,
     },
-    NegativeFileProgress {
-        completed: i64,
-        total: i64,
-    },
-    FileProgressExceedsTotal {
-        completed: u64,
-        total: u64,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,30 +122,8 @@ pub enum InvalidInput {
         maximum: usize,
         actual: usize,
     },
-    UnexpectedImageType {
-        expected: u32,
-        actual: u32,
-    },
-    UnsupportedImageConversion {
-        source: u32,
-        target: u32,
-    },
-    UnsupportedImageFileFormat {
-        image_type: u32,
-        file_format: i32,
-    },
     InvalidImageLayout {
         field: &'static str,
-    },
-    UnsupportedDisplayImageType {
-        actual: u32,
-    },
-    UnsupportedDisplayMode {
-        image_type: u32,
-    },
-    InvalidDisplayRange {
-        minimum: i32,
-        maximum: i32,
     },
 }
 
@@ -164,11 +131,6 @@ pub enum InvalidInput {
 pub enum Error {
     UnsupportedPlatform,
     RuntimeInactive,
-    IncompatibleSdkVersion {
-        minimum: &'static [u8],
-        maximum_exclusive: &'static [u8],
-        actual: Vec<u8>,
-    },
     Sdk {
         operation: Operation,
         status: i32,
@@ -203,17 +165,6 @@ impl fmt::Display for Error {
             Self::RuntimeInactive => {
                 f.write_str("this token no longer refers to the active 3DMVS runtime")
             }
-            Self::IncompatibleSdkVersion {
-                minimum,
-                maximum_exclusive,
-                actual,
-            } => write!(
-                f,
-                "incompatible 3DMVS runtime version: expected >= {} and < {}, got {}",
-                String::from_utf8_lossy(minimum),
-                String::from_utf8_lossy(maximum_exclusive),
-                String::from_utf8_lossy(actual)
-            ),
             Self::Sdk { operation, status } => {
                 write!(
                     f,

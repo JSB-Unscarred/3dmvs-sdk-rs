@@ -10,7 +10,7 @@ use crate::device::{DeviceInfoRaw, DeviceListAttempt, IpConfigRaw};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
 use crate::error::{ContractViolation, InvalidInput};
-use crate::file_transfer::FileProgressRaw;
+use crate::file_transfer::FileProgress;
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 
@@ -32,8 +32,7 @@ pub(crate) struct Handle(NonNull<std::ffi::c_void>);
 // value. `Handle` deliberately has no `Sync` implementation, so every device/session owner
 // inherits `!Sync` and calls for one handle cannot overlap through the safe API. Vendor evidence
 // for moving handles between threads and operating distinct devices concurrently is summarized in
-// `README.md` under "原生契约假设"; the release acceptance scope is recorded in
-// `docs/threading/lpsdk-1.3.3.3-native-acceptance.md`.
+// `README.md` under "安全边界".
 unsafe impl Send for Handle {}
 
 impl Handle {
@@ -95,7 +94,7 @@ pub(crate) trait Driver: Send + Sync {
         user_file_name: &CStr,
         device_file_name: &CStr,
     ) -> DriverResult<()>;
-    fn file_access_progress(&self, handle: Handle) -> DriverResult<FileProgressRaw>;
+    fn file_access_progress(&self, handle: Handle) -> DriverResult<FileProgress>;
 
     fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> DriverResult<FrameRecord>;
     fn map_depth_to_point_cloud_round(

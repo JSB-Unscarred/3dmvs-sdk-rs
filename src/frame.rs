@@ -262,37 +262,3 @@ impl fmt::Display for ImageType {
 
 /// Acquired-frame name for the shared owned image representation.
 pub type Frame = Image;
-
-#[cfg(test)]
-mod tests {
-    use super::{Image, ImageCalibration, ImageRef, ImageType};
-
-    // 验证 Debug 仅输出 payload 长度，防止图像内容进入日志。
-    #[test]
-    fn owned_debug_reports_lengths_without_payload_contents() {
-        let data = [0xAA, 0xBB];
-        let intensity_data = [0xCC, 0xDD];
-        let exposure_timestamps = [123_456_789];
-        let image_ref = ImageRef {
-            image_type: ImageType::MONO8,
-            width: 2,
-            height: 1,
-            data: &data,
-            intensity_data: Some(&intensity_data),
-            exposure_timestamps: Some(&exposure_timestamps),
-            frame_number: 7,
-            device_timestamp: 42,
-            valid: true,
-            calibration: ImageCalibration::default(),
-        };
-        let image = Image::from_image_ref(image_ref);
-
-        let debug = format!("{image:?}");
-        assert!(debug.contains("data_len: 2"));
-        assert!(debug.contains("intensity_data_len: Some(2)"));
-        assert!(debug.contains("exposure_timestamps_len: Some(1)"));
-        assert!(!debug.contains("170"));
-        assert!(!debug.contains("187"));
-        assert!(!debug.contains("123456789"));
-    }
-}

@@ -4,7 +4,7 @@ use std::ffi::CString;
 use std::net::Ipv4Addr;
 #[cfg(feature = "display-windows")]
 use std::num::NonZeroIsize;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::device::{DeviceRecord, IpConfigRaw, IpConfiguration};
 #[cfg(feature = "display-windows")]
@@ -14,20 +14,6 @@ use crate::error::{ContractViolation, Error, InvalidInput, Operation};
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::opened_device::Device;
 
-const AUDITED_VERSION_TEXT: &[u8] = b"1.3.3.3";
-const MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE_TEXT: &[u8] = b"1.3.4.0";
-const AUDITED_VERSION: SdkVersion = SdkVersion::new(1, 3, 3, 3);
-const MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE: SdkVersion = SdkVersion::new(1, 3, 4, 0);
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct SdkVersion([u32; 4]);
-
-impl SdkVersion {
-    const fn new(major: u32, minor: u32, patch: u32, build: u32) -> Self {
-        Self([major, minor, patch, build])
-    }
-}
-
 /// Process-wide owner for the current native LPSDK session.
 enum ProcessSdkState {
     Fresh,
@@ -36,21 +22,30 @@ enum ProcessSdkState {
 
 pub(crate) struct Gate {
     // Active owns the core so dropping a user-facing Runtime token cannot finalize the SDK.
-    state: Mutex<ProcessSdkState>,
+    state: RwLock<ProcessSdkState>,
 }
 
 impl Gate {
     pub(crate) fn new() -> Self {
         Self {
-            state: Mutex::new(ProcessSdkState::Fresh),
+            state: RwLock::new(ProcessSdkState::Fresh),
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, ProcessSdkState> {
-        match self.state.lock() {
+    fn read(&self) -> RwLockReadGuard<'_, ProcessSdkState> {
+        match self.state.read() {
             Ok(state) => state,
             Err(poisoned) => {
-                // 生产路径持锁期间不执行用户代码；恢复锁即可继续使用已记录的状态。
+                self.state.clear_poison();
+                poisoned.into_inner()
+            }
+        }
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, ProcessSdkState> {
+        match self.state.write() {
+            Ok(state) => state,
+            Err(poisoned) => {
                 self.state.clear_poison();
                 poisoned.into_inner()
             }
@@ -61,7 +56,6 @@ impl Gate {
 /// Owned native session shared by SDK tokens and devices.
 pub(crate) struct RuntimeCore {
     driver: Box<dyn Driver>,
-    version: Vec<u8>,
     handles: Mutex<usize>,
 }
 
@@ -102,13 +96,14 @@ impl RuntimeCore {
         const OPERATION: Operation = Operation::CloseDevice;
 
         let mut live_handles = self.lock_handles();
-        self.driver
+        let result = self
+            .driver
             .close(handle)
-            .map_err(|error| map_driver_error(OPERATION, error))?;
+            .map_err(|error| map_driver_error(OPERATION, error));
         *live_handles = live_handles
             .checked_sub(1)
             .expect("a Device closes its owned handle at most once");
-        Ok(())
+        result
     }
 
     pub(crate) fn parameter_key(operation: Operation, bytes: &[u8]) -> Result<CString, Error> {
@@ -130,6 +125,30 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// Reads the raw SDK version independently of the initialized session.
+    pub fn version_bytes() -> Result<Vec<u8>, Error> {
+        #[cfg(all(
+            feature = "native",
+            target_os = "windows",
+            target_arch = "x86_64",
+            target_env = "msvc"
+        ))]
+        {
+            let driver = crate::ffi::NativeDriver;
+            driver
+                .version()
+                .map_err(|error| map_driver_error(Operation::GetVersion, error))
+        }
+
+        #[cfg(not(all(
+            feature = "native",
+            target_os = "windows",
+            target_arch = "x86_64",
+            target_env = "msvc"
+        )))]
+        Err(Error::UnsupportedPlatform)
+    }
+
     pub fn initialize() -> Result<Self, Error> {
         Self::initialize_native()
     }
@@ -159,17 +178,11 @@ impl Runtime {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn initialize_with(driver: Box<dyn Driver>, gate: Arc<Gate>) -> Result<Self, Error> {
-        Self::initialize_driver(driver, gate)
-    }
-
     fn initialize_driver(driver: Box<dyn Driver>, gate: Arc<Gate>) -> Result<Self, Error> {
-        let mut state = gate.lock();
+        let mut state = gate.write();
         match &*state {
             ProcessSdkState::Fresh => {}
             ProcessSdkState::Active(core) => {
-                validate_sdk_version(&core.version)?;
                 return Ok(Self {
                     core: Arc::clone(core),
                     gate: Arc::clone(&gate),
@@ -177,28 +190,17 @@ impl Runtime {
             }
         }
 
-        let version = match driver.version() {
-            Ok(version) => version,
-            Err(error) => return Err(map_driver_error(Operation::GetVersion, error)),
-        };
-        validate_sdk_version(&version)?;
-
         driver
             .initialize()
             .map_err(|error| map_driver_error(Operation::Initialize, error))?;
 
         let core = Arc::new(RuntimeCore {
             driver,
-            version,
             handles: Mutex::new(0),
         });
         *state = ProcessSdkState::Active(Arc::clone(&core));
         drop(state);
         Ok(Self { core, gate })
-    }
-
-    pub fn version_bytes(&self) -> &[u8] {
-        &self.core.version
     }
 
     pub fn device_count_hint(&self) -> Result<u32, Error> {
@@ -314,7 +316,7 @@ impl Runtime {
     /// Repeating the call while the process remains Fresh succeeds; a stale token cannot finalize
     /// a newer session.
     pub fn shutdown(&self) -> Result<(), Error> {
-        let mut process = self.gate.lock();
+        let mut process = self.gate.write();
         match &*process {
             ProcessSdkState::Active(core) if Arc::ptr_eq(core, &self.core) => {}
             ProcessSdkState::Fresh => return Ok(()),
@@ -361,40 +363,14 @@ impl Runtime {
         self.core.call(operation, call)
     }
 
-    /// Holds the process gate across a short native call and rejects stale SDK tokens.
-    fn active_state(&self) -> Result<MutexGuard<'_, ProcessSdkState>, Error> {
-        let state = self.gate.lock();
+    /// Holds a shared session guard so Finalize cannot overlap a native call.
+    fn active_state(&self) -> Result<RwLockReadGuard<'_, ProcessSdkState>, Error> {
+        let state = self.gate.read();
         match &*state {
             ProcessSdkState::Active(core) if Arc::ptr_eq(core, &self.core) => Ok(state),
             ProcessSdkState::Active(_) | ProcessSdkState::Fresh => Err(Error::RuntimeInactive),
         }
     }
-}
-
-fn validate_sdk_version(bytes: &[u8]) -> Result<(), Error> {
-    if parse_sdk_version(bytes).is_some_and(|version| {
-        (AUDITED_VERSION..MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE).contains(&version)
-    }) {
-        Ok(())
-    } else {
-        Err(Error::IncompatibleSdkVersion {
-            minimum: AUDITED_VERSION_TEXT,
-            maximum_exclusive: MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE_TEXT,
-            actual: bytes.to_vec(),
-        })
-    }
-}
-
-fn parse_sdk_version(bytes: &[u8]) -> Option<SdkVersion> {
-    let mut components = std::str::from_utf8(bytes).ok()?.split('.');
-    let major = components.next()?.parse().ok()?;
-    let minor = components.next()?.parse().ok()?;
-    let patch = components.next()?.parse().ok()?;
-    let build = components.next()?.parse().ok()?;
-    if components.next().is_some() {
-        return None;
-    }
-    Some(SdkVersion::new(major, minor, patch, build))
 }
 
 fn map_driver_error(operation: Operation, error: DriverError) -> Error {

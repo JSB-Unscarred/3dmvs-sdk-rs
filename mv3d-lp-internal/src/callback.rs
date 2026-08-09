@@ -5,13 +5,13 @@ use std::ffi::c_void;
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::bindings;
 use crate::driver::{DriverError, DriverResult};
 use crate::frame::FrameRecord;
 
+/// Opaque callback identifier passed through the SDK without dereferencing native user data.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct CallbackCookie(NonZeroUsize);
 
@@ -23,49 +23,29 @@ impl CallbackCookie {
     fn from_user_pointer(pointer: *mut c_void) -> Option<Self> {
         NonZeroUsize::new(pointer.addr()).map(Self)
     }
-
-    #[cfg(test)]
-    pub(crate) const fn get(self) -> usize {
-        self.0.get()
-    }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CallbackDelivery {
-    Delivered,
-    Full,
-    Disconnected,
-}
+/// Returns `false` after the receiver disconnects so the registry can stop delivery.
+pub type FrameCallbackSink = Arc<dyn Fn(FrameRecord) -> bool + Send + Sync + 'static>;
+pub type ExceptionCallbackSink = Arc<dyn Fn(ExceptionRecord) -> bool + Send + Sync + 'static>;
 
-pub type FrameCallbackSink = Arc<dyn Fn(FrameRecord) -> CallbackDelivery + Send + Sync + 'static>;
-pub type ExceptionCallbackSink =
-    Arc<dyn Fn(ExceptionRecord) -> CallbackDelivery + Send + Sync + 'static>;
-
+/// Owned exception payload copied before the native callback returns.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExceptionRecord {
     pub kind: i32,
     pub description: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct CallbackStatsRecord {
-    pub delivered: u64,
-    pub dropped_full: u64,
-    pub invalid_payloads: u64,
-    pub panics: u64,
-    pub accepting: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CallbackKind {
-    Image,
-    Exception,
-}
-
 #[derive(Clone)]
 enum CallbackSink {
     Image(FrameCallbackSink),
     Exception(ExceptionCallbackSink),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CallbackKind {
+    Image,
+    Exception,
 }
 
 impl CallbackSink {
@@ -77,127 +57,9 @@ impl CallbackSink {
     }
 }
 
-struct EntryState {
-    in_flight: usize,
-    // Presence is the callback's admission state as well as the owned root sink.
-    sink: Option<CallbackSink>,
-}
-
-struct CallbackEntry {
-    state: Mutex<EntryState>,
-    drained: Condvar,
-    delivered: AtomicU64,
-    dropped_full: AtomicU64,
-    invalid_payloads: AtomicU64,
-    panics: AtomicU64,
-}
-
-impl CallbackEntry {
-    fn new(sink: CallbackSink) -> Self {
-        Self {
-            state: Mutex::new(EntryState {
-                in_flight: 0,
-                sink: Some(sink),
-            }),
-            drained: Condvar::new(),
-            delivered: AtomicU64::new(0),
-            dropped_full: AtomicU64::new(0),
-            invalid_payloads: AtomicU64::new(0),
-            panics: AtomicU64::new(0),
-        }
-    }
-
-    fn lock(&self) -> MutexGuard<'_, EntryState> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    fn try_enter(self: &Arc<Self>, expected: CallbackKind) -> Option<InFlight> {
-        let mut state = self.lock();
-        if state.sink.as_ref().map(CallbackSink::kind) != Some(expected) {
-            return None;
-        }
-        let sink = state.sink.as_ref()?.clone();
-        state.in_flight += 1;
-        drop(state);
-        Some(InFlight {
-            entry: Arc::clone(self),
-            sink: Some(sink),
-        })
-    }
-
-    fn begin_deactivate(&self) -> Option<CallbackSink> {
-        let mut state = self.lock();
-        state.sink.take()
-    }
-
-    fn wait_until_drained(&self) {
-        let mut state = self.lock();
-        while state.in_flight != 0 {
-            state = self
-                .drained
-                .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-        }
-    }
-
-    fn fail_closed(&self, panic: bool) {
-        if panic {
-            increment(&self.panics);
-        }
-        drop(self.begin_deactivate());
-    }
-
-    fn record_invalid_payload(&self) {
-        increment(&self.invalid_payloads);
-    }
-
-    fn record_delivery(&self, delivery: CallbackDelivery) {
-        match delivery {
-            CallbackDelivery::Delivered => increment(&self.delivered),
-            CallbackDelivery::Full => increment(&self.dropped_full),
-            CallbackDelivery::Disconnected => self.fail_closed(false),
-        }
-    }
-
-    fn stats(&self) -> CallbackStatsRecord {
-        let accepting = self.lock().sink.is_some();
-        CallbackStatsRecord {
-            delivered: self.delivered.load(Ordering::Relaxed),
-            dropped_full: self.dropped_full.load(Ordering::Relaxed),
-            invalid_payloads: self.invalid_payloads.load(Ordering::Relaxed),
-            panics: self.panics.load(Ordering::Relaxed),
-            accepting,
-        }
-    }
-}
-
-struct InFlight {
-    entry: Arc<CallbackEntry>,
-    sink: Option<CallbackSink>,
-}
-
-impl Drop for InFlight {
-    fn drop(&mut self) {
-        // Release the callback clone before publishing that this invocation has drained, so
-        // registration cleanup cannot return while this invocation still owns the sink.
-        drop(self.sink.take());
-
-        let mut state = self.entry.lock();
-        state.in_flight = state
-            .in_flight
-            .checked_sub(1)
-            .expect("an admitted callback leaves exactly once");
-        if state.in_flight == 0 {
-            self.entry.drained.notify_all();
-        }
-    }
-}
-
 struct RegistryState {
     next_cookie: usize,
-    entries: HashMap<CallbackCookie, Arc<CallbackEntry>>,
+    entries: HashMap<CallbackCookie, CallbackSink>,
 }
 
 struct CallbackRegistry {
@@ -220,7 +82,8 @@ impl CallbackRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn insert(&self, entry: Arc<CallbackEntry>) -> CallbackCookie {
+    /// Inserts a sink under a never-reused cookie so a late callback cannot hit a newer sink.
+    fn insert(&self, sink: CallbackSink) -> CallbackCookie {
         let mut state = self.lock();
         let cookie = CallbackCookie(
             NonZeroUsize::new(state.next_cookie).expect("callback cookie space exhausted"),
@@ -229,24 +92,19 @@ impl CallbackRegistry {
             .next_cookie
             .checked_add(1)
             .expect("callback cookie space exhausted");
-        let previous = state.entries.insert(cookie, entry);
+        let previous = state.entries.insert(cookie, sink);
         debug_assert!(previous.is_none(), "callback cookies are never reused");
         cookie
     }
 
-    fn lookup(&self, cookie: CallbackCookie) -> Option<Arc<CallbackEntry>> {
-        self.lock().entries.get(&cookie).cloned()
+    /// Clones the sink so an admitted callback can finish if registration is removed concurrently.
+    fn lookup(&self, cookie: CallbackCookie, expected: CallbackKind) -> Option<CallbackSink> {
+        let sink = self.lock().entries.get(&cookie).cloned()?;
+        (sink.kind() == expected).then_some(sink)
     }
 
-    fn remove(&self, cookie: CallbackCookie, expected: &Arc<CallbackEntry>) {
-        let mut state = self.lock();
-        if state
-            .entries
-            .get(&cookie)
-            .is_some_and(|entry| Arc::ptr_eq(entry, expected))
-        {
-            state.entries.remove(&cookie);
-        }
+    fn remove(&self, cookie: CallbackCookie) {
+        self.lock().entries.remove(&cookie);
     }
 }
 
@@ -255,9 +113,9 @@ fn registry() -> &'static CallbackRegistry {
     REGISTRY.get_or_init(CallbackRegistry::new)
 }
 
+/// Owns one registry entry while the corresponding native registration is usable.
 pub(crate) struct CallbackRegistration {
     cookie: CallbackCookie,
-    entry: Arc<CallbackEntry>,
 }
 
 impl CallbackRegistration {
@@ -270,31 +128,23 @@ impl CallbackRegistration {
     }
 
     fn new(sink: CallbackSink) -> Self {
-        let entry = Arc::new(CallbackEntry::new(sink));
-        let cookie = registry().insert(Arc::clone(&entry));
-        Self { cookie, entry }
+        Self {
+            cookie: registry().insert(sink),
+        }
     }
 
     pub(crate) fn cookie(&self) -> CallbackCookie {
         self.cookie
     }
-
-    pub(crate) fn stats(&self) -> CallbackStatsRecord {
-        self.entry.stats()
-    }
 }
 
 impl Drop for CallbackRegistration {
     fn drop(&mut self) {
-        // Revoke admission before hiding the cookie, then drain every callback that already
-        // cloned the sink before destroying the registration's root clone.
-        let retired_sink = self.entry.begin_deactivate();
-        registry().remove(self.cookie, &self.entry);
-        self.entry.wait_until_drained();
-        drop(retired_sink);
+        registry().remove(self.cookie);
     }
 }
 
+/// Copies one image callback into an owned Rust value without unwinding through the C ABI.
 pub(crate) unsafe extern "system" fn image_trampoline(
     image: *mut bindings::MV3D_LP_IMAGE_DATA,
     user: *mut c_void,
@@ -308,11 +158,12 @@ pub(crate) unsafe extern "system" fn image_trampoline(
     .is_err()
     {
         if let Some(cookie) = cookie {
-            let _ = catch_unwind(AssertUnwindSafe(|| fault_cookie(cookie)));
+            registry().remove(cookie);
         }
     }
 }
 
+/// Copies one exception callback into an owned Rust value without unwinding through the C ABI.
 pub(crate) unsafe extern "system" fn exception_trampoline(
     exception: *mut bindings::MV3D_LP_EXCEPTION_INFO,
     user: *mut c_void,
@@ -326,55 +177,40 @@ pub(crate) unsafe extern "system" fn exception_trampoline(
     .is_err()
     {
         if let Some(cookie) = cookie {
-            let _ = catch_unwind(AssertUnwindSafe(|| fault_cookie(cookie)));
+            registry().remove(cookie);
         }
     }
 }
 
 fn dispatch_image(cookie: CallbackCookie, image: *mut bindings::MV3D_LP_IMAGE_DATA) {
-    let Some(entry) = registry().lookup(cookie) else {
+    let Some(CallbackSink::Image(sink)) = registry().lookup(cookie, CallbackKind::Image) else {
         return;
     };
-    let Some(in_flight) = entry.try_enter(CallbackKind::Image) else {
-        return;
-    };
-    let Some(CallbackSink::Image(sink)) = in_flight.sink.as_ref() else {
-        return;
-    };
-    // SAFETY: after registry admission the audited SDK callback contract guarantees that the
-    // descriptor pointer, when non-null, remains readable until this trampoline returns.
+    // SAFETY: the SDK owns the descriptor for the duration of this callback; null is ignored.
     let Some(image) = (unsafe { image.as_ref() }) else {
-        entry.record_invalid_payload();
         return;
     };
-    // SAFETY: admission proves this is an active SDK callback. The audited callback contract
-    // requires the descriptor and every validated payload to remain readable until the native
-    // trampoline returns. The conversion validates all extents before dereferencing payloads.
-    match unsafe { crate::ffi::callback_image_from_native(image) } {
-        Ok(frame) => entry.record_delivery(sink(frame)),
-        Err(_) => entry.record_invalid_payload(),
+    // SAFETY: the callback converter validates pointer/length pairs before copying every payload.
+    if let Ok(frame) = unsafe { crate::ffi::callback_image_from_native(image) } {
+        if !sink(frame) {
+            registry().remove(cookie);
+        }
     }
 }
 
 fn dispatch_exception(cookie: CallbackCookie, exception: *mut bindings::MV3D_LP_EXCEPTION_INFO) {
-    let Some(entry) = registry().lookup(cookie) else {
+    let Some(CallbackSink::Exception(sink)) = registry().lookup(cookie, CallbackKind::Exception)
+    else {
         return;
     };
-    let Some(in_flight) = entry.try_enter(CallbackKind::Exception) else {
-        return;
-    };
-    let Some(CallbackSink::Exception(sink)) = in_flight.sink.as_ref() else {
-        return;
-    };
-    // SAFETY: after registry admission the SDK owns a readable exception descriptor for the
-    // duration of this callback. A null pointer remains a recoverable invalid event.
+    // SAFETY: the SDK owns the descriptor for the duration of this callback; null is ignored.
     let Some(exception) = (unsafe { exception.as_ref() }) else {
-        entry.record_invalid_payload();
         return;
     };
-    match exception_from_native(exception) {
-        Ok(exception) => entry.record_delivery(sink(exception)),
-        Err(_) => entry.record_invalid_payload(),
+    if let Ok(exception) = exception_from_native(exception) {
+        if !sink(exception) {
+            registry().remove(cookie);
+        }
     }
 }
 
@@ -401,54 +237,41 @@ fn exception_from_native(
     })
 }
 
-fn fault_cookie(cookie: CallbackCookie) {
-    if let Some(entry) = registry().lookup(cookie) {
-        entry.fail_closed(true);
-    }
-}
-
-fn increment(counter: &AtomicU64) {
-    counter.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-pub(crate) fn invoke_image_for_test(
-    cookie: CallbackCookie,
-    image: *mut bindings::MV3D_LP_IMAGE_DATA,
-) {
-    // SAFETY: tests provide a descriptor whose backing storage remains live through this
-    // synchronous invocation, or a stale cookie that must be rejected before payload access.
-    unsafe { image_trampoline(image, cookie.as_user_pointer()) }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
-    use super::{
-        CallbackDelivery, CallbackEntry, CallbackRegistry, CallbackSink, FrameCallbackSink,
-    };
+    use super::{CallbackRegistration, FrameCallbackSink, image_trampoline};
+    use crate::{bindings, ffi};
 
-    fn entry() -> Arc<CallbackEntry> {
-        let sink: FrameCallbackSink = Arc::new(|_| CallbackDelivery::Delivered);
-        Arc::new(CallbackEntry::new(CallbackSink::Image(sink)))
-    }
-
-    // 验证 callback cookie 始终非零且注销后不复用，防止迟到 callback 命中错误注册。
+    // 验证 callback 立即复制 payload；registration 销毁后迟到 callback 不再投递。
     #[test]
-    fn cookies_are_nonzero_and_never_reused_after_removal() {
-        let registry = CallbackRegistry::new();
-        let first_entry = entry();
-        let first = registry.insert(Arc::clone(&first_entry));
-        registry.remove(first, &first_entry);
-        let second = registry.insert(entry());
+    fn image_callback_owns_payload_and_retires_registration() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::clone(&received);
+        let sink: FrameCallbackSink = Arc::new(move |frame| {
+            output.lock().unwrap().push(frame);
+            true
+        });
+        let registration = CallbackRegistration::image(sink);
+        let cookie = registration.cookie();
 
-        assert_ne!(first, second);
-        assert_ne!(first.get(), 0);
-        assert_ne!(second.get(), 0);
-        assert_eq!(
-            super::CallbackCookie::from_user_pointer(second.as_user_pointer()),
-            Some(second)
-        );
+        let mut data = [1_u8, 2];
+        let mut image = ffi::zeroed_image();
+        image.enImageType = bindings::ImageType_Mono8;
+        image.nWidth = 2;
+        image.nHeight = 1;
+        image.pData = data.as_mut_ptr();
+        image.nDataLen = data.len() as u32;
+
+        // SAFETY: the descriptor and its payload stay alive for this synchronous callback.
+        unsafe { image_trampoline(&mut image, cookie.as_user_pointer()) };
+        data.fill(9);
+        assert_eq!(received.lock().unwrap()[0].data, [1, 2]);
+
+        drop(registration);
+        // SAFETY: the descriptor remains valid; the retired cookie is ignored before conversion.
+        unsafe { image_trampoline(&mut image, cookie.as_user_pointer()) };
+        assert_eq!(received.lock().unwrap().len(), 1);
     }
 }

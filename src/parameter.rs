@@ -1,15 +1,5 @@
 use crate::SdkText;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub enum ParameterKind {
-    Bool,
-    Integer,
-    Float,
-    Enumeration,
-    String,
-}
-
 /// An owned parameter value together with the limits reported by the SDK.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -37,17 +27,7 @@ pub enum Parameter {
 }
 
 impl Parameter {
-    #[must_use]
-    pub const fn kind(&self) -> ParameterKind {
-        match self {
-            Self::Bool(_) => ParameterKind::Bool,
-            Self::Integer { .. } => ParameterKind::Integer,
-            Self::Float { .. } => ParameterKind::Float,
-            Self::Enumeration { .. } => ParameterKind::Enumeration,
-            Self::String { .. } => ParameterKind::String,
-        }
-    }
-
+    /// Extracts the current value without the limits returned by `GetParam`.
     #[must_use]
     pub fn value(&self) -> ParameterValue {
         match self {
@@ -69,17 +49,4 @@ pub enum ParameterValue {
     Float(f32),
     Enumeration(u32),
     String(SdkText),
-}
-
-impl ParameterValue {
-    #[must_use]
-    pub const fn kind(&self) -> ParameterKind {
-        match self {
-            Self::Bool(_) => ParameterKind::Bool,
-            Self::Integer(_) => ParameterKind::Integer,
-            Self::Float(_) => ParameterKind::Float,
-            Self::Enumeration(_) => ParameterKind::Enumeration,
-            Self::String(_) => ParameterKind::String,
-        }
-    }
 }

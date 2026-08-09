@@ -69,11 +69,10 @@ use crate::display::DisplayRangeRecord;
 use crate::driver::{Driver, Handle, status_result};
 use crate::driver::{DriverError, DriverResult};
 use crate::error::{ContractViolation, InvalidInput};
-use crate::file_transfer::FileProgressRaw;
+use crate::file_transfer::FileProgress;
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 
-const VERSION_SCAN_LIMIT: usize = 64;
 const MAX_MULTI_IMAGE_COUNT: usize = 8;
 
 #[cfg(any(
@@ -104,21 +103,8 @@ impl Driver for NativeDriver {
             return Err(DriverError::Contract(ContractViolation::NullVersionPointer));
         }
 
-        let mut version = Vec::with_capacity(VERSION_SCAN_LIMIT);
-        for index in 0..VERSION_SCAN_LIMIT {
-            // SAFETY: LPSDK documents the returned pointer as a NUL-terminated version string.
-            // We copy it immediately and cap the scan so it cannot become an unbounded Rust read.
-            let byte = unsafe { pointer.add(index).read() } as u8;
-            if byte == 0 {
-                return Ok(version);
-            }
-            version.push(byte);
-        }
-        Err(DriverError::Contract(
-            ContractViolation::UnterminatedVersion {
-                limit: VERSION_SCAN_LIMIT,
-            },
-        ))
+        // SAFETY: LPSDK documents the returned pointer as a NUL-terminated version string.
+        Ok(unsafe { CStr::from_ptr(pointer) }.to_bytes().to_vec())
     }
 
     fn initialize(&self) -> DriverResult<()> {
@@ -205,8 +191,8 @@ impl Driver for NativeDriver {
 
     fn close(&self, handle: Handle) -> DriverResult<()> {
         let mut raw = handle.as_ptr();
-        // SAFETY: handle originated from a successful SDK open call. Device removes it from its
-        // state before entering this method, so Rust never calls CloseDevice twice for it.
+        // SAFETY: handle originated from a successful SDK open call and its Device owner calls
+        // CloseDevice at most once.
         status_result(unsafe { bindings::MV3D_LP_CloseDevice(&mut raw) })
     }
 
@@ -316,7 +302,7 @@ impl Driver for NativeDriver {
             nReserved: [0; 32],
         };
         // SAFETY: Device owns the handle, the `[IN]` descriptor is initialized for this call, and
-        // both strings are NUL-terminated and live until the call returns.
+        // both strings are NUL-terminated. Device retains them after a successful async start.
         status_result(unsafe { bindings::MV3D_LP_FileAccessRead(handle.as_ptr(), &mut access) })
     }
 
@@ -331,12 +317,12 @@ impl Driver for NativeDriver {
             pDevFileName: device_file_name.as_ptr(),
             nReserved: [0; 32],
         };
-        // SAFETY: the same call-scoped `[IN]` descriptor and live-handle guarantees as
-        // FileAccessRead apply.
+        // SAFETY: the same initialized descriptor, retained strings, and live handle guarantees
+        // as FileAccessRead apply.
         status_result(unsafe { bindings::MV3D_LP_FileAccessWrite(handle.as_ptr(), &mut access) })
     }
 
-    fn file_access_progress(&self, handle: Handle) -> DriverResult<FileProgressRaw> {
+    fn file_access_progress(&self, handle: Handle) -> DriverResult<FileProgress> {
         let mut progress = bindings::MV3D_LP_FILE_ACCESS_PROGRESS {
             nCompleted: 0,
             nTotal: 0,
@@ -346,15 +332,13 @@ impl Driver for NativeDriver {
         status_result(unsafe {
             bindings::MV3D_LP_GetFileAccessProgress(handle.as_ptr(), &mut progress)
         })?;
-        Ok(FileProgressRaw {
+        Ok(FileProgress {
             completed: progress.nCompleted,
             total: progress.nTotal,
         })
     }
 
     fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> DriverResult<FrameRecord> {
-        require_image_type(input, bindings::ImageType_Depth)?;
-        let input_dimensions = (input.width, input.height);
         let mut input = image_input_to_native(input)?;
         let mut output = zeroed_image();
         // SAFETY: input borrows a validated payload for the duration of this serialized call;
@@ -367,11 +351,6 @@ impl Driver for NativeDriver {
             processed_image_from_native(
                 &output,
                 ImageTypeRecord::from_raw(bindings::ImageType_PointCloud),
-                if (output.nWidth, output.nHeight) == input_dimensions {
-                    AuxiliaryPayloads::All
-                } else {
-                    AuxiliaryPayloads::None
-                },
             )
         }
     }
@@ -380,7 +359,7 @@ impl Driver for NativeDriver {
         &self,
         inputs: &[ImageInput<'_>],
     ) -> DriverResult<FrameRecord> {
-        let mut inputs = prepare_multi_depth_inputs(inputs)?;
+        let mut inputs = prepare_multi_inputs(inputs)?;
         let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
         let mut output = zeroed_image();
         // SAFETY: every descriptor borrows a validated, vendor-[IN] read-only payload, count
@@ -393,7 +372,6 @@ impl Driver for NativeDriver {
             processed_image_from_native(
                 &output,
                 ImageTypeRecord::from_raw(bindings::ImageType_PointCloud),
-                AuxiliaryPayloads::None,
             )
         }
     }
@@ -403,36 +381,18 @@ impl Driver for NativeDriver {
         input: ImageInput<'_>,
         target: ImageTypeRecord,
     ) -> DriverResult<FrameRecord> {
-        let source = input.image_type.raw();
-        let input_dimensions = (input.width, input.height);
         let mut input = image_input_to_native(input)?;
-        if !conversion_supported(source, target.raw()) {
-            return Err(invalid_input(InvalidInput::UnsupportedImageConversion {
-                source: source as u32,
-                target: target.raw() as u32,
-            }));
-        }
         let mut output = zeroed_image();
         output.enImageType = target.raw();
         // SAFETY: the header requires only the requested output type in the otherwise zeroed
         // output descriptor. The vendor marks input [IN] and must not write its borrowed payload.
         status_result(unsafe { bindings::MV3D_LP_ImageConvert(&mut input, &mut output) })?;
         // SAFETY: the SDK returned success and its transient output is copied before another call.
-        unsafe {
-            processed_image_from_native(
-                &output,
-                target,
-                if (output.nWidth, output.nHeight) == input_dimensions {
-                    AuxiliaryPayloads::All
-                } else {
-                    AuxiliaryPayloads::None
-                },
-            )
-        }
+        unsafe { processed_image_from_native(&output, target) }
     }
 
     fn mosaic_depth(&self, inputs: &[ImageInput<'_>]) -> DriverResult<FrameRecord> {
-        let mut inputs = prepare_multi_depth_inputs(inputs)?;
+        let mut inputs = prepare_multi_inputs(inputs)?;
         let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
         let mut output = zeroed_image();
         // SAFETY: descriptors and count describe initialized vendor-[IN] read-only inputs;
@@ -445,7 +405,6 @@ impl Driver for NativeDriver {
             processed_image_from_native(
                 &output,
                 ImageTypeRecord::from_raw(bindings::ImageType_Depth),
-                AuxiliaryPayloads::IntensityOnly,
             )
         }
     }
@@ -456,14 +415,7 @@ impl Driver for NativeDriver {
         format: ImageFileFormatRecord,
         file_name: &CStr,
     ) -> DriverResult<()> {
-        let image_type = input.image_type.raw();
         let mut input = image_input_to_native(input)?;
-        if !file_format_supported(image_type, format) {
-            return Err(invalid_input(InvalidInput::UnsupportedImageFileFormat {
-                image_type: image_type as u32,
-                file_format: format as i32,
-            }));
-        }
         // SAFETY: input payload and filename are vendor-[IN], read-only borrows for this
         // synchronous call; the SDK must neither write them nor retain their addresses.
         status_result(unsafe {
@@ -478,24 +430,6 @@ impl Driver for NativeDriver {
         window: NonZeroIsize,
         range: DisplayRangeRecord,
     ) -> DriverResult<()> {
-        if !display_image_type_supported(input.image_type.raw()) {
-            return Err(invalid_input(InvalidInput::UnsupportedDisplayImageType {
-                actual: input.image_type.raw() as u32,
-            }));
-        }
-        if let DisplayRangeRecord::Manual { minimum, maximum } = range {
-            if input.image_type.raw() == bindings::ImageType_Mono8 {
-                return Err(invalid_input(InvalidInput::UnsupportedDisplayMode {
-                    image_type: input.image_type.raw() as u32,
-                }));
-            }
-            if minimum >= maximum {
-                return Err(invalid_input(InvalidInput::InvalidDisplayRange {
-                    minimum,
-                    maximum,
-                }));
-            }
-        }
         let mut input = image_input_to_native(input)?;
         let (display_type, minimum, maximum) = match range {
             DisplayRangeRecord::Auto => (bindings::DisplayType_Auto, 0, 0),
@@ -549,12 +483,12 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
         let expected = pixels
             .checked_mul(bytes_per_pixel)
             .ok_or_else(|| invalid_image_layout("data length"))?;
-        if input.data.len() != expected {
+        if input.data.len() < expected {
             return Err(invalid_image_layout("data length"));
         }
     }
     let intensity_len = match input.intensity_data {
-        Some(intensity) if intensity.len() != pixels => {
+        Some(intensity) if intensity.len() < pixels => {
             return Err(invalid_image_layout("intensity data length"));
         }
         Some(intensity) => u32::try_from(intensity.len())
@@ -562,7 +496,7 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
         None => 0,
     };
     if let Some(timestamps) = input.exposure_timestamps {
-        if timestamps.len() != usize::try_from(input.height).unwrap_or(usize::MAX) {
+        if timestamps.len() < usize::try_from(input.height).unwrap_or(usize::MAX) {
             return Err(invalid_image_layout("exposure timestamp count"));
         }
     }
@@ -614,7 +548,7 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
         target_env = "msvc"
     )
 ))]
-/// Calls the raw display entry point after the higher-level display validation.
+/// Calls the raw display entry point with an initialized descriptor and borrowed window handle.
 ///
 /// # Safety
 ///
@@ -645,33 +579,10 @@ pub(crate) unsafe fn native_display_image_call(
         target_env = "msvc"
     )
 ))]
-fn require_image_type(
-    input: ImageInput<'_>,
-    expected: bindings::Mv3dLpImageType,
-) -> DriverResult<()> {
-    if input.image_type.raw() == expected {
-        Ok(())
-    } else {
-        Err(invalid_input(InvalidInput::UnexpectedImageType {
-            expected: expected as u32,
-            actual: input.image_type.raw() as u32,
-        }))
-    }
-}
-
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-fn prepare_multi_depth_inputs(
+fn prepare_multi_inputs(
     inputs: &[ImageInput<'_>],
 ) -> DriverResult<Vec<bindings::MV3D_LP_IMAGE_DATA>> {
-    if !(1..=MAX_MULTI_IMAGE_COUNT).contains(&inputs.len()) {
+    if inputs.len() > MAX_MULTI_IMAGE_COUNT {
         return Err(invalid_image_count(inputs.len()));
     }
     let mut native = Vec::new();
@@ -683,100 +594,9 @@ fn prepare_multi_depth_inputs(
                 .saturating_mul(size_of::<bindings::MV3D_LP_IMAGE_DATA>()),
         })?;
     for input in inputs {
-        require_image_type(*input, bindings::ImageType_Depth)?;
         native.push(image_input_to_native(*input)?);
     }
     Ok(native)
-}
-
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-fn conversion_supported(source: i32, target: i32) -> bool {
-    matches!(
-        (source, target),
-        (bindings::ImageType_Depth, bindings::ImageType_Mono8)
-            | (bindings::ImageType_Depth, bindings::ImageType_RGB24_Packed)
-            | (bindings::ImageType_Profile, bindings::ImageType_PointCloud)
-            | (
-                bindings::ImageType_Profile,
-                bindings::ImageType_Profile_ABC32
-            )
-            | (
-                bindings::ImageType_Profile_ABC32,
-                bindings::ImageType_PointCloud
-            )
-            | (
-                bindings::ImageType_PointCloud,
-                bindings::ImageType_Profile_ABC32
-            )
-    )
-}
-
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-fn file_format_supported(image_type: i32, format: ImageFileFormatRecord) -> bool {
-    match format {
-        ImageFileFormatRecord::Bmp => matches!(
-            image_type,
-            bindings::ImageType_Mono8
-                | bindings::ImageType_Depth
-                | bindings::ImageType_RGB24_Packed
-        ),
-        ImageFileFormatRecord::Jpeg => matches!(
-            image_type,
-            bindings::ImageType_Depth | bindings::ImageType_Jpeg | bindings::ImageType_RGB24_Packed
-        ),
-        ImageFileFormatRecord::Tiff => matches!(
-            image_type,
-            bindings::ImageType_Depth | bindings::ImageType_RGB24_Packed
-        ),
-        ImageFileFormatRecord::TiffU16
-        | ImageFileFormatRecord::TiffF32
-        | ImageFileFormatRecord::Hibag => image_type == bindings::ImageType_Depth,
-        ImageFileFormatRecord::Ply | ImageFileFormatRecord::Csv | ImageFileFormatRecord::Obj => {
-            matches!(
-                image_type,
-                bindings::ImageType_Profile
-                    | bindings::ImageType_Profile_ABC32
-                    | bindings::ImageType_PointCloud
-            )
-        }
-        ImageFileFormatRecord::PlyBinary | ImageFileFormatRecord::PlyTexture => {
-            image_type == bindings::ImageType_PointCloud
-        }
-    }
-}
-
-#[cfg(all(
-    feature = "display-windows",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
-))]
-fn display_image_type_supported(image_type: i32) -> bool {
-    matches!(
-        image_type,
-        bindings::ImageType_Mono8
-            | bindings::ImageType_Depth
-            | bindings::ImageType_RGB24_Packed
-            | bindings::ImageType_Profile
-            | bindings::ImageType_Profile_ABC32
-            | bindings::ImageType_PointCloud
-    )
 }
 
 #[cfg(any(
@@ -791,42 +611,13 @@ fn display_image_type_supported(image_type: i32) -> bool {
 unsafe fn processed_image_from_native(
     output: &bindings::MV3D_LP_IMAGE_DATA,
     expected: ImageTypeRecord,
-    auxiliary_payloads: AuxiliaryPayloads,
 ) -> DriverResult<FrameRecord> {
     if output.enImageType != expected.raw() {
         return Err(invalid_sdk_image_value("output image type"));
     }
-    let mut sanitized = *output;
-    match auxiliary_payloads {
-        AuxiliaryPayloads::All => {}
-        AuxiliaryPayloads::IntensityOnly => {
-            sanitized.pExposureTimeStamp = ptr::null_mut();
-        }
-        AuxiliaryPayloads::None => {
-            sanitized.pIntensityData = ptr::null_mut();
-            sanitized.nIntensityDataLen = 0;
-            sanitized.pExposureTimeStamp = ptr::null_mut();
-        }
-    }
-    validate_processed_image_lengths(&sanitized)?;
+    validate_processed_image_lengths(output)?;
     // SAFETY: the caller holds the process gate and guarantees a successful SDK ImgProc call.
-    unsafe { image_from_native(&sanitized) }
-}
-
-#[cfg(any(
-    test,
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-#[derive(Clone, Copy)]
-enum AuxiliaryPayloads {
-    All,
-    IntensityOnly,
-    None,
+    unsafe { image_from_native(output) }
 }
 
 #[cfg(any(
@@ -1080,7 +871,7 @@ fn invalid_input(kind: InvalidInput) -> DriverError {
 
 fn invalid_image_count(actual: usize) -> DriverError {
     invalid_input(InvalidInput::ImageCount {
-        minimum: 1,
+        minimum: 0,
         maximum: MAX_MULTI_IMAGE_COUNT,
         actual,
     })
@@ -1112,56 +903,6 @@ fn sdk_length_mismatch(field: &'static str, expected: usize, actual: usize) -> D
 
 fn sdk_length_overflow(field: &'static str) -> DriverError {
     DriverError::Contract(ContractViolation::LengthOverflow { field })
-}
-
-#[cfg(test)]
-pub(crate) fn image_from_test_buffers(
-    status: i32,
-    mut image: bindings::MV3D_LP_IMAGE_DATA,
-    data: Option<&[u8]>,
-    intensity_data: Option<&[u8]>,
-    exposure_timestamps: Option<&[i64]>,
-) -> DriverResult<FrameRecord> {
-    // Mirror NativeDriver: a failing status makes every output byte untrusted and must win over
-    // malformed metadata or pointers.
-    crate::driver::status_result(status)?;
-
-    image.pData = data.map_or(std::ptr::null_mut(), |bytes| bytes.as_ptr().cast_mut());
-    image.pIntensityData =
-        intensity_data.map_or(std::ptr::null_mut(), |bytes| bytes.as_ptr().cast_mut());
-    image.pExposureTimeStamp =
-        exposure_timestamps.map_or(std::ptr::null_mut(), |values| values.as_ptr().cast_mut());
-
-    let layout = validate_image_layout(&image)?;
-    if data.is_none_or(|bytes| bytes.len() < layout.data_len) {
-        return Err(sdk_length_mismatch(
-            "test data backing",
-            layout.data_len,
-            data.map_or(0, <[u8]>::len),
-        ));
-    }
-    if let Some(expected) = layout.intensity_len {
-        if intensity_data.is_none_or(|bytes| bytes.len() < expected) {
-            return Err(sdk_length_mismatch(
-                "test intensity backing",
-                expected,
-                intensity_data.map_or(0, <[u8]>::len),
-            ));
-        }
-    }
-    if let Some(expected) = layout.exposure_count {
-        if exposure_timestamps.is_none_or(|values| values.len() < expected) {
-            return Err(sdk_length_mismatch(
-                "test exposure backing",
-                expected,
-                exposure_timestamps.map_or(0, <[i64]>::len),
-            ));
-        }
-    }
-
-    // SAFETY: Each pointer was derived from a live borrowed slice above, and the backing checks
-    // guarantee the validated extents fit inside those slices for this synchronous call.
-    unsafe { image_from_native(&image) }
 }
 
 pub(crate) fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {
@@ -1307,15 +1048,13 @@ pub(crate) fn parameter_to_native(
         }
         ParameterValueRecord::String(value) => {
             if value.len() >= bindings::MV3D_LP_MAX_STRING_LENGTH {
-                return Err(DriverError::Contract(
-                    ContractViolation::StringMaxLengthExceedsLimit {
-                        reported: u32::try_from(value.len()).unwrap_or(u32::MAX),
-                        limit: bindings::MV3D_LP_MAX_STRING_LENGTH - 1,
-                    },
-                ));
+                return Err(invalid_input(InvalidInput::TooLong {
+                    actual: value.len(),
+                    maximum: bindings::MV3D_LP_MAX_STRING_LENGTH - 1,
+                }));
             }
             if value.contains(&0) {
-                return Err(DriverError::Status(bindings::MV3D_LP_E_PARAMETER));
+                return Err(invalid_input(InvalidInput::InteriorNul));
             }
             let mut string = bindings::MV3D_LP_STRINGPARAM {
                 chCurValue: [0; bindings::MV3D_LP_MAX_STRING_LENGTH],
@@ -1327,9 +1066,6 @@ pub(crate) fn parameter_to_native(
             parameter.enParamType = bindings::ParamType_String;
             parameter.ParamInfo.stStringParam = string;
         }
-    }
-    if matches!(value, ParameterValueRecord::Bool(_)) {
-        debug_assert!(bool_parameter_has_zeroed_inactive_storage(&parameter));
     }
     Ok(parameter)
 }
@@ -1351,21 +1087,87 @@ fn as_c_char_array<const N: usize>(source: &[u8; N]) -> [i8; N] {
     std::array::from_fn(|index| source[index] as i8)
 }
 
-pub(crate) fn bool_parameter_has_zeroed_inactive_storage(
-    parameter: &bindings::MV3D_LP_PARAM,
-) -> bool {
-    if parameter.enParamType != bindings::ParamType_Bool {
-        return false;
+#[cfg(test)]
+mod tests {
+    use std::ptr;
+
+    use super::{
+        image_from_native, parameter_from_native, parameter_to_native, zeroed_image,
+        zeroed_parameter,
+    };
+    use crate::bindings;
+    use crate::driver::DriverError;
+    use crate::error::ContractViolation;
+    use crate::parameter::{ParameterRecord, ParameterValueRecord};
+
+    // 验证 SDK 图像的指针/长度边界，并确认 callback 返回前完成深拷贝。
+    #[test]
+    fn image_payloads_are_validated_and_owned() {
+        let mut data = [1_u8, 2];
+        let mut intensity = [3_u8, 4];
+        let mut exposure = [5_i64];
+        let mut image = zeroed_image();
+        image.enImageType = bindings::ImageType_Mono8;
+        image.nWidth = 2;
+        image.nHeight = 1;
+        image.pData = data.as_mut_ptr();
+        image.nDataLen = data.len() as u32;
+        image.pIntensityData = intensity.as_mut_ptr();
+        image.nIntensityDataLen = intensity.len() as u32;
+        image.pExposureTimeStamp = exposure.as_mut_ptr();
+
+        // SAFETY: all descriptor pointers refer to the live arrays above for their declared sizes.
+        let frame = unsafe { image_from_native(&image) }.unwrap();
+        data.fill(9);
+        intensity.fill(9);
+        exposure.fill(9);
+        assert_eq!(frame.data, [1, 2]);
+        assert_eq!(frame.intensity_data.as_deref(), Some([3, 4].as_slice()));
+        assert_eq!(frame.exposure_timestamps.as_deref(), Some([5].as_slice()));
+
+        image.pData = ptr::null_mut();
+        assert!(matches!(
+            // SAFETY: validation rejects the null pointer before reading any payload.
+            unsafe { image_from_native(&image) },
+            Err(DriverError::Contract(
+                ContractViolation::NullPointerWithLength {
+                    field: "data",
+                    length: 2
+                }
+            ))
+        ));
     }
-    // SAFETY: This audit is used only for a Bool-tagged parameter built from fully zeroed storage.
-    // Every bit pattern of MV3D_LP_STRINGPARAM is valid, so viewing the initialized union storage
-    // through its largest declared data member is valid here.
-    let storage = unsafe { parameter.ParamInfo.stStringParam };
-    let maximum_length = storage.nMaxLength;
-    let storage = as_u8_array(&storage.chCurValue);
-    let active = i32::from_ne_bytes([storage[0], storage[1], storage[2], storage[3]]);
-    parameter.nReserved == [0; 16]
-        && matches!(active, 0 | 1)
-        && storage[4..].iter().all(|byte| *byte == 0)
-        && maximum_length == 0
+
+    // 验证 parameter union 仅按 discriminator 读取，并限制厂商返回的 enum 数量。
+    #[test]
+    fn parameter_union_uses_tag_and_checks_enum_count() {
+        let mut parameter = zeroed_parameter();
+        parameter.enParamType = bindings::ParamType_Enum;
+        parameter.ParamInfo.stEnumParam = bindings::MV3D_LP_ENUMPARAM {
+            nCurValue: 7,
+            nSupportedNum: 2,
+            nSupportValue: [11, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        };
+        assert_eq!(
+            parameter_from_native(&parameter).unwrap(),
+            ParameterRecord::Enumeration {
+                value: 7,
+                supported: vec![11, 13]
+            }
+        );
+
+        parameter.ParamInfo.stEnumParam.nSupportedNum =
+            (bindings::MV3D_LP_MAX_ENUM_COUNT + 1) as u32;
+        assert!(matches!(
+            parameter_from_native(&parameter),
+            Err(DriverError::Contract(
+                ContractViolation::EnumCountExceedsLimit { .. }
+            ))
+        ));
+
+        let boolean = parameter_to_native(&ParameterValueRecord::Bool(true)).unwrap();
+        assert_eq!(boolean.enParamType, bindings::ParamType_Bool);
+        // SAFETY: the discriminator above identifies bBoolParam as the active member.
+        assert_eq!(unsafe { boolean.ParamInfo.bBoolParam }, 1);
+    }
 }

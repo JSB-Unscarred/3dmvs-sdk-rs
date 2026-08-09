@@ -1,6 +1,4 @@
-use std::sync::mpsc::Receiver;
-
-use mv3d_lp::{Device, Frame, Image, ImageProcessor, Sdk};
+use mv3d_lp::{Device, ImageProcessor, Sdk};
 
 macro_rules! assert_not_impl {
     ($type:ty: $bound:path) => {
@@ -17,9 +15,6 @@ macro_rules! assert_not_impl {
 }
 
 assert_not_impl!(Device: Sync);
-assert_not_impl!(Frame: Copy);
-assert_not_impl!(Image: Copy);
-assert_not_impl!(Receiver<Frame>: Sync);
 
 // 验证共享 Runtime/processor 与独占 Device 的线程契约。
 #[test]

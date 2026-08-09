@@ -1,4 +1,3 @@
-use crate::{SdkText, SdkVersion};
 use std::error::Error as StdError;
 use std::fmt;
 
@@ -227,30 +226,8 @@ pub enum InputViolation {
         maximum: usize,
         actual: usize,
     },
-    UnexpectedImageType {
-        expected: u32,
-        actual: u32,
-    },
-    UnsupportedImageConversion {
-        source: u32,
-        target: u32,
-    },
-    UnsupportedImageFileFormat {
-        image_type: u32,
-        file_format: i32,
-    },
     InvalidImageLayout {
         field: &'static str,
-    },
-    UnsupportedDisplayImageType {
-        actual: u32,
-    },
-    UnsupportedDisplayMode {
-        image_type: u32,
-    },
-    InvalidDisplayRange {
-        minimum: i32,
-        maximum: i32,
     },
     WindowHandleUnavailable,
     WindowHandleNotSupported,
@@ -283,36 +260,9 @@ impl fmt::Display for InputViolation {
                 formatter,
                 "the image count is {actual}; expected {minimum}..={maximum}"
             ),
-            Self::UnexpectedImageType { expected, actual } => write!(
-                formatter,
-                "image type 0x{actual:08X} does not match required type 0x{expected:08X}"
-            ),
-            Self::UnsupportedImageConversion { source, target } => write!(
-                formatter,
-                "conversion from image type 0x{source:08X} to 0x{target:08X} is unsupported"
-            ),
-            Self::UnsupportedImageFileFormat {
-                image_type,
-                file_format,
-            } => write!(
-                formatter,
-                "image type 0x{image_type:08X} cannot be saved as file format {file_format}"
-            ),
             Self::InvalidImageLayout { field } => {
                 write!(formatter, "the image has an invalid {field}")
             }
-            Self::UnsupportedDisplayImageType { actual } => write!(
-                formatter,
-                "image type 0x{actual:08X} cannot be displayed by the SDK"
-            ),
-            Self::UnsupportedDisplayMode { image_type } => write!(
-                formatter,
-                "the requested display mode is unsupported for image type 0x{image_type:08X}"
-            ),
-            Self::InvalidDisplayRange { minimum, maximum } => write!(
-                formatter,
-                "manual display range requires minimum < maximum, got {minimum}..{maximum}"
-            ),
             Self::WindowHandleUnavailable => {
                 formatter.write_str("the window handle is unavailable")
             }
@@ -339,10 +289,6 @@ pub enum ContractViolation {
         count: usize,
         capacity: usize,
     },
-    MissingNul {
-        field: &'static str,
-        capacity: usize,
-    },
     UnknownDiscriminant {
         field: &'static str,
         raw: u32,
@@ -363,14 +309,6 @@ pub enum ContractViolation {
     InvalidValue {
         field: &'static str,
     },
-    NegativeFileProgress {
-        completed: i64,
-        total: i64,
-    },
-    FileProgressExceedsTotal {
-        completed: u64,
-        total: u64,
-    },
 }
 
 impl fmt::Display for ContractViolation {
@@ -387,10 +325,6 @@ impl fmt::Display for ContractViolation {
             } => write!(
                 formatter,
                 "{field} count {count} exceeds capacity {capacity}"
-            ),
-            Self::MissingNul { field, capacity } => write!(
-                formatter,
-                "{field} has no NUL terminator within its {capacity}-byte field"
             ),
             Self::UnknownDiscriminant { field, raw } => {
                 write!(formatter, "{field} contains unknown value 0x{raw:08X}")
@@ -417,13 +351,6 @@ impl fmt::Display for ContractViolation {
             Self::InvalidValue { field } => {
                 write!(formatter, "{field} contains an invalid SDK value")
             }
-            Self::NegativeFileProgress { completed, total } => write!(
-                formatter,
-                "file progress contains negative values: completed={completed}, total={total}"
-            ),
-            Self::FileProgressExceedsTotal { completed, total } => {
-                write!(formatter, "file progress {completed} exceeds total {total}")
-            }
         }
     }
 }
@@ -445,12 +372,6 @@ pub enum Error {
     ContractViolation {
         operation: Operation,
         violation: ContractViolation,
-    },
-    IncompatibleSdkVersion {
-        minimum: SdkVersion,
-        maximum_exclusive: SdkVersion,
-        actual: SdkVersion,
-        actual_text: SdkText,
     },
     RuntimeInactive,
     AllocationFailed {
@@ -488,15 +409,6 @@ impl fmt::Display for Error {
             } => write!(
                 formatter,
                 "{operation} returned data that violates the SDK contract: {violation}"
-            ),
-            Self::IncompatibleSdkVersion {
-                minimum,
-                maximum_exclusive,
-                actual_text,
-                ..
-            } => write!(
-                formatter,
-                "incompatible SDK runtime version {actual_text}; expected a version in [{minimum}, {maximum_exclusive})"
             ),
             Self::RuntimeInactive => {
                 formatter.write_str("this token no longer refers to the active 3DMVS SDK runtime")
@@ -564,32 +476,6 @@ impl Error {
         match error {
             InternalError::UnsupportedPlatform => Self::UnsupportedPlatform,
             InternalError::RuntimeInactive => Self::RuntimeInactive,
-            InternalError::IncompatibleSdkVersion {
-                minimum,
-                maximum_exclusive,
-                actual,
-            } => {
-                let minimum = parse_version_bytes(minimum);
-                let maximum_exclusive = parse_version_bytes(maximum_exclusive);
-                let actual = SdkText::try_from(actual).ok().and_then(|actual_text| {
-                    parse_version_bytes_checked(actual_text.as_bytes())
-                        .map(|actual| (actual, actual_text))
-                });
-                match actual {
-                    Some((actual, actual_text)) => Self::IncompatibleSdkVersion {
-                        minimum,
-                        maximum_exclusive,
-                        actual,
-                        actual_text,
-                    },
-                    None => Self::ContractViolation {
-                        operation: Operation::GetVersion,
-                        violation: ContractViolation::InvalidValue {
-                            field: "SDK version",
-                        },
-                    },
-                }
-            }
             InternalError::Sdk { operation, status } => Self::Sdk(SdkError::new(
                 map_internal_operation(operation),
                 StatusCode::from_raw(status),
@@ -597,17 +483,9 @@ impl Error {
             InternalError::InvalidState { operation, state } => {
                 let operation = map_internal_operation(operation);
                 let expected = match operation {
-                    Operation::RegisterImageDataCallback
-                    | Operation::RegisterExceptionCallback
-                    | Operation::StartMeasure
-                    | Operation::FileAccessRead
-                    | Operation::FileAccessWrite => "open",
-                    Operation::StopMeasure | Operation::SoftTrigger => {
-                        "measuring or callback measuring"
-                    }
-                    Operation::GetImage => "measuring",
-                    Operation::GetFileAccessProgress => "transferring",
-                    _ => "open or measuring",
+                    Operation::RegisterImageDataCallback | Operation::StartMeasure => "stopped",
+                    Operation::StopMeasure => "measuring",
+                    _ => "valid SDK call order",
                 };
                 Self::InvalidState {
                     operation,
@@ -637,34 +515,9 @@ impl Error {
                             maximum,
                             actual,
                         },
-                        mv3d_lp_internal::InvalidInput::UnexpectedImageType {
-                            expected,
-                            actual,
-                        } => InputViolation::UnexpectedImageType { expected, actual },
-                        mv3d_lp_internal::InvalidInput::UnsupportedImageConversion {
-                            source,
-                            target,
-                        } => InputViolation::UnsupportedImageConversion { source, target },
-                        mv3d_lp_internal::InvalidInput::UnsupportedImageFileFormat {
-                            image_type,
-                            file_format,
-                        } => InputViolation::UnsupportedImageFileFormat {
-                            image_type,
-                            file_format,
-                        },
                         mv3d_lp_internal::InvalidInput::InvalidImageLayout { field } => {
                             InputViolation::InvalidImageLayout { field }
                         }
-                        mv3d_lp_internal::InvalidInput::UnsupportedDisplayImageType { actual } => {
-                            InputViolation::UnsupportedDisplayImageType { actual }
-                        }
-                        mv3d_lp_internal::InvalidInput::UnsupportedDisplayMode { image_type } => {
-                            InputViolation::UnsupportedDisplayMode { image_type }
-                        }
-                        mv3d_lp_internal::InvalidInput::InvalidDisplayRange {
-                            minimum,
-                            maximum,
-                        } => InputViolation::InvalidDisplayRange { minimum, maximum },
                     },
                 }
             }
@@ -673,12 +526,6 @@ impl Error {
                     InternalContract::NullVersionPointer => ContractViolation::NullPointer {
                         field: "SDK version",
                     },
-                    InternalContract::UnterminatedVersion { limit } => {
-                        ContractViolation::MissingNul {
-                            field: "SDK version",
-                            capacity: limit,
-                        }
-                    }
                     InternalContract::NullHandleOnSuccess => ContractViolation::NullPointer {
                         field: "device handle",
                     },
@@ -726,12 +573,6 @@ impl Error {
                     }
                     InternalContract::InvalidImageValue { field } => {
                         ContractViolation::InvalidValue { field }
-                    }
-                    InternalContract::NegativeFileProgress { completed, total } => {
-                        ContractViolation::NegativeFileProgress { completed, total }
-                    }
-                    InternalContract::FileProgressExceedsTotal { completed, total } => {
-                        ContractViolation::FileProgressExceedsTotal { completed, total }
                     }
                 };
                 Self::ContractViolation {
@@ -788,14 +629,20 @@ pub(crate) const fn map_internal_operation(operation: mv3d_lp_internal::Operatio
     }
 }
 
-fn parse_version_bytes(bytes: &[u8]) -> SdkVersion {
-    parse_version_bytes_checked(bytes).expect("the audited expected version is valid")
-}
-
-fn parse_version_bytes_checked(bytes: &[u8]) -> Option<SdkVersion> {
-    std::str::from_utf8(bytes).ok()?.parse().ok()
-}
-
 #[cfg(test)]
-#[path = "error_tests.rs"]
-mod tests;
+mod tests {
+    use super::{Operation, SdkError, StatusCode};
+
+    // 验证已知与未知 status 都保留厂商位模式和调用上下文。
+    #[test]
+    fn status_preserves_bits_and_operation() {
+        let known = StatusCode::from_raw(0x8006_000D_u32 as i32);
+        assert_eq!(known, StatusCode::DEVICE_OFFLINE);
+        assert_eq!(known.bits(), 0x8006_000D);
+
+        let unknown = StatusCode::from_bits(0xDEAD_BEEF);
+        let error = SdkError::new(Operation::GetParam, unknown);
+        assert_eq!(error.operation(), Operation::GetParam);
+        assert_eq!(error.status(), unknown);
+    }
+}

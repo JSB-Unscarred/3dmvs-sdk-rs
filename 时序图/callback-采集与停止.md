@@ -12,36 +12,46 @@ sequenceDiagram
     App->>Public: device.start_receiving(options)
     Public->>Queue: sync_channel(queue_capacity)
     Public->>Core: Device::start_callback(sink)
-    Core->>Core: 创建 CallbackRegistration 和唯一 cookie
+    Core->>Core: 用不复用的 cookie 注册 sink
     Core->>Native: MV3D_LP_RegisterImageDataCallBack(handle, trampoline, cookie)
-    Native-->>Core: status
-    Core->>Native: MV3D_LP_StartMeasure(handle)
-    Native-->>Core: status
-    Core->>Core: Device 保存 registration，state = CallbackMeasuring
-    Core-->>Public: Ok
-    Public-->>App: Receiver&lt;Frame&gt;
+    Native-->>Core: register status
+    alt register 成功
+        Core->>Native: MV3D_LP_StartMeasure(handle)
+        Native-->>Core: start status
+        alt Start 成功
+            Core->>Core: 保存 registration，measuring = true
+            Core-->>Public: Ok
+            Public-->>App: Receiver&lt;Frame&gt;
+        else Start 失败
+            Core->>Core: 移除本次 cookie
+            Core-->>Public: Err
+            Public-->>App: Err
+        end
+    else register 失败
+        Core->>Core: 移除本次 cookie
+        Core-->>Public: Err
+        Public-->>App: Err
+    end
 
     loop 每次原生图像回调
         Native->>Core: image_trampoline(image_ptr, cookie)
-        Core->>Core: registry 按 cookie 准入并登记 in-flight
+        Core->>Core: registry 查找并 clone sink
         alt cookie 已撤销或未知
-            Core-->>Native: registry 拒绝 delivery
-        else registration 正在接受事件
-            Core->>Core: 校验并复制为 Frame
-            alt payload 有效
+            Core-->>Native: 忽略迟到 callback
+        else 找到 sink
+            Core->>Core: 校验并立即复制为 Frame
+            alt payload 可复制
                 Core->>Queue: try_send(frame)
                 alt 队列有空位
                     Queue-->>Core: queued
-                    Core->>Core: delivered += 1
                 else 队列已满
-                    Core->>Core: dropped_full += 1
-                else receiver 已关闭
-                    Core->>Core: fail closed，停止接受后续事件
+                    Core->>Core: 丢弃本次新 frame
+                else Receiver 已关闭
+                    Core->>Core: 移除 cookie，停止后续 Rust delivery
                 end
-            else payload 无效
-                Core->>Core: invalid_payloads += 1
+            else payload 无法复制
+                Core->>Core: 忽略本次 callback
             end
-            Core->>Core: 结束 in-flight
             Core-->>Native: trampoline 返回
         end
     end
@@ -54,40 +64,33 @@ sequenceDiagram
 
     App->>Public: device.stop()
     Public->>Core: Device::stop()
-    Core->>Core: 停止准入并从 registry 移除 cookie
-    Core->>Core: 等待全部 in-flight callback 退出
-    Core->>Queue: 释放 registration 持有的 sender
     Core->>Native: MV3D_LP_StopMeasure(handle)
     Native-->>Core: status
     alt Stop 成功
-        Core->>Core: state = Open
+        Core->>Core: measuring = false，移除 image cookie
         Core-->>Public: Ok
         Public-->>App: Ok
-    else Stop 结果异常
-        Core->>Core: state = Faulted
+    else Stop 失败
+        Core->>Core: 保留 measuring 与 registration
         Core-->>Public: Err
-        Public-->>App: Err
+        Public-->>App: Err；可再次 stop 或关闭
     end
 
-    opt Stop 失败后显式 close
-        App->>Public: device.close()
-        Public->>Core: Device cleanup
-        Core->>Native: MV3D_LP_StopMeasure(handle) 再尝试一次
-        Native-->>Core: retry status
-        alt retry 成功
-            Core->>Core: state = Open
-        else retry 失败
-            Core->>Core: state = Faulted
+    opt 显式 close 或 Drop
+        Core->>Core: 取走 handle
+        opt measuring = true
+            Core->>Native: MV3D_LP_StopMeasure(handle) 一次
+            Native-->>Core: stop status
         end
-        Core->>Native: MV3D_LP_CloseDevice(handle)
+        Core->>Native: MV3D_LP_CloseDevice(handle) 一次
         Native-->>Core: close status
-        Note over Core,Native: Close 失败时保留 handle；显式 close(self) 的 Drop 再试一次
-        Note over Core,Native: Stop 成功已回 Open，Drop 不重复 Stop；连续 Close 失败才阻止 Finalize
+        Core->>Core: 移除 image 与 exception cookie
     end
-    Note over App,Core: 直接 drop(device) 只执行 Drop 自身的一次尽力清理
 ```
 
-`Receiver<Frame>` 与 `Frame` 均不借用 `Device`；调用方可在当前线程消费 Receiver，也可将其移入自建线程。帧入队前已复制主数据、亮度数据和曝光时间戳，`Frame` 是 `Image` 的类型别名。SDK handle、registration、cookie 与清理责任均留在 `Device`。原生接口只提供 register；当前 wrapper 用 registry、cookie 撤销和 in-flight drain 作为保守兼容措施。下一次 `start_receiving()` 会创建新 cookie，厂商是否支持同一 handle 重复注册仍待确认。完整状态图见[生命周期与时序图总览](../生命周期与时序图.md)。
+`Receiver<Frame>` 与 `Frame` 均不借用 `Device`。trampoline 只复制 payload 并非阻塞入队，符合官方 CHM“图像 callback 内不建议调用其他 SDK 接口”的说明。队列满时丢弃最新事件，避免阻塞 SDK callback thread。
+
+registry 的作用仅是隔离迟到 callback：cookie 从不复用，registration 撤销后，旧 callback 无法命中新 sink。callback 在撤销前若已取得 sink clone，仍可完成本次复制或入队；`stop()`、`disable_exception_delivery()` 和关闭路径都不等待它返回。厂商是否在 Stop/Close 返回时保证 callback 静默仍待确认。
 
 ## exception delivery 停止
 
@@ -98,22 +101,27 @@ sequenceDiagram
     participant Core as callback registry
     participant Native as 厂商 LPSDK
 
+    opt 撤销前 callback 已开始
+        Native->>Core: exception_trampoline(info, old_cookie)
+        Core->>Core: registry 查找并 clone sink
+    end
     App->>Core: device.disable_exception_delivery()
-    Core->>Core: 停止准入并移除唯一 cookie
-    Core->>Core: 等待已准入的 in-flight callback 返回
-    Core->>Queue: 释放 sender
-    Core-->>App: return
-    App->>Queue: 消费至 channel 断开
-    opt 原生晚到 exception callback
-        Native->>Core: exception_trampoline(info, retired_cookie)
+    Core->>Core: 移除 exception cookie 与 registry 中的 sender
+    Core-->>App: 立即返回
+    opt 已开始的 callback 持有 sink clone
+        Core->>Queue: 本次 callback 仍可完成非阻塞入队
+        Core-->>Native: return
+    end
+    opt 撤销后到达的 callback
+        Native->>Core: exception_trampoline(info, old_cookie)
         Core->>Core: registry 查询失败，忽略
         Core-->>Native: return
     end
 ```
 
-厂商接口只提供 exception callback register，因此 `disable_exception_delivery()` 只撤销 Rust delivery。它可重复调用；registry 会拒绝已撤销 cookie 的 delivery。显式 disable 后，Receiver 可在当前线程消费至断开；若调用方自建消费线程，则由调用方结束该线程。旧 callback 是否可能在 Stop/Close 后继续到达属于待确认契约。
+厂商接口只提供 exception callback register，因此 `disable_exception_delivery()` 只停止后续 Rust delivery。Receiver 会在 registry sender 和可能存在的 sink clone 都释放后断开；调用方无需把“方法返回”解释为原生 callback 已静默。
 
 ## 待确认厂商契约
 
 - `MV3D_LP_StopMeasure` 与 `MV3D_LP_CloseDevice` 返回时，image/exception callback 是否已静默。
-- 同一 handle 是否允许重复注册，以及跨 Stop、再次 start、pull/callback 模式切换时旧 callback 与 user data 的替换规则。
+- 同一 handle 是否允许重复注册，以及跨 Stop、再次 Start、pull/callback 模式切换时旧 callback 与 user data 的替换规则。

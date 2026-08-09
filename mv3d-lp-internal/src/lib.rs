@@ -18,19 +18,13 @@ mod opened_device;
 mod parameter;
 mod runtime;
 
-pub use callback::{
-    CallbackDelivery, CallbackStatsRecord, ExceptionCallbackSink, ExceptionRecord,
-    FrameCallbackSink,
-};
+pub use callback::{ExceptionCallbackSink, ExceptionRecord, FrameCallbackSink};
 pub use device::{DeviceRecord, IpConfiguration};
 #[cfg(feature = "display-windows")]
 pub use display::DisplayRangeRecord;
 pub use error::{ContractViolation, Error, InvalidInput, Operation};
-pub use file_transfer::{FileProgress, FileTransferStatus};
+pub use file_transfer::FileProgress;
 pub use frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
-pub use opened_device::{Device, DeviceCleanupError, DeviceState};
+pub use opened_device::{Device, DeviceCleanupError};
 pub use parameter::{ParameterRecord, ParameterValueRecord};
 pub use runtime::Runtime;
-
-#[cfg(test)]
-mod tests;

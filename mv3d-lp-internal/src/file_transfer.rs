@@ -1,17 +1,8 @@
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FileProgressRaw {
-    pub completed: i64,
-    pub total: i64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Signed file-transfer counters copied without inferring completion semantics.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FileProgress {
-    pub completed: u64,
-    pub total: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FileTransferStatus {
-    Running(FileProgress),
-    Completed(FileProgress),
+    /// Value reported by `nCompleted`.
+    pub completed: i64,
+    /// Value reported by `nTotal`.
+    pub total: i64,
 }

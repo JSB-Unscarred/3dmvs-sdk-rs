@@ -29,6 +29,11 @@ publish = false
 name = "mv3d_lp"
 path = "src/lib.rs"
 
+[[test]]
+name = "native_smoke"
+path = "tests/native_smoke.rs"
+required-features = ["native"]
+
 [features]
 default = []
 native = ["mv3d-lp-internal/native"]

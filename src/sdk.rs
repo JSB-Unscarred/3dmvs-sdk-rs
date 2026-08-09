@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 
 use crate::{
     ContractViolation, Device, DeviceInfo, Error, ImageProcessor, IpConfiguration,
-    IpConfigurationMode, Operation, Result, SdkText, SdkVersion, SerialNumber,
+    IpConfigurationMode, Operation, Result, SdkText, SerialNumber,
 };
 
 /// A token for the process-wide 3DMVS SDK session.
@@ -13,33 +13,20 @@ use crate::{
 /// other tokens from that session return [`Error::RuntimeInactive`]. `Sdk` is `Send + Sync`.
 pub struct Sdk {
     inner: mv3d_lp_internal::Runtime,
-    version: SdkVersion,
 }
 
 impl Sdk {
+    /// Reads the SDK version without requiring Initialize.
+    pub fn version() -> Result<SdkText> {
+        let bytes =
+            mv3d_lp_internal::Runtime::version_bytes().map_err(Error::map_internal_error)?;
+        Ok(SdkText::from_sdk_bytes(bytes))
+    }
+
     /// Initializes the process-wide SDK or joins its active session.
     pub fn initialize() -> Result<Self> {
         let inner = mv3d_lp_internal::Runtime::initialize().map_err(Error::map_internal_error)?;
-        Self::from_internal(inner)
-    }
-
-    fn from_internal(inner: mv3d_lp_internal::Runtime) -> Result<Self> {
-        let version = std::str::from_utf8(inner.version_bytes())
-            .ok()
-            .and_then(|text| text.parse().ok())
-            .ok_or(Error::ContractViolation {
-                operation: Operation::GetVersion,
-                violation: ContractViolation::InvalidValue {
-                    field: "SDK version",
-                },
-            })?;
-        Ok(Self { inner, version })
-    }
-
-    /// Returns the cached SDK version, including after this token's session is finalized.
-    #[must_use]
-    pub const fn version(&self) -> SdkVersion {
-        self.version
+        Ok(Self { inner })
     }
 
     pub fn device_count_hint(&self) -> Result<u32> {
@@ -114,12 +101,12 @@ impl Sdk {
 
 fn device_from_internal(record: mv3d_lp_internal::DeviceRecord) -> Result<DeviceInfo> {
     Ok(DeviceInfo {
-        manufacturer_name: SdkText::try_from(record.manufacturer_name)?,
-        model_name: SdkText::try_from(record.model_name)?,
-        device_version: SdkText::try_from(record.device_version)?,
-        manufacturer_specific_info: SdkText::try_from(record.manufacturer_specific_info)?,
-        serial_number: SerialNumber::try_from(record.serial_number)?,
-        user_defined_name: SdkText::try_from(record.user_defined_name)?,
+        manufacturer_name: SdkText::from_sdk_bytes(record.manufacturer_name),
+        model_name: SdkText::from_sdk_bytes(record.model_name),
+        device_version: SdkText::from_sdk_bytes(record.device_version),
+        manufacturer_specific_info: SdkText::from_sdk_bytes(record.manufacturer_specific_info),
+        serial_number: SerialNumber::from_sdk_bytes(record.serial_number),
+        user_defined_name: SdkText::from_sdk_bytes(record.user_defined_name),
         mac_address: record.mac_address,
         ip_configuration_mode: IpConfigurationMode::from_raw(record.ip_configuration_mode),
         current_ip: parse_optional_ipv4("current IP", &record.current_ip)?,
