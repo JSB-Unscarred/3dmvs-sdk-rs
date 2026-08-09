@@ -1,59 +1,23 @@
 use crate::device::{DeviceInfoRaw, DeviceListAttempt};
-use crate::error::{ContractViolation, Error};
 
 use super::mock_driver::{MockDriver, active_runtime};
 
-// 验证设备列表增长时按新容量重试，防止枚举期间设备变化造成结果截断。
+// 验证一次数量查询和一次列表查询返回 owned 记录。
 #[test]
-fn discovery_retries_when_the_device_list_grows() {
+fn discovery_returns_the_reported_owned_records() {
     let mock = MockDriver::new();
     mock.push_device_number(Ok(1));
+    let mut record = DeviceInfoRaw::default();
+    record.serial_number[..4].copy_from_slice(b"SN02");
     mock.push_device_list(Ok(DeviceListAttempt {
-        records: vec![DeviceInfoRaw::default()],
-        reported: 2,
-    }));
-    mock.push_device_list(Ok(DeviceListAttempt {
-        records: vec![DeviceInfoRaw::default(), DeviceInfoRaw::default()],
-        reported: 2,
+        records: vec![record],
+        reported: 1,
     }));
     let (runtime, _) = active_runtime(&mock);
 
-    assert_eq!(runtime.devices().unwrap().len(), 2);
-    assert_eq!(mock.capacities(), vec![1, 2]);
-}
+    let devices = runtime.devices().unwrap();
 
-// 验证异常大的设备数量在分配前被拒绝，防止不可信 SDK 计数触发巨额分配。
-#[test]
-fn discovery_rejects_unbounded_sdk_counts() {
-    let mock = MockDriver::new();
-    mock.push_device_number(Ok(257));
-    let (runtime, _) = active_runtime(&mock);
-
-    assert!(matches!(
-        runtime.devices(),
-        Err(Error::ContractViolation {
-            kind: ContractViolation::DeviceCountExceedsLimit { .. },
-            ..
-        })
-    ));
-    assert!(mock.capacities().is_empty());
-}
-
-// 验证连续不稳定快照按上限终止，防止设备变化导致枚举无限重试。
-#[test]
-fn discovery_stops_after_three_unstable_snapshots() {
-    let mock = MockDriver::new();
-    mock.push_device_number(Ok(1));
-    for reported in [2, 5, 11] {
-        mock.push_device_list(Ok(DeviceListAttempt {
-            records: vec![DeviceInfoRaw::default(); reported - 1],
-            reported: reported as u32,
-        }));
-    }
-    let (runtime, _) = active_runtime(&mock);
-
-    assert!(matches!(
-        runtime.devices(),
-        Err(Error::DiscoveryChanged { attempts: 3 })
-    ));
+    assert_eq!(mock.capacities(), [1]);
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].serial_number, b"SN02");
 }

@@ -14,10 +14,7 @@ mod sdk;
 mod text;
 mod types;
 
-pub use callback::{
-    CallbackOptions, CallbackStats, CallbackWorker, CallbackWorkerExit, DeviceException,
-    DeviceExceptionType,
-};
+pub use callback::{CallbackOptions, CallbackStats, DeviceException, DeviceExceptionType};
 pub use device::{DeviceInfo, IpConfiguration, IpConfigurationMode};
 #[cfg(all(windows, feature = "display-windows"))]
 pub use display_windows::DisplayRange;

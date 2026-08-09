@@ -213,7 +213,6 @@ impl StdError for SdkError {}
 #[non_exhaustive]
 pub enum InputViolation {
     Empty,
-    NonAscii,
     InteriorNul,
     TooLong {
         max: usize,
@@ -262,7 +261,6 @@ impl fmt::Display for InputViolation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => formatter.write_str("the value is empty"),
-            Self::NonAscii => formatter.write_str("the value is not ASCII"),
             Self::InteriorNul => formatter.write_str("the value contains a NUL byte"),
             Self::TooLong { max, actual } => {
                 write!(
@@ -373,18 +371,6 @@ pub enum ContractViolation {
         completed: u64,
         total: u64,
     },
-    /// Legacy diagnostic retained for source compatibility. Current versions validate each
-    /// progress snapshot independently because the SDK does not promise monotonic samples.
-    FileProgressRegressed {
-        previous: u64,
-        current: u64,
-    },
-    /// Legacy diagnostic retained for source compatibility. Current versions do not require the
-    /// SDK's reported total to remain fixed across progress snapshots.
-    FileProgressTotalChanged {
-        previous: u64,
-        current: u64,
-    },
 }
 
 impl fmt::Display for ContractViolation {
@@ -438,14 +424,6 @@ impl fmt::Display for ContractViolation {
             Self::FileProgressExceedsTotal { completed, total } => {
                 write!(formatter, "file progress {completed} exceeds total {total}")
             }
-            Self::FileProgressRegressed { previous, current } => write!(
-                formatter,
-                "file progress regressed from {previous} to {current}"
-            ),
-            Self::FileProgressTotalChanged { previous, current } => write!(
-                formatter,
-                "file progress total changed from {previous} to {current}"
-            ),
         }
     }
 }
@@ -468,25 +446,16 @@ pub enum Error {
         operation: Operation,
         violation: ContractViolation,
     },
-    OpenFailedWithHandle {
-        operation: Operation,
-        source: Box<Error>,
-    },
-    DiscoveryChanged {
-        attempts: usize,
-    },
     IncompatibleSdkVersion {
         minimum: SdkVersion,
-        maximum_exclusive: Option<SdkVersion>,
+        maximum_exclusive: SdkVersion,
         actual: SdkVersion,
         actual_text: SdkText,
     },
     RuntimeInactive,
-    RuntimeDegraded,
     AllocationFailed {
         operation: Operation,
     },
-    CallbackWorkerSpawn,
     DeviceCleanup {
         stop: Option<Box<Error>>,
         close: Option<Box<Error>>,
@@ -520,42 +489,23 @@ impl fmt::Display for Error {
                 formatter,
                 "{operation} returned data that violates the SDK contract: {violation}"
             ),
-            Self::OpenFailedWithHandle { operation, source } => write!(
-                formatter,
-                "{operation} failed and returned a non-null handle that cannot be used safely: {source}"
-            ),
-            Self::DiscoveryChanged { attempts } => write!(
-                formatter,
-                "the device list kept changing during {attempts} discovery attempts"
-            ),
             Self::IncompatibleSdkVersion {
                 minimum,
                 maximum_exclusive,
                 actual_text,
                 ..
-            } => match maximum_exclusive {
-                Some(maximum_exclusive) => write!(
-                    formatter,
-                    "incompatible SDK runtime version {actual_text}; expected a version in [{minimum}, {maximum_exclusive})"
-                ),
-                None => write!(
-                    formatter,
-                    "incompatible SDK runtime version {actual_text}; expected exactly {minimum}"
-                ),
-            },
-            Self::RuntimeInactive => formatter
-                .write_str("this token no longer refers to the active 3DMVS SDK runtime"),
-            Self::RuntimeDegraded => formatter.write_str(
-                "the process-wide 3DMVS SDK session is degraded and cannot open devices, finalize, or initialize another runtime",
+            } => write!(
+                formatter,
+                "incompatible SDK runtime version {actual_text}; expected a version in [{minimum}, {maximum_exclusive})"
             ),
+            Self::RuntimeInactive => {
+                formatter.write_str("this token no longer refers to the active 3DMVS SDK runtime")
+            }
             Self::AllocationFailed { operation } => {
                 write!(
                     formatter,
                     "memory allocation failed while preparing {operation}"
                 )
-            }
-            Self::CallbackWorkerSpawn => {
-                formatter.write_str("could not spawn the Rust callback worker thread")
             }
             Self::DeviceCleanup { stop, close } => match (stop, close) {
                 (Some(stop), Some(close)) => write!(
@@ -578,7 +528,6 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Sdk(error) => Some(error),
-            Self::OpenFailedWithHandle { source, .. } => Some(source.as_ref()),
             Self::DeviceCleanup {
                 stop: Some(error), ..
             }
@@ -615,14 +564,13 @@ impl Error {
         match error {
             InternalError::UnsupportedPlatform => Self::UnsupportedPlatform,
             InternalError::RuntimeInactive => Self::RuntimeInactive,
-            InternalError::RuntimeDegraded => Self::RuntimeDegraded,
             InternalError::IncompatibleSdkVersion {
                 minimum,
                 maximum_exclusive,
                 actual,
             } => {
                 let minimum = parse_version_bytes(minimum);
-                let maximum_exclusive = maximum_exclusive.map(parse_version_bytes);
+                let maximum_exclusive = parse_version_bytes(maximum_exclusive);
                 let actual = SdkText::try_from(actual).ok().and_then(|actual_text| {
                     parse_version_bytes_checked(actual_text.as_bytes())
                         .map(|actual| (actual, actual_text))
@@ -674,20 +622,12 @@ impl Error {
                     violation: match kind {
                         mv3d_lp_internal::InvalidInput::Empty => InputViolation::Empty,
                         mv3d_lp_internal::InvalidInput::InteriorNul => InputViolation::InteriorNul,
-                        mv3d_lp_internal::InvalidInput::NonAscii => InputViolation::NonAscii,
                         mv3d_lp_internal::InvalidInput::TooLong { actual, maximum } => {
                             InputViolation::TooLong {
                                 max: maximum,
                                 actual,
                             }
                         }
-                        mv3d_lp_internal::InvalidInput::TimeoutTooLong {
-                            maximum_millis,
-                            actual_millis,
-                        } => InputViolation::TimeoutTooLong {
-                            maximum_millis,
-                            actual_millis,
-                        },
                         mv3d_lp_internal::InvalidInput::ImageCount {
                             minimum,
                             maximum,
@@ -742,13 +682,6 @@ impl Error {
                     InternalContract::NullHandleOnSuccess => ContractViolation::NullPointer {
                         field: "device handle",
                     },
-                    InternalContract::DeviceCountExceedsLimit { reported, limit } => {
-                        ContractViolation::OutputTooLarge {
-                            field: "device count",
-                            limit,
-                            actual: usize::try_from(reported).unwrap_or(usize::MAX),
-                        }
-                    }
                     InternalContract::DeviceListCountMismatch { reported, returned } => {
                         ContractViolation::CountExceedsCapacity {
                             field: "device list",
@@ -776,14 +709,6 @@ impl Error {
                             actual: usize::try_from(reported).unwrap_or(usize::MAX),
                         }
                     }
-                    InternalContract::HandleCountOverflow => ContractViolation::LengthOverflow {
-                        field: "live device handle count",
-                    },
-                    InternalContract::CallbackCookieExhausted => {
-                        ContractViolation::LengthOverflow {
-                            field: "callback cookie sequence",
-                        }
-                    }
                     InternalContract::NullPointerWithLength { field, length } => {
                         ContractViolation::NullPointerWithLength { field, length }
                     }
@@ -799,15 +724,6 @@ impl Error {
                     InternalContract::LengthOverflow { field } => {
                         ContractViolation::LengthOverflow { field }
                     }
-                    InternalContract::OutputTooLarge {
-                        field,
-                        limit,
-                        actual,
-                    } => ContractViolation::OutputTooLarge {
-                        field,
-                        limit,
-                        actual,
-                    },
                     InternalContract::InvalidImageValue { field } => {
                         ContractViolation::InvalidValue { field }
                     }
@@ -823,13 +739,6 @@ impl Error {
                     violation,
                 }
             }
-            InternalError::OpenFailedWithHandle { operation, source } => {
-                Self::OpenFailedWithHandle {
-                    operation: map_internal_operation(operation),
-                    source: Box::new(Self::map_internal_error(*source)),
-                }
-            }
-            InternalError::DiscoveryChanged { attempts } => Self::DiscoveryChanged { attempts },
             InternalError::AllocationFailed { operation, .. } => Self::AllocationFailed {
                 operation: map_internal_operation(operation),
             },

@@ -140,10 +140,10 @@ impl<'a> ImageRef<'a> {
     }
 }
 
-/// An image-processing result whose payload is owned by Rust.
+/// An acquired or processed image whose payload is owned by Rust.
 ///
-/// Image processing copies SDK output buffers before return. Cloning deep-copies
-/// all payload buffers.
+/// SDK payloads are copied before return, so the image remains valid after later calls, buffer
+/// clearing, stopping, or closing the device. Cloning deep-copies all payload buffers.
 #[derive(Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Image {
@@ -260,114 +260,14 @@ impl fmt::Display for ImageType {
     }
 }
 
-/// An acquired frame whose payload is owned by Rust.
-///
-/// Device acquisition copies SDK buffers before return. The frame remains valid
-/// after later acquisitions, buffer clearing, stopping, or closing the device.
-/// Cloning deep-copies all payload buffers.
-#[derive(Clone, PartialEq)]
-#[non_exhaustive]
-pub struct Frame {
-    pub image_type: ImageType,
-    pub width: u32,
-    pub height: u32,
-    pub data: Vec<u8>,
-    pub intensity_data: Option<Vec<u8>>,
-    pub exposure_timestamps: Option<Vec<i64>>,
-    pub frame_number: u32,
-    pub device_timestamp: i64,
-    pub valid: bool,
-    pub calibration: ImageCalibration,
-}
-
-impl Frame {
-    /// Deep-copies an [`ImageRef`] so the result is independent of its source buffers.
-    #[must_use]
-    pub fn from_image_ref(image: ImageRef<'_>) -> Self {
-        Self {
-            image_type: image.image_type,
-            width: image.width,
-            height: image.height,
-            data: image.data.to_vec(),
-            intensity_data: image.intensity_data.map(<[u8]>::to_vec),
-            exposure_timestamps: image.exposure_timestamps.map(<[i64]>::to_vec),
-            frame_number: image.frame_number,
-            device_timestamp: image.device_timestamp,
-            valid: image.valid,
-            calibration: image.calibration,
-        }
-    }
-
-    /// Borrows this frame as an image-processing input.
-    #[must_use]
-    pub fn as_image_ref(&self) -> ImageRef<'_> {
-        ImageRef {
-            image_type: self.image_type,
-            width: self.width,
-            height: self.height,
-            data: &self.data,
-            intensity_data: self.intensity_data.as_deref(),
-            exposure_timestamps: self.exposure_timestamps.as_deref(),
-            frame_number: self.frame_number,
-            device_timestamp: self.device_timestamp,
-            valid: self.valid,
-            calibration: self.calibration,
-        }
-    }
-
-    /// Moves validated internal fields into the public frame without copying payload buffers.
-    pub(crate) fn from_internal(record: mv3d_lp_internal::FrameRecord) -> Self {
-        Self {
-            image_type: ImageType::from_bits(record.image_type.bits()),
-            width: record.width,
-            height: record.height,
-            data: record.data,
-            intensity_data: record.intensity_data,
-            exposure_timestamps: record.exposure_timestamps,
-            frame_number: record.frame_number,
-            device_timestamp: record.device_timestamp,
-            valid: record.valid,
-            calibration: ImageCalibration {
-                x_scale: record.x_scale,
-                y_scale: record.y_scale,
-                z_scale: record.z_scale,
-                x_offset: record.x_offset,
-                y_offset: record.y_offset,
-                z_offset: record.z_offset,
-            },
-        }
-    }
-}
-
-impl fmt::Debug for Frame {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Frame")
-            .field("image_type", &self.image_type)
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .field("data_len", &self.data.len())
-            .field(
-                "intensity_data_len",
-                &self.intensity_data.as_ref().map(Vec::len),
-            )
-            .field(
-                "exposure_timestamps_len",
-                &self.exposure_timestamps.as_ref().map(Vec::len),
-            )
-            .field("frame_number", &self.frame_number)
-            .field("device_timestamp", &self.device_timestamp)
-            .field("valid", &self.valid)
-            .field("calibration", &self.calibration)
-            .finish()
-    }
-}
+/// Acquired-frame name for the shared owned image representation.
+pub type Frame = Image;
 
 #[cfg(test)]
 mod tests {
-    use super::{Frame, Image, ImageCalibration, ImageRef, ImageType};
+    use super::{Image, ImageCalibration, ImageRef, ImageType};
 
-    // 验证 Frame 与 Image 的 Debug 仅输出 payload 长度，防止图像内容进入日志。
+    // 验证 Debug 仅输出 payload 长度，防止图像内容进入日志。
     #[test]
     fn owned_debug_reports_lengths_without_payload_contents() {
         let data = [0xAA, 0xBB];
@@ -385,16 +285,14 @@ mod tests {
             valid: true,
             calibration: ImageCalibration::default(),
         };
-        let frame = Frame::from_image_ref(image_ref);
         let image = Image::from_image_ref(image_ref);
 
-        for debug in [format!("{frame:?}"), format!("{image:?}")] {
-            assert!(debug.contains("data_len: 2"));
-            assert!(debug.contains("intensity_data_len: Some(2)"));
-            assert!(debug.contains("exposure_timestamps_len: Some(1)"));
-            assert!(!debug.contains("170"));
-            assert!(!debug.contains("187"));
-            assert!(!debug.contains("123456789"));
-        }
+        let debug = format!("{image:?}");
+        assert!(debug.contains("data_len: 2"));
+        assert!(debug.contains("intensity_data_len: Some(2)"));
+        assert!(debug.contains("exposure_timestamps_len: Some(1)"));
+        assert!(!debug.contains("170"));
+        assert!(!debug.contains("187"));
+        assert!(!debug.contains("123456789"));
     }
 }

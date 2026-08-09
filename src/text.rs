@@ -250,18 +250,15 @@ fn validate_bytes(field: &'static str, bytes: &[u8], max: usize) -> Result<()> {
     Ok(())
 }
 
-macro_rules! ascii_key {
+macro_rules! key_type {
     ($name:ident, $field:literal) => {
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(String);
 
         impl $name {
-            /// Maximum key length accepted by the SDK, in bytes.
-            pub const MAX_LEN: usize = 255;
-
             pub fn new(value: impl Into<String>) -> Result<Self> {
                 let value = value.into();
-                validate_ascii_key($field, &value, Self::MAX_LEN)?;
+                validate_key($field, &value)?;
                 Ok(Self(value))
             }
 
@@ -319,10 +316,10 @@ macro_rules! ascii_key {
     };
 }
 
-ascii_key!(ParamKey, "parameter key");
-ascii_key!(CommandKey, "command key");
+key_type!(ParamKey, "parameter key");
+key_type!(CommandKey, "command key");
 
-fn validate_ascii_key(field: &'static str, value: &str, max: usize) -> Result<()> {
+fn validate_key(field: &'static str, value: &str) -> Result<()> {
     if value.is_empty() {
         return Err(Error::InvalidInput {
             field,
@@ -330,27 +327,10 @@ fn validate_ascii_key(field: &'static str, value: &str, max: usize) -> Result<()
         });
     }
 
-    if value.len() > max {
-        return Err(Error::InvalidInput {
-            field,
-            violation: InputViolation::TooLong {
-                max,
-                actual: value.len(),
-            },
-        });
-    }
-
     if value.as_bytes().contains(&0) {
         return Err(Error::InvalidInput {
             field,
             violation: InputViolation::InteriorNul,
-        });
-    }
-
-    if !value.is_ascii() {
-        return Err(Error::InvalidInput {
-            field,
-            violation: InputViolation::NonAscii,
         });
     }
 

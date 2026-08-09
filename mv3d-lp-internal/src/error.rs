@@ -82,10 +82,6 @@ pub enum ContractViolation {
         limit: usize,
     },
     NullHandleOnSuccess,
-    DeviceCountExceedsLimit {
-        reported: u32,
-        limit: usize,
-    },
     DeviceListCountMismatch {
         reported: u32,
         returned: usize,
@@ -99,8 +95,6 @@ pub enum ContractViolation {
         reported: u32,
         limit: usize,
     },
-    HandleCountOverflow,
-    CallbackCookieExhausted,
     NullPointerWithLength {
         field: &'static str,
         length: usize,
@@ -112,11 +106,6 @@ pub enum ContractViolation {
     },
     LengthOverflow {
         field: &'static str,
-    },
-    OutputTooLarge {
-        field: &'static str,
-        limit: usize,
-        actual: usize,
     },
     InvalidImageValue {
         field: &'static str,
@@ -135,14 +124,9 @@ pub enum ContractViolation {
 pub enum InvalidInput {
     Empty,
     InteriorNul,
-    NonAscii,
     TooLong {
         actual: usize,
         maximum: usize,
-    },
-    TimeoutTooLong {
-        maximum_millis: u32,
-        actual_millis: u128,
     },
     ImageCount {
         minimum: usize,
@@ -180,10 +164,9 @@ pub enum InvalidInput {
 pub enum Error {
     UnsupportedPlatform,
     RuntimeInactive,
-    RuntimeDegraded,
     IncompatibleSdkVersion {
         minimum: &'static [u8],
-        maximum_exclusive: Option<&'static [u8]>,
+        maximum_exclusive: &'static [u8],
         actual: Vec<u8>,
     },
     Sdk {
@@ -201,13 +184,6 @@ pub enum Error {
     ContractViolation {
         operation: Operation,
         kind: ContractViolation,
-    },
-    OpenFailedWithHandle {
-        operation: Operation,
-        source: Box<Error>,
-    },
-    DiscoveryChanged {
-        attempts: usize,
     },
     AllocationFailed {
         operation: Operation,
@@ -227,28 +203,17 @@ impl fmt::Display for Error {
             Self::RuntimeInactive => {
                 f.write_str("this token no longer refers to the active 3DMVS runtime")
             }
-            Self::RuntimeDegraded => f.write_str(
-                "the process-wide 3DMVS SDK session is degraded and cannot open devices, finalize, or initialize another runtime",
-            ),
             Self::IncompatibleSdkVersion {
                 minimum,
                 maximum_exclusive,
                 actual,
-            } => match maximum_exclusive {
-                Some(maximum_exclusive) => write!(
-                    f,
-                    "incompatible 3DMVS runtime version: expected >= {} and < {}, got {}",
-                    String::from_utf8_lossy(minimum),
-                    String::from_utf8_lossy(maximum_exclusive),
-                    String::from_utf8_lossy(actual)
-                ),
-                None => write!(
-                    f,
-                    "incompatible 3DMVS runtime version: expected exactly {}, got {}",
-                    String::from_utf8_lossy(minimum),
-                    String::from_utf8_lossy(actual)
-                ),
-            },
+            } => write!(
+                f,
+                "incompatible 3DMVS runtime version: expected >= {} and < {}, got {}",
+                String::from_utf8_lossy(minimum),
+                String::from_utf8_lossy(maximum_exclusive),
+                String::from_utf8_lossy(actual)
+            ),
             Self::Sdk { operation, status } => {
                 write!(
                     f,
@@ -265,14 +230,6 @@ impl fmt::Display for Error {
             Self::ContractViolation { operation, kind } => {
                 write!(f, "the SDK violated the {operation} contract: {kind:?}")
             }
-            Self::OpenFailedWithHandle { operation, source } => write!(
-                f,
-                "{operation} failed and also returned a non-null, unusable handle: {source}"
-            ),
-            Self::DiscoveryChanged { attempts } => write!(
-                f,
-                "the device list kept changing across {attempts} discovery attempts"
-            ),
             Self::AllocationFailed {
                 operation,
                 requested,
@@ -290,11 +247,4 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::OpenFailedWithHandle { source, .. } => Some(source.as_ref()),
-            _ => None,
-        }
-    }
-}
+impl std::error::Error for Error {}

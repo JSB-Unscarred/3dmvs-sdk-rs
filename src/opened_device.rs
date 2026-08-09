@@ -2,11 +2,11 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TrySendError, sync_channel};
 use std::time::Duration;
 
-use crate::file_transfer::{progress_from_internal, status_from_internal};
+use crate::file_transfer::status_from_internal;
 use crate::{
-    CallbackOptions, CallbackStats, CallbackWorker, CommandKey, DeviceException,
-    DeviceExceptionType, Error, FileProgress, FileTransferStatus, Frame, InputViolation, ParamKey,
-    Parameter, ParameterValue, Result, SdkText,
+    CallbackOptions, CallbackStats, CommandKey, DeviceException, DeviceExceptionType, Error,
+    FileTransferStatus, Frame, Image, InputViolation, ParamKey, Parameter, ParameterValue, Result,
+    SdkText,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -47,11 +47,11 @@ impl Device {
         self.inner.start().map_err(Error::map_internal_error)
     }
 
-    /// Waits up to `timeout` for one frame and copies every returned SDK payload.
+    /// Waits up to a finite `timeout` for one frame and copies every returned SDK payload.
     ///
     /// A zero duration performs a non-blocking poll. Non-zero sub-millisecond
-    /// durations round up to one millisecond, and the SDK's infinite-wait
-    /// sentinel is rejected. A completed wait with no frame is reported as
+    /// durations round up to one millisecond. Use [`Self::get_image_blocking`] for the SDK's
+    /// infinite wait. A completed wait with no frame is reported as
     /// [`crate::StatusCode::NO_DATA`] through [`crate::Error::Sdk`].
     ///
     /// # Native contract
@@ -66,7 +66,15 @@ impl Device {
         let timeout_ms = timeout_millis(timeout)?;
         self.inner
             .get_image(timeout_ms)
-            .map(Frame::from_internal)
+            .map(Image::from_internal)
+            .map_err(Error::map_internal_error)
+    }
+
+    /// Waits indefinitely for one pull frame using the SDK's infinite-wait sentinel.
+    pub fn get_image_blocking(&mut self) -> Result<Frame> {
+        self.inner
+            .get_image(u32::MAX)
+            .map(Image::from_internal)
             .map_err(Error::map_internal_error)
     }
 
@@ -103,28 +111,6 @@ impl Device {
             .map_err(Error::map_internal_error)
     }
 
-    /// Starts callback acquisition and invokes `handler` serially on a Rust worker thread.
-    ///
-    /// Like [`Device::start_receiving`], this can be called again after the previous callback
-    /// acquisition stops successfully. Call [`Device::stop`] before [`CallbackWorker::join`],
-    /// because the active registration owns the worker's channel sender.
-    pub fn start_with_callback<F>(
-        &mut self,
-        options: CallbackOptions,
-        handler: F,
-    ) -> Result<CallbackWorker>
-    where
-        F: FnMut(Frame) + Send + 'static,
-    {
-        let (sink, receiver) = frame_callback_channel(options);
-        let worker =
-            CallbackWorker::spawn(receiver, handler).map_err(|_| Error::CallbackWorkerSpawn)?;
-        self.inner
-            .start_callback(sink)
-            .map(|()| worker)
-            .map_err(Error::map_internal_error)
-    }
-
     /// Returns image callback counters while callback acquisition is active.
     ///
     /// Stopping callback acquisition retires its registration, after which this returns `None`.
@@ -137,9 +123,9 @@ impl Device {
 
     /// Registers an owned exception-event receiver until it is replaced, disabled, or closed.
     ///
-    /// A later call to this method or [`Device::on_exception`] replaces the previous callback
-    /// after the native registration succeeds. If the native SDK rejects replacement, its error
-    /// is returned and the previous Rust registration remains active.
+    /// A later call replaces the previous callback after the native registration succeeds. If the
+    /// native SDK rejects replacement, its error is returned and the previous Rust registration
+    /// remains active.
     /// The audited LPSDK 1.3.3.3 contract assumes that each exception descriptor remains readable
     /// until the native callback returns; the event is copied within that window, which is not a
     /// separate written vendor guarantee.
@@ -151,29 +137,6 @@ impl Device {
         self.inner
             .register_exception_callback(sink)
             .map(|()| receiver)
-            .map_err(Error::map_internal_error)
-    }
-
-    /// Invokes an exception handler serially on a Rust worker thread.
-    ///
-    /// A later call to this method or [`Device::exception_receiver`] replaces the previous
-    /// exception callback after the native registration succeeds. Call
-    /// [`Device::disable_exception_delivery`] before joining the returned worker so its channel
-    /// closes.
-    pub fn on_exception<F>(
-        &mut self,
-        options: CallbackOptions,
-        handler: F,
-    ) -> Result<CallbackWorker>
-    where
-        F: FnMut(DeviceException) + Send + 'static,
-    {
-        let (sink, receiver) = exception_callback_channel(options);
-        let worker =
-            CallbackWorker::spawn(receiver, handler).map_err(|_| Error::CallbackWorkerSpawn)?;
-        self.inner
-            .register_exception_callback(sink)
-            .map(|()| worker)
             .map_err(Error::map_internal_error)
     }
 
@@ -219,10 +182,9 @@ impl Device {
     /// Starts copying a file from the device to the host.
     ///
     /// Names are passed as original narrow-string bytes because the vendor SDK does not document
-    /// their encoding. The wrapper retains the active transfer's names until completion or a
-    /// successful device close. If close fails, it intentionally leaks those names because native
-    /// termination is uncertain. Poll through [`Device::file_transfer_progress`] or
-    /// [`Device::wait_file_transfer`].
+    /// their encoding. The SDK marks the descriptor as `[IN]`, so both names are borrowed only for
+    /// this start call. Poll through [`Device::file_transfer_progress`] or
+    /// [`Device::file_transfer_progress`].
     pub fn download_file(&mut self, device_file_name: &[u8], local_file_name: &[u8]) -> Result<()> {
         self.inner
             .download_file(device_file_name, local_file_name)
@@ -231,7 +193,7 @@ impl Device {
 
     /// Starts copying a host file into the device.
     ///
-    /// This uses the same retained-name and native termination assumptions as
+    /// Names follow the same byte and call-scoped borrowing contract as
     /// [`Device::download_file`].
     pub fn upload_file(&mut self, local_file_name: &[u8], device_file_name: &[u8]) -> Result<()> {
         self.inner
@@ -250,22 +212,10 @@ impl Device {
             .map_err(Error::map_internal_error)
     }
 
-    /// Polls the active transfer until completion or until `timeout` elapses.
+    /// Stops acquisition when needed and closes the owned handle.
     ///
-    /// `Ok(None)` means the timeout elapsed while the transfer was still running. A polling error
-    /// ends only this call, so callers may retry. Each successful progress snapshot is validated
-    /// independently because the SDK does not promise monotonic counters.
-    pub fn wait_file_transfer(
-        &mut self,
-        poll_interval: Duration,
-        timeout: Duration,
-    ) -> Result<Option<FileProgress>> {
-        self.inner
-            .wait_file_transfer(poll_interval, timeout)
-            .map(|progress| progress.map(progress_from_internal))
-            .map_err(Error::map_internal_error)
-    }
-
+    /// If the first native Close fails, the consumed device's Drop retries once. The returned
+    /// error describes the first cleanup attempt.
     pub fn close(self) -> Result<()> {
         self.inner.close().map_err(Error::map_device_cleanup_error)
     }
@@ -276,7 +226,7 @@ fn frame_callback_channel(
 ) -> (mv3d_lp_internal::FrameCallbackSink, Receiver<Frame>) {
     let (sender, receiver) = sync_channel(options.queue_capacity.get());
     let sink = Arc::new(move |record| {
-        delivery_from_try_send(sender.try_send(Frame::from_internal(record)))
+        delivery_from_try_send(sender.try_send(Image::from_internal(record)))
     });
     (sink, receiver)
 }
@@ -420,33 +370,6 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    // 验证生产 callback channel 使用配置容量，防止公开选项与实际队列脱节。
-    #[test]
-    fn production_callback_channel_honors_configured_capacity() {
-        const CAPACITY: usize = 65;
-
-        let options = CallbackOptions::new(NonZeroUsize::new(CAPACITY).unwrap());
-        let (sink, receiver) = frame_callback_channel(options);
-
-        for frame_number in 0..CAPACITY {
-            assert_eq!(
-                sink(callback_frame(u32::try_from(frame_number).unwrap())),
-                mv3d_lp_internal::CallbackDelivery::Delivered
-            );
-        }
-        assert_eq!(
-            sink(callback_frame(u32::try_from(CAPACITY).unwrap())),
-            mv3d_lp_internal::CallbackDelivery::Full
-        );
-
-        for frame_number in 0..CAPACITY {
-            assert_eq!(
-                receiver.recv().unwrap().frame_number,
-                u32::try_from(frame_number).unwrap()
-            );
-        }
     }
 
     // 验证队列满时丢弃最新帧，防止 SDK callback 线程发生阻塞。

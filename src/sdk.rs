@@ -23,14 +23,6 @@ impl Sdk {
         Self::from_internal(inner)
     }
 
-    /// Initializes or reuses the process-wide SDK only when its version exactly matches the
-    /// audited bindings baseline.
-    pub fn initialize_strict() -> Result<Self> {
-        let inner =
-            mv3d_lp_internal::Runtime::initialize_strict().map_err(Error::map_internal_error)?;
-        Self::from_internal(inner)
-    }
-
     fn from_internal(inner: mv3d_lp_internal::Runtime) -> Result<Self> {
         let version = std::str::from_utf8(inner.version_bytes())
             .ok()

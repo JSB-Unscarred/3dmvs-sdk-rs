@@ -75,27 +75,6 @@ use crate::parameter::{ParameterRecord, ParameterValueRecord};
 
 const VERSION_SCAN_LIMIT: usize = 64;
 const MAX_MULTI_IMAGE_COUNT: usize = 8;
-const DEFAULT_MAX_FRAME_BYTES: usize = 512 * 1024 * 1024;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FrameLimits {
-    max_frame_bytes: usize,
-}
-
-impl FrameLimits {
-    #[cfg(test)]
-    pub(crate) const fn with_max_frame_bytes(max_frame_bytes: usize) -> Self {
-        Self { max_frame_bytes }
-    }
-}
-
-impl Default for FrameLimits {
-    fn default() -> Self {
-        Self {
-            max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
-        }
-    }
-}
 
 #[cfg(any(
     all(test, not(miri), not(feature = "native")),
@@ -161,9 +140,8 @@ impl Driver for NativeDriver {
 
     fn device_list(&self, capacity: usize) -> DriverResult<DeviceListAttempt> {
         let native_capacity = u32::try_from(capacity).map_err(|_| {
-            DriverError::Contract(ContractViolation::DeviceCountExceedsLimit {
-                reported: u32::MAX,
-                limit: capacity,
+            DriverError::Contract(ContractViolation::LengthOverflow {
+                field: "device list capacity",
             })
         })?;
         let mut raw = Vec::new();
@@ -205,20 +183,24 @@ impl Driver for NativeDriver {
         status_result(unsafe { bindings::MV3D_LP_SetIpConfig(serial.as_ptr(), &mut native) })
     }
 
-    fn open_by_ip(&self, ip: &CStr, handle: &mut Option<Handle>) -> DriverResult<()> {
+    fn open_by_ip(&self, ip: &CStr) -> DriverResult<Handle> {
         let mut raw = ptr::null_mut();
         // SAFETY: raw is a valid writable handle slot and ip is NUL-terminated for the call.
         let status = unsafe { bindings::MV3D_LP_OpenDeviceByIP(&mut raw, ip.as_ptr()) };
-        *handle = Handle::from_ptr(raw);
-        status_result(status)
+        status_result(status)?;
+        Handle::from_ptr(raw).ok_or(DriverError::Contract(
+            ContractViolation::NullHandleOnSuccess,
+        ))
     }
 
-    fn open_by_serial(&self, serial: &CStr, handle: &mut Option<Handle>) -> DriverResult<()> {
+    fn open_by_serial(&self, serial: &CStr) -> DriverResult<Handle> {
         let mut raw = ptr::null_mut();
         // SAFETY: raw is a valid writable handle slot and serial is NUL-terminated for the call.
         let status = unsafe { bindings::MV3D_LP_OpenDeviceBySN(&mut raw, serial.as_ptr()) };
-        *handle = Handle::from_ptr(raw);
-        status_result(status)
+        status_result(status)?;
+        Handle::from_ptr(raw).ok_or(DriverError::Contract(
+            ContractViolation::NullHandleOnSuccess,
+        ))
     }
 
     fn close(&self, handle: Handle) -> DriverResult<()> {
@@ -260,9 +242,9 @@ impl Driver for NativeDriver {
         status_result(status)?;
         // SAFETY: On success the audited SDK contract guarantees that every non-null output
         // pointer remains readable for its reported extent until the immediate copy completes.
-        // validate_image_layout checks lengths, null pairs, arithmetic, and the aggregate limit
-        // before copy_image_from_native dereferences any pointer.
-        unsafe { image_from_native(&image, FrameLimits::default()) }
+        // validate_image_layout checks lengths, null pairs, and arithmetic before
+        // image_from_native dereferences any pointer.
+        unsafe { image_from_native(&image) }
     }
 
     fn register_image_callback(&self, handle: Handle, cookie: CallbackCookie) -> DriverResult<()> {
@@ -333,10 +315,8 @@ impl Driver for NativeDriver {
             pDevFileName: device_file_name.as_ptr(),
             nReserved: [0; 32],
         };
-        // SAFETY: Device owns the handle, the descriptor is initialized and writable for this
-        // call, and both strings are NUL-terminated. `pstFileAccess` is treated as a call-scoped
-        // input descriptor; the wrapper additionally keeps its string pointees alive until the
-        // observed transfer completion or device cleanup as a bounded compatibility precaution.
+        // SAFETY: Device owns the handle, the `[IN]` descriptor is initialized for this call, and
+        // both strings are NUL-terminated and live until the call returns.
         status_result(unsafe { bindings::MV3D_LP_FileAccessRead(handle.as_ptr(), &mut access) })
     }
 
@@ -351,7 +331,7 @@ impl Driver for NativeDriver {
             pDevFileName: device_file_name.as_ptr(),
             nReserved: [0; 32],
         };
-        // SAFETY: the same call-scoped descriptor, retained-name, and live-handle guarantees as
+        // SAFETY: the same call-scoped `[IN]` descriptor and live-handle guarantees as
         // FileAccessRead apply.
         status_result(unsafe { bindings::MV3D_LP_FileAccessWrite(handle.as_ptr(), &mut access) })
     }
@@ -376,14 +356,13 @@ impl Driver for NativeDriver {
         require_image_type(input, bindings::ImageType_Depth)?;
         let input_dimensions = (input.width, input.height);
         let mut input = image_input_to_native(input)?;
-        validate_expected_image_bytes(input.nWidth, input.nHeight, 12)?;
         let mut output = zeroed_image();
         // SAFETY: input borrows a validated payload for the duration of this serialized call;
         // the vendor marks it [IN], so the SDK must not write through its legacy mutable pointer.
         // Output is a fully zeroed writable descriptor and receives transient SDK-owned data.
         status_result(unsafe { bindings::MV3D_LP_MapDepthToPointCloud(&mut input, &mut output) })?;
         // SAFETY: the successful SDK call guarantees its returned payload remains readable until
-        // the next image-processing call; Runtime keeps its dedicated ImgProc lock through this copy.
+        // the next image-processing call; Runtime keeps the process gate through this copy.
         unsafe {
             processed_image_from_native(
                 &output,
@@ -401,7 +380,7 @@ impl Driver for NativeDriver {
         &self,
         inputs: &[ImageInput<'_>],
     ) -> DriverResult<FrameRecord> {
-        let mut inputs = prepare_multi_depth_inputs(inputs, true)?;
+        let mut inputs = prepare_multi_depth_inputs(inputs)?;
         let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
         let mut output = zeroed_image();
         // SAFETY: every descriptor borrows a validated, vendor-[IN] read-only payload, count
@@ -433,9 +412,6 @@ impl Driver for NativeDriver {
                 target: target.raw() as u32,
             }));
         }
-        if let Some(bytes_per_pixel) = known_bytes_per_pixel(target.raw()) {
-            validate_expected_image_bytes(input.nWidth, input.nHeight, bytes_per_pixel)?;
-        }
         let mut output = zeroed_image();
         output.enImageType = target.raw();
         // SAFETY: the header requires only the requested output type in the otherwise zeroed
@@ -456,7 +432,7 @@ impl Driver for NativeDriver {
     }
 
     fn mosaic_depth(&self, inputs: &[ImageInput<'_>]) -> DriverResult<FrameRecord> {
-        let mut inputs = prepare_multi_depth_inputs(inputs, false)?;
+        let mut inputs = prepare_multi_depth_inputs(inputs)?;
         let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
         let mut output = zeroed_image();
         // SAFETY: descriptors and count describe initialized vendor-[IN] read-only inputs;
@@ -464,7 +440,7 @@ impl Driver for NativeDriver {
         status_result(unsafe {
             bindings::MV3D_LP_DepthMosaic(inputs.as_mut_ptr(), count, &mut output)
         })?;
-        // SAFETY: the SDK output is validated and copied while the ImgProc lock is still held.
+        // SAFETY: the SDK output is validated and copied while the process gate is still held.
         unsafe {
             processed_image_from_native(
                 &output,
@@ -577,9 +553,6 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
             return Err(invalid_image_layout("data length"));
         }
     }
-    if input.data.len() > DEFAULT_MAX_FRAME_BYTES {
-        return Err(input_too_long(DEFAULT_MAX_FRAME_BYTES, input.data.len()));
-    }
     let intensity_len = match input.intensity_data {
         Some(intensity) if intensity.len() != pixels => {
             return Err(invalid_image_layout("intensity data length"));
@@ -599,15 +572,12 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
             .checked_mul(size_of::<i64>())
             .ok_or_else(|| invalid_image_layout("exposure timestamp bytes"))
     })?;
-    let aggregate = input
+    input
         .data
         .len()
         .checked_add(usize::try_from(intensity_len).unwrap_or(usize::MAX))
         .and_then(|bytes| bytes.checked_add(exposure_bytes))
         .ok_or_else(|| invalid_image_layout("aggregate input length"))?;
-    if aggregate > DEFAULT_MAX_FRAME_BYTES {
-        return Err(input_too_long(DEFAULT_MAX_FRAME_BYTES, aggregate));
-    }
 
     Ok(bindings::MV3D_LP_IMAGE_DATA {
         enImageType: input.image_type.raw(),
@@ -700,7 +670,6 @@ fn require_image_type(
 ))]
 fn prepare_multi_depth_inputs(
     inputs: &[ImageInput<'_>],
-    point_cloud_output: bool,
 ) -> DriverResult<Vec<bindings::MV3D_LP_IMAGE_DATA>> {
     if !(1..=MAX_MULTI_IMAGE_COUNT).contains(&inputs.len()) {
         return Err(invalid_image_count(inputs.len()));
@@ -713,120 +682,11 @@ fn prepare_multi_depth_inputs(
                 .len()
                 .saturating_mul(size_of::<bindings::MV3D_LP_IMAGE_DATA>()),
         })?;
-    let mut aggregate_input = 0usize;
-    let mut predicted_output = 0usize;
     for input in inputs {
         require_image_type(*input, bindings::ImageType_Depth)?;
         native.push(image_input_to_native(*input)?);
-        let input_bytes = image_input_payload_bytes(*input)?;
-        aggregate_input = aggregate_input
-            .checked_add(input_bytes)
-            .ok_or_else(|| invalid_image_layout("aggregate input length"))?;
-        let output_bytes = if point_cloud_output {
-            expected_image_bytes(input.width, input.height, 12)?
-        } else {
-            input
-                .data
-                .len()
-                .checked_add(input.intensity_data.map_or(0, <[u8]>::len))
-                .ok_or_else(|| invalid_image_layout("predicted output length"))?
-        };
-        predicted_output = predicted_output
-            .checked_add(output_bytes)
-            .ok_or_else(|| invalid_image_layout("predicted output length"))?;
     }
-    validate_input_byte_limit(aggregate_input)?;
-    validate_input_byte_limit(predicted_output)?;
     Ok(native)
-}
-
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-fn image_input_payload_bytes(input: ImageInput<'_>) -> DriverResult<usize> {
-    let exposure_bytes = input.exposure_timestamps.map_or(Ok(0), |timestamps| {
-        timestamps
-            .len()
-            .checked_mul(size_of::<i64>())
-            .ok_or_else(|| invalid_image_layout("exposure timestamp bytes"))
-    })?;
-    input
-        .data
-        .len()
-        .checked_add(input.intensity_data.map_or(0, <[u8]>::len))
-        .and_then(|bytes| bytes.checked_add(exposure_bytes))
-        .ok_or_else(|| invalid_image_layout("aggregate input length"))
-}
-
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-fn expected_image_bytes(width: u32, height: u32, bytes_per_pixel: usize) -> DriverResult<usize> {
-    usize::try_from(width)
-        .unwrap_or(usize::MAX)
-        .checked_mul(usize::try_from(height).unwrap_or(usize::MAX))
-        .and_then(|pixels| pixels.checked_mul(bytes_per_pixel))
-        .ok_or_else(|| invalid_image_layout("expected output length"))
-}
-
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-fn validate_expected_image_bytes(
-    width: u32,
-    height: u32,
-    bytes_per_pixel: usize,
-) -> DriverResult<()> {
-    validate_input_byte_limit(expected_image_bytes(width, height, bytes_per_pixel)?)
-}
-
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-fn validate_input_byte_limit(actual: usize) -> DriverResult<()> {
-    if actual > DEFAULT_MAX_FRAME_BYTES {
-        Err(input_too_long(DEFAULT_MAX_FRAME_BYTES, actual))
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        test,
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-pub(crate) fn validate_input_byte_limit_for_test(actual: usize) -> DriverResult<()> {
-    validate_input_byte_limit(actual)
 }
 
 #[cfg(any(
@@ -949,8 +809,8 @@ unsafe fn processed_image_from_native(
         }
     }
     validate_processed_image_lengths(&sanitized)?;
-    // SAFETY: the caller holds the ImgProc lock and guarantees a successful SDK ImgProc call.
-    unsafe { image_from_native(&sanitized, FrameLimits::default()) }
+    // SAFETY: the caller holds the process gate and guarantees a successful SDK ImgProc call.
+    unsafe { image_from_native(&sanitized) }
 }
 
 #[cfg(any(
@@ -1032,7 +892,6 @@ struct ValidatedImageLayout {
 
 fn validate_image_layout(
     image: &bindings::MV3D_LP_IMAGE_DATA,
-    limits: FrameLimits,
 ) -> DriverResult<ValidatedImageLayout> {
     if image.nWidth == 0 {
         return Err(invalid_sdk_image_value("width"));
@@ -1092,17 +951,10 @@ fn validate_image_layout(
         None => 0,
     };
 
-    let total = data_len
+    data_len
         .checked_add(intensity_len.unwrap_or(0))
         .and_then(|bytes| bytes.checked_add(exposure_bytes))
         .ok_or_else(|| sdk_length_overflow("frame payloads"))?;
-    if total > limits.max_frame_bytes {
-        return Err(DriverError::Contract(ContractViolation::OutputTooLarge {
-            field: "frame payloads",
-            limit: limits.max_frame_bytes,
-            actual: total,
-        }));
-    }
 
     Ok(ValidatedImageLayout {
         data_len,
@@ -1112,11 +964,8 @@ fn validate_image_layout(
     })
 }
 
-unsafe fn image_from_native(
-    image: &bindings::MV3D_LP_IMAGE_DATA,
-    limits: FrameLimits,
-) -> DriverResult<FrameRecord> {
-    let layout = validate_image_layout(image, limits)?;
+unsafe fn image_from_native(image: &bindings::MV3D_LP_IMAGE_DATA) -> DriverResult<FrameRecord> {
+    let layout = validate_image_layout(image)?;
 
     // Reserve every destination before reading SDK memory. If any allocation fails, no vendor
     // pointer has been dereferenced and the call returns an ordinary allocation error.
@@ -1130,7 +979,7 @@ unsafe fn image_from_native(
         None => None,
     };
 
-    // SAFETY: validate_image_layout established a non-null data pointer and bounded length. The
+    // SAFETY: validate_image_layout established a non-null data pointer and checked length. The
     // caller of image_from_native guarantees that the SDK allocation is readable for that extent
     // until this immediate copy finishes.
     let source = unsafe { std::slice::from_raw_parts(image.pData.cast_const(), layout.data_len) };
@@ -1138,7 +987,7 @@ unsafe fn image_from_native(
 
     if let (Some(destination), Some(length)) = (&mut intensity_data, layout.intensity_len) {
         // SAFETY: The same conditions as for data apply to the optional intensity pointer, and
-        // validate_image_layout additionally checked its exact pixel count.
+        // validate_image_layout additionally checked its minimum pixel count.
         let source =
             unsafe { std::slice::from_raw_parts(image.pIntensityData.cast_const(), length) };
         destination.extend_from_slice(source);
@@ -1187,8 +1036,8 @@ pub(crate) unsafe fn callback_image_from_native(
 ) -> DriverResult<FrameRecord> {
     // SAFETY: the native callback trampoline guarantees that `image` and its SDK-owned payloads
     // remain readable for this immediate conversion. The shared converter validates every
-    // pointer/length pair and aggregate bound before dereferencing a payload.
-    unsafe { image_from_native(image, FrameLimits::default()) }
+    // pointer/length pair and aggregate arithmetic before dereferencing a payload.
+    unsafe { image_from_native(image) }
 }
 
 fn known_bytes_per_pixel(image_type: bindings::Mv3dLpImageType) -> Option<usize> {
@@ -1272,7 +1121,6 @@ pub(crate) fn image_from_test_buffers(
     data: Option<&[u8]>,
     intensity_data: Option<&[u8]>,
     exposure_timestamps: Option<&[i64]>,
-    limits: FrameLimits,
 ) -> DriverResult<FrameRecord> {
     // Mirror NativeDriver: a failing status makes every output byte untrusted and must win over
     // malformed metadata or pointers.
@@ -1284,7 +1132,7 @@ pub(crate) fn image_from_test_buffers(
     image.pExposureTimeStamp =
         exposure_timestamps.map_or(std::ptr::null_mut(), |values| values.as_ptr().cast_mut());
 
-    let layout = validate_image_layout(&image, limits)?;
+    let layout = validate_image_layout(&image)?;
     if data.is_none_or(|bytes| bytes.len() < layout.data_len) {
         return Err(sdk_length_mismatch(
             "test data backing",
@@ -1313,33 +1161,7 @@ pub(crate) fn image_from_test_buffers(
 
     // SAFETY: Each pointer was derived from a live borrowed slice above, and the backing checks
     // guarantee the validated extents fit inside those slices for this synchronous call.
-    unsafe { image_from_native(&image, limits) }
-}
-
-#[cfg(test)]
-pub(crate) fn processed_image_from_test_buffers(
-    mut image: bindings::MV3D_LP_IMAGE_DATA,
-    expected: ImageTypeRecord,
-    preserve_intensity: bool,
-    preserve_exposure_timestamps: bool,
-    data: &[u8],
-    intensity_data: Option<&[u8]>,
-    exposure_timestamps: Option<&[i64]>,
-) -> DriverResult<FrameRecord> {
-    image.pData = data.as_ptr().cast_mut();
-    image.pIntensityData =
-        intensity_data.map_or(ptr::null_mut(), |bytes| bytes.as_ptr().cast_mut());
-    image.pExposureTimeStamp =
-        exposure_timestamps.map_or(ptr::null_mut(), |timestamps| timestamps.as_ptr().cast_mut());
-    let auxiliary_payloads = match (preserve_intensity, preserve_exposure_timestamps) {
-        (true, true) => AuxiliaryPayloads::All,
-        (true, false) => AuxiliaryPayloads::IntensityOnly,
-        (false, false) => AuxiliaryPayloads::None,
-        (false, true) => unreachable!("tests never preserve exposure without intensity"),
-    };
-    // SAFETY: all descriptor pointers above borrow the supplied test buffers until this immediate
-    // copy returns. The helper exercises the same post-success contract as NativeDriver.
-    unsafe { processed_image_from_native(&image, expected, auxiliary_payloads) }
+    unsafe { image_from_native(&image) }
 }
 
 pub(crate) fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {

@@ -10,12 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 
 use crate::bindings;
 use crate::driver::{DriverError, DriverResult};
-use crate::error::{ContractViolation, Error, Operation};
 use crate::frame::FrameRecord;
-
-const REGISTER_IMAGE_OPERATION: Operation = Operation::RegisterImageDataCallback;
-const REGISTER_EXCEPTION_OPERATION: Operation = Operation::RegisterExceptionCallback;
-const MAX_COOKIE: usize = isize::MAX as usize;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct CallbackCookie(NonZeroUsize);
@@ -123,15 +118,8 @@ impl CallbackEntry {
         if state.sink.as_ref().map(CallbackSink::kind) != Some(expected) {
             return None;
         }
-        let Some(in_flight) = state.in_flight.checked_add(1) else {
-            let retired_sink = state.sink.take();
-            drop(state);
-            increment_saturating(&self.panics);
-            self.drop_sink_without_unwind(retired_sink);
-            return None;
-        };
         let sink = state.sink.as_ref()?.clone();
-        state.in_flight = in_flight;
+        state.in_flight += 1;
         drop(state);
         Some(InFlight {
             entry: Arc::clone(self),
@@ -156,32 +144,19 @@ impl CallbackEntry {
 
     fn fail_closed(&self, panic: bool) {
         if panic {
-            increment_saturating(&self.panics);
+            increment(&self.panics);
         }
-        let retired_sink = self.begin_deactivate();
-        self.drop_sink_without_unwind(retired_sink);
-    }
-
-    fn drop_sink_without_unwind(&self, sink: Option<CallbackSink>) {
-        let Some(sink) = sink else {
-            return;
-        };
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(sink))) {
-            increment_saturating(&self.panics);
-            // A custom panic payload may itself panic from Drop. Leaking only this exceptional
-            // payload keeps user-controlled destruction from escaping callback cleanup.
-            std::mem::forget(payload);
-        }
+        drop(self.begin_deactivate());
     }
 
     fn record_invalid_payload(&self) {
-        increment_saturating(&self.invalid_payloads);
+        increment(&self.invalid_payloads);
     }
 
     fn record_delivery(&self, delivery: CallbackDelivery) {
         match delivery {
-            CallbackDelivery::Delivered => increment_saturating(&self.delivered),
-            CallbackDelivery::Full => increment_saturating(&self.dropped_full),
+            CallbackDelivery::Delivered => increment(&self.delivered),
+            CallbackDelivery::Full => increment(&self.dropped_full),
             CallbackDelivery::Disconnected => self.fail_closed(false),
         }
     }
@@ -198,20 +173,6 @@ impl CallbackEntry {
     }
 }
 
-impl Drop for CallbackEntry {
-    fn drop(&mut self) {
-        // Registration normally removes the sink first. This final guard also covers early
-        // construction failures and future paths that release the last entry directly.
-        let sink = self
-            .state
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .sink
-            .take();
-        self.drop_sink_without_unwind(sink);
-    }
-}
-
 struct InFlight {
     entry: Arc<CallbackEntry>,
     sink: Option<CallbackSink>,
@@ -219,21 +180,15 @@ struct InFlight {
 
 impl Drop for InFlight {
     fn drop(&mut self) {
-        // Release the callback clone before publishing that this invocation has drained. The
-        // registration retains its own clone until wait_until_drained returns, so whichever clone
-        // is last is always destroyed behind a panic boundary and never while holding state.
-        let sink = self.sink.take();
-        self.entry.drop_sink_without_unwind(sink);
+        // Release the callback clone before publishing that this invocation has drained, so
+        // registration cleanup cannot return while this invocation still owns the sink.
+        drop(self.sink.take());
 
         let mut state = self.entry.lock();
-        if state.in_flight == 0 {
-            let retired_sink = state.sink.take();
-            drop(state);
-            increment_saturating(&self.entry.panics);
-            self.entry.drop_sink_without_unwind(retired_sink);
-            return;
-        }
-        state.in_flight -= 1;
+        state.in_flight = state
+            .in_flight
+            .checked_sub(1)
+            .expect("an admitted callback leaves exactly once");
         if state.in_flight == 0 {
             self.entry.drained.notify_all();
         }
@@ -265,19 +220,18 @@ impl CallbackRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn insert(&self, entry: Arc<CallbackEntry>) -> Option<CallbackCookie> {
+    fn insert(&self, entry: Arc<CallbackEntry>) -> CallbackCookie {
         let mut state = self.lock();
-        let cookie = NonZeroUsize::new(state.next_cookie).map(CallbackCookie)?;
-        state.next_cookie = if state.next_cookie == MAX_COOKIE {
-            0
-        } else {
-            state.next_cookie.checked_add(1)?
-        };
-        if state.entries.contains_key(&cookie) {
-            return None;
-        }
-        state.entries.insert(cookie, entry);
-        Some(cookie)
+        let cookie = CallbackCookie(
+            NonZeroUsize::new(state.next_cookie).expect("callback cookie space exhausted"),
+        );
+        state.next_cookie = state
+            .next_cookie
+            .checked_add(1)
+            .expect("callback cookie space exhausted");
+        let previous = state.entries.insert(cookie, entry);
+        debug_assert!(previous.is_none(), "callback cookies are never reused");
+        cookie
     }
 
     fn lookup(&self, cookie: CallbackCookie) -> Option<Arc<CallbackEntry>> {
@@ -307,23 +261,18 @@ pub(crate) struct CallbackRegistration {
 }
 
 impl CallbackRegistration {
-    pub(crate) fn image(sink: FrameCallbackSink) -> Result<Self, Error> {
-        Self::new(REGISTER_IMAGE_OPERATION, CallbackSink::Image(sink))
+    pub(crate) fn image(sink: FrameCallbackSink) -> Self {
+        Self::new(CallbackSink::Image(sink))
     }
 
-    pub(crate) fn exception(sink: ExceptionCallbackSink) -> Result<Self, Error> {
-        Self::new(REGISTER_EXCEPTION_OPERATION, CallbackSink::Exception(sink))
+    pub(crate) fn exception(sink: ExceptionCallbackSink) -> Self {
+        Self::new(CallbackSink::Exception(sink))
     }
 
-    fn new(operation: Operation, sink: CallbackSink) -> Result<Self, Error> {
+    fn new(sink: CallbackSink) -> Self {
         let entry = Arc::new(CallbackEntry::new(sink));
-        let cookie = registry()
-            .insert(Arc::clone(&entry))
-            .ok_or(Error::ContractViolation {
-                operation,
-                kind: ContractViolation::CallbackCookieExhausted,
-            })?;
-        Ok(Self { cookie, entry })
+        let cookie = registry().insert(Arc::clone(&entry));
+        Self { cookie, entry }
     }
 
     pub(crate) fn cookie(&self) -> CallbackCookie {
@@ -342,7 +291,7 @@ impl Drop for CallbackRegistration {
         let retired_sink = self.entry.begin_deactivate();
         registry().remove(self.cookie, &self.entry);
         self.entry.wait_until_drained();
-        self.entry.drop_sink_without_unwind(retired_sink);
+        drop(retired_sink);
     }
 }
 
@@ -351,18 +300,16 @@ pub(crate) unsafe extern "system" fn image_trampoline(
     user: *mut c_void,
 ) {
     let cookie = CallbackCookie::from_user_pointer(user);
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
+    if catch_unwind(AssertUnwindSafe(|| {
         if let Some(cookie) = cookie {
             dispatch_image(cookie, image);
         }
-    }));
-    if let Err(payload) = outcome {
+    }))
+    .is_err()
+    {
         if let Some(cookie) = cookie {
-            fault_cookie_without_unwind(cookie);
+            let _ = catch_unwind(AssertUnwindSafe(|| fault_cookie(cookie)));
         }
-        // A custom panic payload may itself panic from Drop. Leaking only this exceptional
-        // payload ensures even that destructor cannot unwind across the native ABI boundary.
-        std::mem::forget(payload);
     }
 }
 
@@ -371,17 +318,16 @@ pub(crate) unsafe extern "system" fn exception_trampoline(
     user: *mut c_void,
 ) {
     let cookie = CallbackCookie::from_user_pointer(user);
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
+    if catch_unwind(AssertUnwindSafe(|| {
         if let Some(cookie) = cookie {
             dispatch_exception(cookie, exception);
         }
-    }));
-    if let Err(payload) = outcome {
+    }))
+    .is_err()
+    {
         if let Some(cookie) = cookie {
-            fault_cookie_without_unwind(cookie);
+            let _ = catch_unwind(AssertUnwindSafe(|| fault_cookie(cookie)));
         }
-        // See image_trampoline: no panic-payload destructor may cross this ABI boundary.
-        std::mem::forget(payload);
     }
 }
 
@@ -461,16 +407,8 @@ fn fault_cookie(cookie: CallbackCookie) {
     }
 }
 
-fn fault_cookie_without_unwind(cookie: CallbackCookie) {
-    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| fault_cookie(cookie))) {
-        std::mem::forget(payload);
-    }
-}
-
-fn increment_saturating(counter: &AtomicU64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        Some(value.saturating_add(1))
-    });
+fn increment(counter: &AtomicU64) {
+    counter.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -484,21 +422,11 @@ pub(crate) fn invoke_image_for_test(
 }
 
 #[cfg(test)]
-pub(crate) fn invoke_exception_for_test(
-    cookie: CallbackCookie,
-    exception: *mut bindings::MV3D_LP_EXCEPTION_INFO,
-) {
-    // SAFETY: tests provide a live exception descriptor for this synchronous call.
-    unsafe { exception_trampoline(exception, cookie.as_user_pointer()) }
-}
-
-#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use super::{
         CallbackDelivery, CallbackEntry, CallbackRegistry, CallbackSink, FrameCallbackSink,
-        MAX_COOKIE,
     };
 
     fn entry() -> Arc<CallbackEntry> {
@@ -511,9 +439,9 @@ mod tests {
     fn cookies_are_nonzero_and_never_reused_after_removal() {
         let registry = CallbackRegistry::new();
         let first_entry = entry();
-        let first = registry.insert(Arc::clone(&first_entry)).unwrap();
+        let first = registry.insert(Arc::clone(&first_entry));
         registry.remove(first, &first_entry);
-        let second = registry.insert(entry()).unwrap();
+        let second = registry.insert(entry());
 
         assert_ne!(first, second);
         assert_ne!(first.get(), 0);
@@ -522,16 +450,5 @@ mod tests {
             super::CallbackCookie::from_user_pointer(second.as_user_pointer()),
             Some(second)
         );
-    }
-
-    // 验证 cookie 序列耗尽时终止分配，防止整数回绕重新产生旧 cookie。
-    #[test]
-    fn cookie_sequence_exhaustion_never_wraps_to_zero() {
-        let registry = CallbackRegistry::new();
-        registry.lock().next_cookie = MAX_COOKIE;
-
-        let last = registry.insert(entry()).unwrap();
-        assert_eq!(last.get(), MAX_COOKIE);
-        assert!(registry.insert(entry()).is_none());
     }
 }

@@ -18,10 +18,6 @@ const AUDITED_VERSION_TEXT: &[u8] = b"1.3.3.3";
 const MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE_TEXT: &[u8] = b"1.3.4.0";
 const AUDITED_VERSION: SdkVersion = SdkVersion::new(1, 3, 3, 3);
 const MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE: SdkVersion = SdkVersion::new(1, 3, 4, 0);
-const MAX_DEVICE_COUNT: usize = 256;
-const DISCOVERY_ATTEMPTS: usize = 3;
-const STATUS_BUFFER_FULL: i32 = 0x8006_0002_u32 as i32;
-const STATUS_INSUFFICIENT_BUFFER: i32 = 0x8006_0009_u32 as i32;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct SdkVersion([u32; 4]);
@@ -32,35 +28,10 @@ impl SdkVersion {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum VersionPolicy {
-    Compatible,
-    Strict,
-}
-
-impl VersionPolicy {
-    fn accepts(self, version: SdkVersion) -> bool {
-        match self {
-            Self::Compatible => {
-                (AUDITED_VERSION..MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE).contains(&version)
-            }
-            Self::Strict => version == AUDITED_VERSION,
-        }
-    }
-
-    const fn maximum_exclusive(self) -> Option<&'static [u8]> {
-        match self {
-            Self::Compatible => Some(MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE_TEXT),
-            Self::Strict => None,
-        }
-    }
-}
-
 /// Process-wide owner for the current native LPSDK session.
 enum ProcessSdkState {
     Fresh,
     Active(Arc<RuntimeCore>),
-    Degraded,
 }
 
 pub(crate) struct Gate {
@@ -79,26 +50,19 @@ impl Gate {
         match self.state.lock() {
             Ok(state) => state,
             Err(poisoned) => {
-                // A panic may leave a native lifecycle transition ahead of Rust state.
-                let mut state = poisoned.into_inner();
-                *state = ProcessSdkState::Degraded;
+                // 生产路径持锁期间不执行用户代码；恢复锁即可继续使用已记录的状态。
                 self.state.clear_poison();
-                state
+                poisoned.into_inner()
             }
         }
     }
-}
-
-struct HandleLedger {
-    live_handles: usize,
-    teardown_uncertain: bool,
 }
 
 /// Owned native session shared by SDK tokens and devices.
 pub(crate) struct RuntimeCore {
     driver: Box<dyn Driver>,
     version: Vec<u8>,
-    handles: Mutex<HandleLedger>,
+    handles: Mutex<usize>,
 }
 
 impl RuntimeCore {
@@ -111,15 +75,13 @@ impl RuntimeCore {
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
     }
 
-    fn lock_handles(&self) -> MutexGuard<'_, HandleLedger> {
+    fn lock_handles(&self) -> MutexGuard<'_, usize> {
         match self.handles.lock() {
             Ok(state) => state,
             Err(poisoned) => {
-                // A panic during open or close makes the handle ledger uncertain.
-                let mut state = poisoned.into_inner();
-                state.teardown_uncertain = true;
+                // handle 的增减只由 Device owner 驱动，恢复锁后沿用现有计数。
                 self.handles.clear_poison();
-                state
+                poisoned.into_inner()
             }
         }
     }
@@ -127,61 +89,33 @@ impl RuntimeCore {
     pub(crate) fn open_handle(
         &self,
         operation: Operation,
-        open: impl FnOnce(&dyn Driver, &mut Option<Handle>) -> DriverResult<()>,
+        open: impl FnOnce(&dyn Driver) -> DriverResult<Handle>,
     ) -> Result<Handle, Error> {
-        let mut state = self.lock_handles();
-        if state.teardown_uncertain {
-            return Err(Error::RuntimeDegraded);
-        }
-
-        let mut handle = None;
-        match open(self.driver.as_ref(), &mut handle) {
-            Ok(()) => {
-                let handle = handle.ok_or(Error::ContractViolation {
-                    operation,
-                    kind: ContractViolation::NullHandleOnSuccess,
-                })?;
-                let Some(live_handles) = state.live_handles.checked_add(1) else {
-                    state.teardown_uncertain = true;
-                    return Err(Error::ContractViolation {
-                        operation,
-                        kind: ContractViolation::HandleCountOverflow,
-                    });
-                };
-                state.live_handles = live_handles;
-                Ok(handle)
-            }
-            Err(error) if handle.is_some() => {
-                state.teardown_uncertain = true;
-                Err(Error::OpenFailedWithHandle {
-                    operation,
-                    source: Box::new(map_driver_error(operation, error)),
-                })
-            }
-            Err(error) => Err(map_driver_error(operation, error)),
-        }
+        let mut live_handles = self.lock_handles();
+        let handle =
+            open(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))?;
+        *live_handles += 1;
+        Ok(handle)
     }
 
     pub(crate) fn cleanup_close_handle(&self, handle: Handle) -> Result<(), Error> {
         const OPERATION: Operation = Operation::CloseDevice;
 
-        let mut state = self.lock_handles();
-
-        let result = self
-            .driver
+        let mut live_handles = self.lock_handles();
+        self.driver
             .close(handle)
-            .map_err(|error| map_driver_error(OPERATION, error));
-        let (live_handles, ledger_uncertain) = match state.live_handles.checked_sub(1) {
-            Some(live_handles) => (live_handles, false),
-            None => (state.live_handles, true),
-        };
-        state.live_handles = live_handles;
-        state.teardown_uncertain |= ledger_uncertain || result.is_err();
-        result
+            .map_err(|error| map_driver_error(OPERATION, error))?;
+        *live_handles = live_handles
+            .checked_sub(1)
+            .expect("a Device closes its owned handle at most once");
+        Ok(())
     }
 
     pub(crate) fn parameter_key(operation: Operation, bytes: &[u8]) -> Result<CString, Error> {
-        validated_c_string(operation, bytes, 255, true)
+        CString::new(bytes).map_err(|_| Error::InvalidInput {
+            operation,
+            kind: InvalidInput::InteriorNul,
+        })
     }
 }
 
@@ -197,14 +131,10 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn initialize() -> Result<Self, Error> {
-        Self::initialize_native(VersionPolicy::Compatible)
+        Self::initialize_native()
     }
 
-    pub fn initialize_strict() -> Result<Self, Error> {
-        Self::initialize_native(VersionPolicy::Strict)
-    }
-
-    fn initialize_native(policy: VersionPolicy) -> Result<Self, Error> {
+    fn initialize_native() -> Result<Self, Error> {
         #[cfg(all(
             feature = "native",
             target_os = "windows",
@@ -214,7 +144,7 @@ impl Runtime {
         {
             static GATE: OnceLock<Arc<Gate>> = OnceLock::new();
             let gate = Arc::clone(GATE.get_or_init(|| Arc::new(Gate::new())));
-            Self::initialize_with_policy(Box::new(crate::ffi::NativeDriver), gate, policy)
+            Self::initialize_driver(Box::new(crate::ffi::NativeDriver), gate)
         }
 
         #[cfg(not(all(
@@ -224,65 +154,43 @@ impl Runtime {
             target_env = "msvc"
         )))]
         {
-            let _ = (OnceLock::<Arc<Gate>>::new(), policy);
+            let _ = OnceLock::<Arc<Gate>>::new();
             Err(Error::UnsupportedPlatform)
         }
     }
 
     #[cfg(test)]
     pub(crate) fn initialize_with(driver: Box<dyn Driver>, gate: Arc<Gate>) -> Result<Self, Error> {
-        Self::initialize_with_policy(driver, gate, VersionPolicy::Compatible)
+        Self::initialize_driver(driver, gate)
     }
 
-    #[cfg(test)]
-    pub(crate) fn initialize_with_strict(
-        driver: Box<dyn Driver>,
-        gate: Arc<Gate>,
-    ) -> Result<Self, Error> {
-        Self::initialize_with_policy(driver, gate, VersionPolicy::Strict)
-    }
-
-    fn initialize_with_policy(
-        driver: Box<dyn Driver>,
-        gate: Arc<Gate>,
-        policy: VersionPolicy,
-    ) -> Result<Self, Error> {
+    fn initialize_driver(driver: Box<dyn Driver>, gate: Arc<Gate>) -> Result<Self, Error> {
         let mut state = gate.lock();
         match &*state {
             ProcessSdkState::Fresh => {}
             ProcessSdkState::Active(core) => {
-                validate_sdk_version(policy, &core.version)?;
+                validate_sdk_version(&core.version)?;
                 return Ok(Self {
                     core: Arc::clone(core),
                     gate: Arc::clone(&gate),
                 });
             }
-            ProcessSdkState::Degraded => return Err(Error::RuntimeDegraded),
         }
 
         let version = match driver.version() {
             Ok(version) => version,
             Err(error) => return Err(map_driver_error(Operation::GetVersion, error)),
         };
-        validate_sdk_version(policy, &version)?;
+        validate_sdk_version(&version)?;
 
-        if let Err(error) = driver.initialize() {
-            let initialize = map_driver_error(Operation::Initialize, error);
-            // Initialize may have partially established process-wide native state. Preserve its
-            // primary error, but only leave the session Fresh when compensating cleanup succeeds.
-            if driver.finalize().is_err() {
-                *state = ProcessSdkState::Degraded;
-            }
-            return Err(initialize);
-        }
+        driver
+            .initialize()
+            .map_err(|error| map_driver_error(Operation::Initialize, error))?;
 
         let core = Arc::new(RuntimeCore {
             driver,
             version,
-            handles: Mutex::new(HandleLedger {
-                live_handles: 0,
-                teardown_uncertain: false,
-            }),
+            handles: Mutex::new(0),
         });
         *state = ProcessSdkState::Active(Arc::clone(&core));
         drop(state);
@@ -298,64 +206,26 @@ impl Runtime {
     }
 
     pub fn devices(&self) -> Result<Vec<DeviceRecord>, Error> {
-        let hint = self.device_count_hint()?;
-        validate_device_count(Operation::GetDeviceNumber, hint)?;
-        let mut capacity = usize::try_from(hint).unwrap_or(usize::MAX).max(1);
-
-        for attempt in 1..=DISCOVERY_ATTEMPTS {
-            let list = self.call(Operation::GetDeviceList, |driver| {
-                driver.device_list(capacity)
-            });
-
-            let list = match list {
-                Ok(list) => list,
-                Err(Error::Sdk { status, .. })
-                    if status == STATUS_BUFFER_FULL || status == STATUS_INSUFFICIENT_BUFFER =>
-                {
-                    if attempt == DISCOVERY_ATTEMPTS {
-                        break;
-                    }
-                    let refreshed = self.device_count_hint()?;
-                    validate_device_count(Operation::GetDeviceNumber, refreshed)?;
-                    capacity = grow_capacity(capacity, refreshed)?;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-
-            validate_device_count(Operation::GetDeviceList, list.reported)?;
-            let reported = usize::try_from(list.reported).unwrap_or(usize::MAX);
-            if reported > capacity {
-                if attempt == DISCOVERY_ATTEMPTS {
-                    break;
-                }
-                capacity = grow_capacity(capacity, list.reported)?;
-                continue;
-            }
-            if list.records.len() != reported {
-                return Err(Error::ContractViolation {
-                    operation: Operation::GetDeviceList,
-                    kind: ContractViolation::DeviceListCountMismatch {
-                        reported: list.reported,
-                        returned: list.records.len(),
-                    },
-                });
-            }
-
-            let mut records = Vec::new();
-            records
-                .try_reserve_exact(reported)
-                .map_err(|_| Error::AllocationFailed {
-                    operation: Operation::GetDeviceList,
-                    requested: reported,
-                })?;
-            records.extend(list.records.into_iter().map(DeviceRecord::from));
-            return Ok(records);
+        let count = self.device_count_hint()?;
+        if count == 0 {
+            return Ok(Vec::new());
         }
 
-        Err(Error::DiscoveryChanged {
-            attempts: DISCOVERY_ATTEMPTS,
-        })
+        let capacity = usize::try_from(count).expect("u32 fits usize on supported targets");
+        let list = self.call(Operation::GetDeviceList, |driver| {
+            driver.device_list(capacity)
+        })?;
+        let reported = usize::try_from(list.reported).expect("u32 fits usize on supported targets");
+        if list.records.len() != reported {
+            return Err(Error::ContractViolation {
+                operation: Operation::GetDeviceList,
+                kind: ContractViolation::DeviceListCountMismatch {
+                    reported: list.reported,
+                    returned: list.records.len(),
+                },
+            });
+        }
+        Ok(list.records.into_iter().map(DeviceRecord::from).collect())
     }
 
     pub fn set_ip_config(
@@ -363,7 +233,7 @@ impl Runtime {
         serial_number: &[u8],
         configuration: &IpConfiguration,
     ) -> Result<(), Error> {
-        let serial = validated_c_string(Operation::SetIpConfig, serial_number, 16, false)?;
+        let serial = validated_c_string(Operation::SetIpConfig, serial_number, 16)?;
         let raw = IpConfigRaw::from(configuration);
         self.call(Operation::SetIpConfig, |driver| {
             driver.set_ip_config(&serial, &raw)
@@ -372,16 +242,16 @@ impl Runtime {
 
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device, Error> {
         let address = CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
-        let handle = self.open(Operation::OpenDeviceByIp, |driver, output| {
-            driver.open_by_ip(&address, output)
+        let handle = self.open(Operation::OpenDeviceByIp, |driver| {
+            driver.open_by_ip(&address)
         })?;
         Ok(Device::new(Arc::clone(&self.core), handle))
     }
 
     pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device, Error> {
-        let serial = validated_c_string(Operation::OpenDeviceBySn, serial_number, 16, false)?;
-        let handle = self.open(Operation::OpenDeviceBySn, |driver, output| {
-            driver.open_by_serial(&serial, output)
+        let serial = validated_c_string(Operation::OpenDeviceBySn, serial_number, 16)?;
+        let handle = self.open(Operation::OpenDeviceBySn, |driver| {
+            driver.open_by_serial(&serial)
         })?;
         Ok(Device::new(Arc::clone(&self.core), handle))
     }
@@ -421,8 +291,7 @@ impl Runtime {
         format: ImageFileFormatRecord,
         file_name: &[u8],
     ) -> Result<(), Error> {
-        let file_name =
-            validated_c_string(Operation::SaveImage, file_name, u32::MAX as usize, false)?;
+        let file_name = validated_c_string(Operation::SaveImage, file_name, u32::MAX as usize)?;
         self.call(Operation::SaveImage, |driver| {
             driver.save_image(input, format, &file_name)
         })
@@ -450,16 +319,12 @@ impl Runtime {
             ProcessSdkState::Active(core) if Arc::ptr_eq(core, &self.core) => {}
             ProcessSdkState::Fresh => return Ok(()),
             ProcessSdkState::Active(_) => return Err(Error::RuntimeInactive),
-            ProcessSdkState::Degraded => return Err(Error::RuntimeDegraded),
         }
 
         let handles = self.core.lock_handles();
-        if handles.teardown_uncertain {
-            return Err(Error::RuntimeDegraded);
-        }
-        if handles.live_handles != 0 {
+        if *handles != 0 {
             return Err(Error::UnclosedDevices {
-                live_handles: handles.live_handles,
+                live_handles: *handles,
             });
         }
 
@@ -474,17 +339,14 @@ impl Runtime {
                 *process = ProcessSdkState::Fresh;
                 Ok(())
             }
-            Err(error) => {
-                *process = ProcessSdkState::Degraded;
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 
     fn open(
         &self,
         operation: Operation,
-        open: impl FnOnce(&dyn Driver, &mut Option<Handle>) -> DriverResult<()>,
+        open: impl FnOnce(&dyn Driver) -> DriverResult<Handle>,
     ) -> Result<Handle, Error> {
         let _active = self.active_state()?;
         self.core.open_handle(operation, open)
@@ -504,19 +366,20 @@ impl Runtime {
         let state = self.gate.lock();
         match &*state {
             ProcessSdkState::Active(core) if Arc::ptr_eq(core, &self.core) => Ok(state),
-            ProcessSdkState::Degraded => Err(Error::RuntimeDegraded),
             ProcessSdkState::Active(_) | ProcessSdkState::Fresh => Err(Error::RuntimeInactive),
         }
     }
 }
 
-fn validate_sdk_version(policy: VersionPolicy, bytes: &[u8]) -> Result<(), Error> {
-    if parse_sdk_version(bytes).is_some_and(|version| policy.accepts(version)) {
+fn validate_sdk_version(bytes: &[u8]) -> Result<(), Error> {
+    if parse_sdk_version(bytes).is_some_and(|version| {
+        (AUDITED_VERSION..MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE).contains(&version)
+    }) {
         Ok(())
     } else {
         Err(Error::IncompatibleSdkVersion {
             minimum: AUDITED_VERSION_TEXT,
-            maximum_exclusive: policy.maximum_exclusive(),
+            maximum_exclusive: MAXIMUM_COMPATIBLE_VERSION_EXCLUSIVE_TEXT,
             actual: bytes.to_vec(),
         })
     }
@@ -546,42 +409,10 @@ fn map_driver_error(operation: Operation, error: DriverError) -> Error {
     }
 }
 
-fn validate_device_count(operation: Operation, count: u32) -> Result<(), Error> {
-    if usize::try_from(count).unwrap_or(usize::MAX) > MAX_DEVICE_COUNT {
-        Err(Error::ContractViolation {
-            operation,
-            kind: ContractViolation::DeviceCountExceedsLimit {
-                reported: count,
-                limit: MAX_DEVICE_COUNT,
-            },
-        })
-    } else {
-        Ok(())
-    }
-}
-
-fn grow_capacity(current: usize, reported: u32) -> Result<usize, Error> {
-    validate_device_count(Operation::GetDeviceList, reported)?;
-    let reported = usize::try_from(reported).unwrap_or(usize::MAX);
-    let doubled = current.saturating_mul(2).min(MAX_DEVICE_COUNT);
-    let next = reported.max(doubled).max(current.saturating_add(1));
-    if next > MAX_DEVICE_COUNT {
-        return Err(Error::ContractViolation {
-            operation: Operation::GetDeviceList,
-            kind: ContractViolation::DeviceCountExceedsLimit {
-                reported: u32::try_from(next).unwrap_or(u32::MAX),
-                limit: MAX_DEVICE_COUNT,
-            },
-        });
-    }
-    Ok(next)
-}
-
 fn validated_c_string(
     operation: Operation,
     bytes: &[u8],
     maximum: usize,
-    require_ascii: bool,
 ) -> Result<CString, Error> {
     if bytes.is_empty() {
         return Err(Error::InvalidInput {
@@ -598,40 +429,8 @@ fn validated_c_string(
             },
         });
     }
-    if require_ascii && !bytes.is_ascii() {
-        return Err(Error::InvalidInput {
-            operation,
-            kind: InvalidInput::NonAscii,
-        });
-    }
     CString::new(bytes).map_err(|_| Error::InvalidInput {
         operation,
         kind: InvalidInput::InteriorNul,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::{Gate, ProcessSdkState};
-
-    // 验证生命周期锁中毒后进入封闭状态，防止继续扩展不确定的进程级 SDK 状态。
-    #[test]
-    fn poisoned_lifecycle_gate_fails_closed() {
-        let gate = Arc::new(Gate::new());
-        let poisoning_gate = Arc::clone(&gate);
-
-        assert!(
-            std::thread::spawn(move || {
-                let _state = poisoning_gate.state.lock().unwrap();
-                panic!("poison the lifecycle gate");
-            })
-            .join()
-            .is_err()
-        );
-
-        assert!(matches!(*gate.lock(), ProcessSdkState::Degraded));
-        assert!(!gate.state.is_poisoned());
-    }
 }

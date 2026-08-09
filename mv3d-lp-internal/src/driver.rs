@@ -59,8 +59,8 @@ pub(crate) trait Driver: Send + Sync {
     fn device_list(&self, capacity: usize) -> DriverResult<DeviceListAttempt>;
     fn set_ip_config(&self, serial: &CStr, config: &IpConfigRaw) -> DriverResult<()>;
 
-    fn open_by_ip(&self, ip: &CStr, handle: &mut Option<Handle>) -> DriverResult<()>;
-    fn open_by_serial(&self, serial: &CStr, handle: &mut Option<Handle>) -> DriverResult<()>;
+    fn open_by_ip(&self, ip: &CStr) -> DriverResult<Handle>;
+    fn open_by_serial(&self, serial: &CStr) -> DriverResult<Handle>;
     fn close(&self, handle: Handle) -> DriverResult<()>;
 
     fn start(&self, handle: Handle) -> DriverResult<()>;
