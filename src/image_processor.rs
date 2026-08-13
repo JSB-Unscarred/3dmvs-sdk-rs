@@ -41,8 +41,9 @@ impl ImageFileFormat {
 ///
 /// `ImageProcessor` does not borrow [`crate::Sdk`] and is `Send + Sync`. Each call verifies that
 /// its session is active, delegates input validation to the internal FFI boundary, and copies SDK
-/// output into Rust-owned storage. Successful [`crate::Sdk::shutdown`] invalidates tokens from that
-/// session.
+/// output into Rust-owned storage. Calls from the same session are serialized through the native
+/// call and immediate output copy, so another call cannot replace transient SDK output during the
+/// copy. Successful [`crate::Sdk::shutdown`] invalidates tokens from that session.
 ///
 /// # Native contract
 ///

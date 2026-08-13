@@ -59,8 +59,8 @@ fn main() -> Result<()> {
 ## 所有权与状态
 
 - `Sdk` 是 `Send + Sync` 的 session token。`Sdk::version()` 可在 Initialize 前独立读取原始版本字节；`initialize()` 只负责创建或加入进程级 session，不设置额外兼容区间。
-- `Device` 不借用 `Sdk`，可在释放 `Sdk` 后继续使用，也可移动到普通 worker thread。它是 `Send + !Sync`；live device 会阻止 `shutdown()`。每个 `Device` owner 最多调用一次原生 Close，显式 `close(self)` 返回 Stop 与 Close 的清理错误，`Drop` 只执行同一条尽力清理路径。
-- `ImageProcessor` 不借用 `Sdk`，是 `Send + Sync` 的图像处理 token。
+- `Device` 不借用 `Sdk`，可在释放 `Sdk` 后继续使用，也可移动到普通 worker thread。它是 `Send + !Sync`；live device 会阻止 `shutdown()`。每个 `Device` owner 最多调用一次原生 Close；Close 返回后，即使 status 为错误，该 handle 也永久失效。显式 `close(self)` 返回 Stop 与 Close 的清理错误，`Drop` 只执行同一条尽力清理路径。
+- `ImageProcessor` 不借用 `Sdk`，是 `Send + Sync` 的图像处理 token。同一 session 的图像处理调用会串行到 SDK 输出复制完成，不同 session 不会同时处于 Active。
 - `shutdown()` 成功后，同一 session 的其他 token 停止接受 native 操作；静态 `Sdk::version()` 不依赖 session 状态。
 
 `Device` 只记录是否正在测量，以及 image/exception callback registration 和最近一次成功 FileAccess 的两段文件名。`start()` 与 `stop()` 维护测量标记；其余设备操作直接转发，由 SDK 判断调用顺序。`Receiver<Frame>` 与 `Receiver<DeviceException>` 均不借用 `Device`，可在当前线程消费，也可移入调用方线程。结束 image callback 时调用 `device.stop()`；结束 exception delivery 时调用 `disable_exception_delivery()`。
@@ -80,9 +80,9 @@ fn main() -> Result<()> {
 | `MV3D_LP_GetDeviceList` | `Sdk::devices()` | 按一次 `GetDeviceNumber` 的结果调用一次；计数为 0 时直接返回空列表 |
 | `MV3D_LP_OpenDeviceByIP` | `Sdk::open_by_ip()` | status 成功且 handle 非空后才创建 `Device` |
 | `MV3D_LP_OpenDeviceBySN` | `Sdk::open_by_serial()` | 校验 `SerialNumber`；成功后才交付 handle |
-| `MV3D_LP_CloseDevice` | `Device::close()`、`Device` 的 `Drop` | 每个 owner 最多调用一次；测量中先尝试一次 Stop，再调用一次 Close |
+| `MV3D_LP_CloseDevice` | `Device::close()`、`Device` 的 `Drop` | 每个 owner 最多调用一次；测量中先尝试一次 Stop，再调用一次 Close；任意 status 都消费 handle |
 | `MV3D_LP_SetIpConfig` | `Sdk::set_ip_config()` | 使用 `IpConfiguration` 表达配置模式 |
-| `MV3D_LP_RegisterExceptionCallBack` | `Device::exception_receiver()`、`Device::disable_exception_delivery()` | 返回有界 `Receiver<DeviceException>`；cookie registry 隔离迟到 callback，不等待已开始的 callback |
+| `MV3D_LP_RegisterExceptionCallBack` | `Device::exception_receiver()`、`Device::disable_exception_delivery()` | 返回有界 `Receiver<DeviceException>`；队列满时丢弃当前异常并终止 Rust delivery；cookie registry 隔离迟到 callback |
 | `MV3D_LP_StartMeasure` | `Device::start()`、`Device::start_receiving()` | 成功后记录正在测量；callback 入口先注册再 Start |
 | `MV3D_LP_StopMeasure` | `Device::stop()`、`Device::close()` 及 `Drop` 兜底 | `stop()` 成功后撤销 image cookie；失败时可再次调用 `stop()` 或关闭 |
 | `MV3D_LP_SoftTrigger` | `Device::soft_trigger()` | 直接转发，由 SDK 判断调用顺序 |
@@ -134,19 +134,20 @@ SDK 的 reserved 字段、原始指针、回调函数指针和设备句柄只存
 
 - 公共 crate 使用 `#![forbid(unsafe_code)]`；FFI、指针校验、C union 读取和 callback trampoline 位于 `mv3d-lp-internal`。
 - 原生图像输入与输出的判别值、指针、长度、布局和算术校验集中在 internal FFI，再复制到 Rust 所有值；校验依据实际 slice 和 SDK 长度字段，不设置任意的 512 MiB 上限。
-- `Device` 独立持有 session 使用权；live owner 会阻止 Finalize。清理时如正在测量则调用一次 Stop，随后无论 Stop 结果都调用一次 Close；handle 在该 owner 上只提交一次 Close，不做理论性重试。
-- FileAccess 的 `[IN]` 只表示参数方向，不能证明异步调用不持有字符串。启动成功后 `Device` 保存两段 CString；下一次成功 FileAccess 会替换它们，关闭或 Drop 时释放。
+- `Device` 独立持有 session 使用权；live owner 会阻止 Finalize。清理时如正在测量则调用一次 Stop，随后无论 Stop 结果都调用一次 Close；Close 返回后，即使 status 为错误，handle 也永久失效，因此该 owner 不重试并退出 live owner 计数。
+- wrapper 依赖厂商契约：`MV3D_LP_CloseDevice` 返回时，该 handle 的 image/exception callback 已静默，FileAccess 也已停止引用传入的文件名。此时才能撤销 callback registration 并释放文件名；`Device::stop()` 与 `disable_exception_delivery()` 只停止后续 Rust delivery，不是 callback 静默屏障。
+- FileAccess 的 `[IN]` 只表示参数方向，不能证明异步调用不持有字符串。启动成功后 `Device` 保存两段 CString；下一次成功 FileAccess 会替换它们，Close 返回后释放。
 - `Sdk` 与 `ImageProcessor` 为 `Send + Sync`；`Device` 为 `Send + !Sync`，活动采集或传输可随设备的唯一所有权跨线程移动。
-- callback registration 使用不复用的 cookie。撤销 registration 后，迟到 callback 查不到旧 cookie，不会命中新 registration；已取得 sink 的 callback 可以自行返回，撤销操作不等待它。
-- callback 只向有界 Receiver 非阻塞入队；队列满时丢弃最新事件，Receiver 关闭后停止 Rust delivery。
+- callback registration 使用不复用的 cookie。撤销 registration 后，迟到 callback 查不到旧 cookie，不会命中新 registration；Stop 或 disable 前已取得 sink 的 callback 可以完成本次投递，撤销操作不等待它。
+- callback 只向有界 Receiver 非阻塞入队。image 队列满时丢弃最新帧并继续；exception 队列满时丢弃当前异常并终止 Rust delivery，已有 callback 返回后，Receiver 读完已排队异常并断开。Receiver 主动关闭也会停止 Rust delivery。
 - `Device` 仅用一个测量标记约束重复 Start 与无效 Stop；`soft_trigger`、`get_image`、参数、Execute、ClearDataBuffer 和 FileAccess 直接转发，由 SDK 返回调用顺序错误。
-- 仍有 live owner 时 `shutdown()` 返回 `UnclosedDevices`；所有 `Device` owner 完成一次 Close 调用后才允许 Finalize。
+- 仍有 live owner 时 `shutdown()` 返回 `UnclosedDevices`；所有 `Device` owner 的一次 Close 调用返回后才允许 Finalize，Close 的错误 status 不恢复 owner。
 
-safe API 依赖同步调用期间输入可读、SDK 输出在复制完成前有效，以及 Stop/Close 对资源的厂商契约。SDK、头文件、ABI 或固件变化后应重新审计相关接口。
+safe API 依赖同步调用期间输入可读、SDK 输出在复制完成前有效，以及上述 Close 对 handle、callback 和 FileAccess 的厂商契约。SDK、头文件、ABI 或固件变化后应重新审计相关接口。
 
 ## 待确认厂商契约
 
-- `MV3D_LP_StopMeasure` 与 `MV3D_LP_CloseDevice` 返回时，image/exception callback 是否已静默。
+- callback 参数在 ABI 上可为空，但当前头文件摘录与公开 sample 未说明传 `NULL` 是否表示注销；确认前 wrapper 仅撤销 Rust cookie。
 - 同一 handle 是否支持重复注册 callback，以及跨 Stop、pull/callback 模式切换时旧 registration 的替换规则。
 - FileAccess 是否同步复制文件名；确认后可缩短 `Device` 对 CString 的持有时间。
 - FileAccess 的 signed `completed`、`total` 及 `(0, 0)` 的完成语义。

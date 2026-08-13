@@ -6,9 +6,10 @@ use crate::SdkText;
 /// Configuration shared by the safe callback receiver APIs.
 ///
 /// Callback queues are bounded so that a stalled consumer cannot retain an
-/// unbounded number of owned frame buffers. Native callback trampolines must
-/// use non-blocking sends and discard a new event when this queue is full;
-/// they must never wait for the Rust consumer while running on an SDK thread.
+/// unbounded number of owned event buffers. Native callback trampolines use
+/// non-blocking sends: image delivery discards a new frame when this queue is
+/// full, while exception delivery discards the current event and stops so the
+/// receiver observes that its event stream is incomplete.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub struct CallbackOptions {

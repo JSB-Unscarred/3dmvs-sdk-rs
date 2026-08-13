@@ -44,7 +44,7 @@ sequenceDiagram
                 Core->>Queue: try_send(frame)
                 alt 队列有空位
                     Queue-->>Core: queued
-                else 队列已满
+                else image 队列已满
                     Core->>Core: 丢弃本次新 frame
                 else Receiver 已关闭
                     Core->>Core: 移除 cookie，停止后续 Rust delivery
@@ -84,13 +84,14 @@ sequenceDiagram
         end
         Core->>Native: MV3D_LP_CloseDevice(handle) 一次
         Native-->>Core: close status
+        Note over Core,Native: 任意 status 都使 handle 失效；返回前 native callback 已静默
         Core->>Core: 移除 image 与 exception cookie
     end
 ```
 
-`Receiver<Frame>` 与 `Frame` 均不借用 `Device`。trampoline 只复制 payload 并非阻塞入队，符合官方 CHM“图像 callback 内不建议调用其他 SDK 接口”的说明。队列满时丢弃最新事件，避免阻塞 SDK callback thread。
+`Receiver<Frame>` 与 `Frame` 均不借用 `Device`。trampoline 只复制 payload 并非阻塞入队，符合官方 CHM“图像 callback 内不建议调用其他 SDK 接口”的说明。image 队列满时丢弃最新帧并继续 delivery，避免阻塞 SDK callback thread。
 
-registry 的作用仅是隔离迟到 callback：cookie 从不复用，registration 撤销后，旧 callback 无法命中新 sink。callback 在撤销前若已取得 sink clone，仍可完成本次复制或入队；`stop()`、`disable_exception_delivery()` 和关闭路径都不等待它返回。厂商是否在 Stop/Close 返回时保证 callback 静默仍待确认。
+registry 的作用仅是隔离迟到 callback：cookie 从不复用，registration 撤销后，旧 callback 无法命中新 sink。callback 在撤销前若已取得 sink clone，仍可完成本次复制或入队；`stop()` 与 `disable_exception_delivery()` 不等待它返回。关闭路径依赖厂商契约：`MV3D_LP_CloseDevice` 返回前，该 handle 的 native callback 已静默；任意 Close status 都消费 handle。
 
 ## exception delivery 停止
 
@@ -121,7 +122,9 @@ sequenceDiagram
 
 厂商接口只提供 exception callback register，因此 `disable_exception_delivery()` 只停止后续 Rust delivery。Receiver 会在 registry sender 和可能存在的 sink clone 都释放后断开；调用方无需把“方法返回”解释为原生 callback 已静默。
 
+exception callback 使用有界非阻塞队列。队列满时丢弃当前异常并移除 registry 中的 sink，终止后续 Rust delivery；已有 callback 释放 sink 后，Receiver 仍可读完已经排队的异常，随后得到 disconnected。image callback 则在队列满时仅丢弃最新帧并继续 delivery。
+
 ## 待确认厂商契约
 
-- `MV3D_LP_StopMeasure` 与 `MV3D_LP_CloseDevice` 返回时，image/exception callback 是否已静默。
+- callback 参数在 ABI 上可为空，但当前头文件摘录与公开 sample 未说明传 `NULL` 是否表示注销；确认前 wrapper 仅撤销 Rust cookie。
 - 同一 handle 是否允许重复注册，以及跨 Stop、再次 Start、pull/callback 模式切换时旧 callback 与 user data 的替换规则。

@@ -116,10 +116,11 @@ sequenceDiagram
     end
     Core->>Native: MV3D_LP_CloseDevice(handle) 一次
     Native-->>Core: close status
-    Core->>Core: live Device owner -= 1，撤销 callback cookie
+    Note over Core,Native: 任意 close status 都使 handle 失效；callback 已静默，FileAccess 已结束引用
+    Core->>Core: live Device owner -= 1，撤销 callback cookie 并释放 FileAccess 文件名
     Core-->>Public: 汇总 Stop 与 Close 结果
     Public-->>App: Result
-    Note over Core,Native: handle 已从 owner 取走，随后 Drop 不再调用 Close
+    Note over Core,Native: 错误 status 也不恢复 handle，随后 Drop 不再调用 Close
 
     App->>Public: sdk.shutdown()
     Public->>Core: Runtime::shutdown()
@@ -136,4 +137,4 @@ sequenceDiagram
 
 `Device` 独立持有 session 使用权，打开后可释放 `Sdk` token，也可将唯一 owner 移入普通 worker thread。`get_image()` 使用有限超时，`get_image_blocking()` 传入 SDK 的无限等待值；两者返回拥有 payload 的 `Frame`。wrapper 只用 `measuring` 标记处理 Start、Stop 和关闭时的必要 Stop，`get_image`、`soft_trigger`、参数、Execute 与 `clear_buffer` 的调用顺序由 SDK 判定。
 
-显式 `close()` 与 `Drop` 共用清理路径：测量中尝试一次 Stop，随后调用一次 Close。每个 `Device` owner 最多提交一次 Close；显式关闭返回清理错误，Drop 忽略错误。完整总览见[生命周期与时序图总览](../生命周期与时序图.md)。
+显式 `close()` 与 `Drop` 共用清理路径：测量中尝试一次 Stop，随后调用一次 Close。wrapper 依赖 Close 返回时 handle 已永久失效、native callback 已静默且 FileAccess 已停止引用文件名；这些条件同样适用于错误 status。每个 `Device` owner 最多提交一次 Close；显式关闭返回清理错误，Drop 忽略错误。完整总览见[生命周期与时序图总览](../生命周期与时序图.md)。

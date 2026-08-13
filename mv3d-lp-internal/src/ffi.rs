@@ -192,7 +192,8 @@ impl Driver for NativeDriver {
     fn close(&self, handle: Handle) -> DriverResult<()> {
         let mut raw = handle.as_ptr();
         // SAFETY: handle originated from a successful SDK open call and its Device owner calls
-        // CloseDevice at most once.
+        // CloseDevice at most once. Returning consumes the handle even when status reports an
+        // error; the SDK has also quiesced callbacks and released asynchronous input borrows.
         status_result(unsafe { bindings::MV3D_LP_CloseDevice(&mut raw) })
     }
 
@@ -208,7 +209,8 @@ impl Driver for NativeDriver {
     }
 
     fn soft_trigger(&self, handle: Handle) -> DriverResult<()> {
-        // SAFETY: Device validates Measuring state and owns this live SDK handle.
+        // SAFETY: Device exclusively owns this live SDK handle; trigger mode and call order are
+        // validated by the SDK.
         status_result(unsafe { bindings::MV3D_LP_SoftTrigger(handle.as_ptr()) })
     }
 
@@ -346,7 +348,8 @@ impl Driver for NativeDriver {
         // Output is a fully zeroed writable descriptor and receives transient SDK-owned data.
         status_result(unsafe { bindings::MV3D_LP_MapDepthToPointCloud(&mut input, &mut output) })?;
         // SAFETY: the successful SDK call guarantees its returned payload remains readable until
-        // the next image-processing call; Runtime keeps the process gate through this copy.
+        // the next image-processing call; Runtime keeps the session image-processing lock through
+        // this copy.
         unsafe {
             processed_image_from_native(
                 &output,
@@ -437,11 +440,8 @@ impl Driver for NativeDriver {
                 (bindings::DisplayType_Manual, minimum, maximum)
             }
         };
-        // SAFETY: raw-window-handle guarantees a live non-null Win32 HWND while the borrowed
-        // WindowHandle is held by the public wrapper. The vendor-[IN] image payload is read-only
-        // and remains valid through this synchronous call.
-        // SAFETY: `input` was validated above and borrows live payloads; `window` came from a
-        // borrowed Win32 raw-window-handle and remains live for this synchronous call.
+        // SAFETY: `input` was validated above and borrows live vendor-[IN] payloads; `window` came
+        // from a borrowed Win32 raw-window-handle. Both remain live for this synchronous call.
         unsafe {
             native_display_image_call(
                 &mut input,
@@ -616,7 +616,8 @@ unsafe fn processed_image_from_native(
         return Err(invalid_sdk_image_value("output image type"));
     }
     validate_processed_image_lengths(output)?;
-    // SAFETY: the caller holds the process gate and guarantees a successful SDK ImgProc call.
+    // SAFETY: the caller holds the session image-processing lock and guarantees a successful SDK
+    // ImgProc call.
     unsafe { image_from_native(output) }
 }
 

@@ -216,7 +216,8 @@ impl Device {
 
     /// Stops acquisition when needed and closes the owned handle.
     ///
-    /// The consumed owner calls native Close exactly once and returns every cleanup error.
+    /// The consumed owner calls native Close exactly once. Returning consumes the handle for every
+    /// status, and every Stop or Close error is reported.
     pub fn close(mut self) -> Result<(), DeviceCleanupError> {
         self.cleanup()
     }

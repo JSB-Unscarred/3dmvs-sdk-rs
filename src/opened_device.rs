@@ -68,8 +68,10 @@ impl Device {
 
     /// Stops the active pull or callback acquisition.
     ///
-    /// On success, the image callback cookie is retired. On failure, the acquisition owner stays
-    /// intact so the caller may retry or close the device.
+    /// On success, the image callback cookie is retired. A callback that already cloned its sink
+    /// may still enqueue one frame after this method returns, so success is not a callback
+    /// quiescence barrier. On failure, the acquisition owner stays intact so the caller may retry
+    /// or close the device.
     pub fn stop(&mut self) -> Result<()> {
         self.inner.stop().map_err(Error::map_internal_error)
     }
@@ -117,7 +119,8 @@ impl Device {
     ///
     /// The audited native API exposes only registration. This method retires the Rust cookie, so
     /// later native callbacks are ignored safely. A callback that already cloned its sink may
-    /// finish normally. Repeated calls are harmless.
+    /// still enqueue one event after this method returns, so this method is not a callback
+    /// quiescence barrier. Repeated calls are harmless.
     pub fn disable_exception_delivery(&mut self) {
         self.inner.disable_exception_delivery();
     }
@@ -182,7 +185,10 @@ impl Device {
 
     /// Stops acquisition when needed and closes the owned handle.
     ///
-    /// The consumed owner calls native Close once and reports both Stop and Close failures.
+    /// The consumed owner calls native Close once and reports both Stop and Close failures. Native
+    /// Close returning is the callback quiescence barrier even when its status reports an error:
+    /// no callback can enqueue afterward, while events already waiting in receivers remain
+    /// readable.
     pub fn close(self) -> Result<()> {
         self.inner.close().map_err(Error::map_device_cleanup_error)
     }
@@ -192,7 +198,8 @@ fn frame_callback_channel(
     options: CallbackOptions,
 ) -> (mv3d_lp_internal::FrameCallbackSink, Receiver<Frame>) {
     let (sender, receiver) = sync_channel(options.queue_capacity.get());
-    let sink = Arc::new(move |record| keep_callback(sender.try_send(Image::from_internal(record))));
+    let sink =
+        Arc::new(move |record| keep_frame_callback(sender.try_send(Image::from_internal(record))));
     (sink, receiver)
 }
 
@@ -206,16 +213,22 @@ fn exception_callback_channel(
     let sink = Arc::new(move |record: mv3d_lp_internal::ExceptionRecord| {
         let description = SdkText::from_sdk_bytes(record.description);
         let event = DeviceException::new(DeviceExceptionType::from_raw(record.kind), description);
-        keep_callback(sender.try_send(event))
+        keep_exception_callback(sender.try_send(event))
     });
     (sink, receiver)
 }
 
-fn keep_callback<T>(result: std::result::Result<(), TrySendError<T>>) -> bool {
+// 队列满时丢弃最新帧并继续 delivery，避免 SDK callback 线程阻塞。
+fn keep_frame_callback<T>(result: std::result::Result<(), TrySendError<T>>) -> bool {
     match result {
         Ok(()) | Err(TrySendError::Full(_)) => true,
         Err(TrySendError::Disconnected(_)) => false,
     }
+}
+
+// 队列满或 receiver 断开时终止 delivery，避免继续提供不完整异常流。
+fn keep_exception_callback<T>(result: std::result::Result<(), TrySendError<T>>) -> bool {
+    result.is_ok()
 }
 
 fn timeout_millis(timeout: Duration) -> Result<u32> {
@@ -288,11 +301,12 @@ fn parameter_from_internal(record: mv3d_lp_internal::ParameterRecord) -> Paramet
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
+    use std::sync::mpsc::TryRecvError;
     use std::time::Duration;
 
     use crate::{CallbackOptions, Error, InputViolation};
 
-    use super::{frame_callback_channel, timeout_millis};
+    use super::{exception_callback_channel, frame_callback_channel, timeout_millis};
 
     // 验证超时转换检查范围并向上取整，防止截断导致实际等待时间缩短。
     #[test]
@@ -321,6 +335,20 @@ mod tests {
         assert!(!sink(callback_frame(3)));
     }
 
+    // 验证异常队列满时终止 delivery，避免静默丢失后继续提供不完整事件流。
+    #[test]
+    fn exception_callback_channel_stops_delivery_when_full() {
+        let options = CallbackOptions::new(NonZeroUsize::new(1).unwrap());
+        let (sink, receiver) = exception_callback_channel(options);
+
+        assert!(sink(callback_exception(b"first")));
+        assert!(!sink(callback_exception(b"second")));
+        assert_eq!(receiver.recv().unwrap().description.as_bytes(), b"first");
+
+        drop(sink);
+        assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
+    }
+
     fn callback_frame(frame_number: u32) -> mv3d_lp_internal::FrameRecord {
         mv3d_lp_internal::FrameRecord {
             image_type: mv3d_lp_internal::ImageTypeRecord::from_bits(0x0108_0001),
@@ -338,6 +366,13 @@ mod tests {
             x_offset: 0,
             y_offset: 0,
             z_offset: 0,
+        }
+    }
+
+    fn callback_exception(description: &[u8]) -> mv3d_lp_internal::ExceptionRecord {
+        mv3d_lp_internal::ExceptionRecord {
+            kind: 1,
+            description: description.to_vec(),
         }
     }
 }

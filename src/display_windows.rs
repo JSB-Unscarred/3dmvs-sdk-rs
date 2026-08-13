@@ -13,9 +13,9 @@ impl ImageProcessor {
     ///
     /// The window handle is held until the synchronous SDK call returns. The caller must also obey
     /// the GUI framework's drawing and thread rules. The internal FFI boundary validates the image
-    /// and display range before calling the SDK. The audited native contract assumes that the SDK
-    /// neither modifies the shared image payload nor retains the image or window handle after
-    /// return; this is not a separate written vendor guarantee.
+    /// descriptor; the display range is passed through for the SDK to interpret. The audited native
+    /// contract assumes that the SDK neither modifies the shared image payload nor retains the image
+    /// or window handle after return; this is not a separate written vendor guarantee.
     pub fn display<W>(&self, image: ImageRef<'_>, window: &W, range: DisplayRange) -> Result<()>
     where
         W: HasWindowHandle + ?Sized,

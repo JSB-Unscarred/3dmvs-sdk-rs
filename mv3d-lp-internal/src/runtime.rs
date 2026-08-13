@@ -57,6 +57,8 @@ impl Gate {
 pub(crate) struct RuntimeCore {
     driver: Box<dyn Driver>,
     handles: Mutex<usize>,
+    // 图像处理输出只在下一次处理调用前有效；同一 session 串行到 owned copy 完成。
+    image_processing: Mutex<()>,
 }
 
 impl RuntimeCore {
@@ -66,6 +68,7 @@ impl RuntimeCore {
         operation: Operation,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
+        let _image_processing = image_processing_guard(&self.image_processing, operation);
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
     }
 
@@ -96,6 +99,7 @@ impl RuntimeCore {
         const OPERATION: Operation = Operation::CloseDevice;
 
         let mut live_handles = self.lock_handles();
+        // Close returning permanently consumes this owner even when the SDK reports an error.
         let result = self
             .driver
             .close(handle)
@@ -197,6 +201,7 @@ impl Runtime {
         let core = Arc::new(RuntimeCore {
             driver,
             handles: Mutex::new(0),
+            image_processing: Mutex::new(()),
         });
         *state = ProcessSdkState::Active(Arc::clone(&core));
         drop(state);
@@ -373,6 +378,29 @@ impl Runtime {
     }
 }
 
+/// Serializes process-wide image helpers through the immediate SDK-output copy.
+fn image_processing_guard(lock: &Mutex<()>, operation: Operation) -> Option<MutexGuard<'_, ()>> {
+    operation_uses_image_processing_lock(operation).then(|| match lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            lock.clear_poison();
+            poisoned.into_inner()
+        }
+    })
+}
+
+fn operation_uses_image_processing_lock(operation: Operation) -> bool {
+    matches!(
+        operation,
+        Operation::MapDepthToPointCloud
+            | Operation::MapDepthToPointCloudRound
+            | Operation::ImageConvert
+            | Operation::DepthMosaic
+            | Operation::SaveImage
+            | Operation::DisplayImage
+    )
+}
+
 fn map_driver_error(operation: Operation, error: DriverError) -> Error {
     match error {
         DriverError::Status(status) => Error::Sdk { operation, status },
@@ -409,4 +437,35 @@ fn validated_c_string(
         operation,
         kind: InvalidInput::InteriorNul,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Mutex, TryLockError};
+
+    use super::image_processing_guard;
+    use crate::error::Operation;
+
+    // 验证六个 process-wide 图像接口共用串行锁，设备接口不受影响。
+    #[test]
+    fn image_processing_operations_share_one_lock() {
+        let lock = Mutex::new(());
+        for operation in [
+            Operation::MapDepthToPointCloud,
+            Operation::MapDepthToPointCloudRound,
+            Operation::ImageConvert,
+            Operation::DepthMosaic,
+            Operation::SaveImage,
+            Operation::DisplayImage,
+        ] {
+            let guard = image_processing_guard(&lock, operation);
+            assert!(guard.is_some());
+            assert!(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)));
+            drop(guard);
+            assert!(lock.try_lock().is_ok());
+        }
+
+        assert!(image_processing_guard(&lock, Operation::GetImage).is_none());
+        assert!(lock.try_lock().is_ok());
+    }
 }
