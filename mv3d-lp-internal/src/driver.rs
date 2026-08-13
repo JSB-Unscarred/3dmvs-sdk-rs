@@ -9,7 +9,7 @@ use crate::callback::CallbackCookie;
 use crate::device::{DeviceInfoRaw, DeviceListAttempt, IpConfigRaw};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
-use crate::error::{ContractViolation, InvalidInput};
+use crate::error::{ContractViolation, InputViolation};
 use crate::file_transfer::FileProgress;
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
@@ -17,9 +17,8 @@ use crate::parameter::{ParameterRecord, ParameterValueRecord};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DriverError {
     Status(i32),
-    InvalidInput(InvalidInput),
+    InvalidInput(InputViolation),
     Contract(ContractViolation),
-    Allocation { requested: usize },
 }
 
 pub(crate) type DriverResult<T> = Result<T, DriverError>;

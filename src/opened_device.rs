@@ -10,10 +10,9 @@ use crate::{
 /// An opened laser-profiler device with independent session ownership.
 ///
 /// `Device` does not borrow [`crate::Sdk`] and remains usable after that token is dropped. A live
-/// device prevents [`crate::Sdk::shutdown`] from finalizing the session. `Device` is `Send` but not
+/// device must be closed or dropped before [`crate::Sdk::shutdown`]. `Device` is `Send` but not
 /// `Sync`: unique ownership can move to another thread, while calls on different devices may run
-/// concurrently. Pull and callback acquisition are states of this value, so starting and stopping
-/// only borrow it briefly.
+/// concurrently. Pull and callback acquisition use one local measurement flag.
 pub struct Device {
     inner: mv3d_lp_internal::Device,
 }
@@ -27,7 +26,7 @@ impl Device {
     ///
     /// A failed start leaves the device open so callers may retry.
     pub fn start(&mut self) -> Result<()> {
-        self.inner.start().map_err(Error::map_internal_error)
+        self.inner.start()
     }
 
     /// Waits up to a finite `timeout` for one frame and copies every returned SDK payload.
@@ -47,23 +46,17 @@ impl Device {
     /// window.
     pub fn get_image(&mut self, timeout: Duration) -> Result<Frame> {
         let timeout_ms = timeout_millis(timeout)?;
-        self.inner
-            .get_image(timeout_ms)
-            .map(Image::from_internal)
-            .map_err(Error::map_internal_error)
+        self.inner.get_image(timeout_ms).map(Image::from_internal)
     }
 
     /// Waits indefinitely for one pull frame using the SDK's infinite-wait sentinel.
     pub fn get_image_blocking(&mut self) -> Result<Frame> {
-        self.inner
-            .get_image(u32::MAX)
-            .map(Image::from_internal)
-            .map_err(Error::map_internal_error)
+        self.inner.get_image(u32::MAX).map(Image::from_internal)
     }
 
     /// Forwards one software trigger; the SDK validates its trigger mode and call order.
     pub fn soft_trigger(&mut self) -> Result<()> {
-        self.inner.soft_trigger().map_err(Error::map_internal_error)
+        self.inner.soft_trigger()
     }
 
     /// Stops the active pull or callback acquisition.
@@ -73,7 +66,7 @@ impl Device {
     /// quiescence barrier. On failure, the acquisition owner stays intact so the caller may retry
     /// or close the device.
     pub fn stop(&mut self) -> Result<()> {
-        self.inner.stop().map_err(Error::map_internal_error)
+        self.inner.stop()
     }
 
     /// Registers native image delivery, starts measurement, and returns a bounded receiver.
@@ -90,10 +83,7 @@ impl Device {
     /// a separate written guarantee for this stability window.
     pub fn start_receiving(&mut self, options: CallbackOptions) -> Result<Receiver<Frame>> {
         let (sink, receiver) = frame_callback_channel(options);
-        self.inner
-            .start_callback(sink)
-            .map(|()| receiver)
-            .map_err(Error::map_internal_error)
+        self.inner.start_callback(sink).map(|()| receiver)
     }
 
     /// Registers an owned exception-event receiver until it is replaced, disabled, or closed.
@@ -112,7 +102,6 @@ impl Device {
         self.inner
             .register_exception_callback(sink)
             .map(|()| receiver)
-            .map_err(Error::map_internal_error)
     }
 
     /// Stops future Rust delivery of exception callbacks.
@@ -126,7 +115,7 @@ impl Device {
     }
 
     pub fn clear_buffer(&mut self) -> Result<()> {
-        self.inner.clear_buffer().map_err(Error::map_internal_error)
+        self.inner.clear_buffer()
     }
 
     /// Reads one parameter by the SDK's string key.
@@ -134,22 +123,17 @@ impl Device {
         self.inner
             .get_parameter(key.as_bytes())
             .map(parameter_from_internal)
-            .map_err(Error::map_internal_error)
     }
 
     /// Writes one parameter by the SDK's string key.
     pub fn set_parameter(&mut self, key: &str, value: ParameterValue) -> Result<()> {
         let internal_value = parameter_value_to_internal(value);
-        self.inner
-            .set_parameter(key.as_bytes(), &internal_value)
-            .map_err(Error::map_internal_error)
+        self.inner.set_parameter(key.as_bytes(), &internal_value)
     }
 
     /// Executes one command by the SDK's string key.
     pub fn execute(&mut self, key: &str) -> Result<()> {
-        self.inner
-            .execute(key.as_bytes())
-            .map_err(Error::map_internal_error)
+        self.inner.execute(key.as_bytes())
     }
 
     /// Starts copying a file from the device to the host.
@@ -159,18 +143,14 @@ impl Device {
     /// device retains both names until another transfer starts successfully or the device closes.
     /// Poll through [`Device::file_transfer_progress`].
     pub fn download_file(&mut self, device_file_name: &[u8], local_file_name: &[u8]) -> Result<()> {
-        self.inner
-            .download_file(device_file_name, local_file_name)
-            .map_err(Error::map_internal_error)
+        self.inner.download_file(device_file_name, local_file_name)
     }
 
     /// Starts copying a host file into the device.
     ///
     /// Names follow the same byte and retained-lifetime contract as [`Device::download_file`].
     pub fn upload_file(&mut self, local_file_name: &[u8], device_file_name: &[u8]) -> Result<()> {
-        self.inner
-            .upload_file(local_file_name, device_file_name)
-            .map_err(Error::map_internal_error)
+        self.inner.upload_file(local_file_name, device_file_name)
     }
 
     /// Returns one progress snapshot for the active transfer.
@@ -178,9 +158,7 @@ impl Device {
     /// Values are preserved as the signed `int64_t` fields returned by the SDK; their completion
     /// semantics are intentionally left to the caller because the vendor does not define them.
     pub fn file_transfer_progress(&mut self) -> Result<FileProgress> {
-        self.inner
-            .file_transfer_progress()
-            .map_err(Error::map_internal_error)
+        self.inner.file_transfer_progress()
     }
 
     /// Stops acquisition when needed and closes the owned handle.
@@ -190,7 +168,7 @@ impl Device {
     /// no callback can enqueue afterward, while events already waiting in receivers remain
     /// readable.
     pub fn close(self) -> Result<()> {
-        self.inner.close().map_err(Error::map_device_cleanup_error)
+        self.inner.close()
     }
 }
 

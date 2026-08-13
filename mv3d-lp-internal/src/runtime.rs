@@ -4,65 +4,26 @@ use std::ffi::CString;
 use std::net::Ipv4Addr;
 #[cfg(feature = "display-windows")]
 use std::num::NonZeroIsize;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::device::{DeviceRecord, IpConfigRaw, IpConfiguration};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
-use crate::driver::{Driver, DriverError, DriverResult, Handle};
-use crate::error::{ContractViolation, Error, InvalidInput, Operation};
+use crate::driver::{Driver, DriverError, DriverResult};
+use crate::error::{ContractViolation, Error, InputViolation, Operation, SdkError, StatusCode};
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::opened_device::Device;
 
-/// Process-wide owner for the current native LPSDK session.
-enum ProcessSdkState {
-    Fresh,
-    Active(Arc<RuntimeCore>),
-}
-
-pub(crate) struct Gate {
-    // Active owns the core so dropping a user-facing Runtime token cannot finalize the SDK.
-    state: RwLock<ProcessSdkState>,
-}
-
-impl Gate {
-    pub(crate) fn new() -> Self {
-        Self {
-            state: RwLock::new(ProcessSdkState::Fresh),
-        }
-    }
-
-    fn read(&self) -> RwLockReadGuard<'_, ProcessSdkState> {
-        match self.state.read() {
-            Ok(state) => state,
-            Err(poisoned) => {
-                self.state.clear_poison();
-                poisoned.into_inner()
-            }
-        }
-    }
-
-    fn write(&self) -> RwLockWriteGuard<'_, ProcessSdkState> {
-        match self.state.write() {
-            Ok(state) => state,
-            Err(poisoned) => {
-                self.state.clear_poison();
-                poisoned.into_inner()
-            }
-        }
-    }
-}
-
-/// Owned native session shared by SDK tokens and devices.
+/// Owned native session shared by all session owners.
 pub(crate) struct RuntimeCore {
     driver: Box<dyn Driver>,
-    handles: Mutex<usize>,
     // 图像处理输出只在下一次处理调用前有效；同一 session 串行到 owned copy 完成。
     image_processing: Mutex<()>,
 }
 
 impl RuntimeCore {
-    /// Calls a native operation while its caller supplies the required lifecycle guard or handle.
+    /// Calls one native operation through this session.
     pub(crate) fn call<T>(
         &self,
         operation: Operation,
@@ -71,62 +32,18 @@ impl RuntimeCore {
         let _image_processing = image_processing_guard(&self.image_processing, operation);
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
     }
-
-    fn lock_handles(&self) -> MutexGuard<'_, usize> {
-        match self.handles.lock() {
-            Ok(state) => state,
-            Err(poisoned) => {
-                // handle 的增减只由 Device owner 驱动，恢复锁后沿用现有计数。
-                self.handles.clear_poison();
-                poisoned.into_inner()
-            }
-        }
-    }
-
-    pub(crate) fn open_handle(
-        &self,
-        operation: Operation,
-        open: impl FnOnce(&dyn Driver) -> DriverResult<Handle>,
-    ) -> Result<Handle, Error> {
-        let mut live_handles = self.lock_handles();
-        let handle =
-            open(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))?;
-        *live_handles += 1;
-        Ok(handle)
-    }
-
-    pub(crate) fn cleanup_close_handle(&self, handle: Handle) -> Result<(), Error> {
-        const OPERATION: Operation = Operation::CloseDevice;
-
-        let mut live_handles = self.lock_handles();
-        // Close returning permanently consumes this owner even when the SDK reports an error.
-        let result = self
-            .driver
-            .close(handle)
-            .map_err(|error| map_driver_error(OPERATION, error));
-        *live_handles = live_handles
-            .checked_sub(1)
-            .expect("a Device closes its owned handle at most once");
-        result
-    }
-
-    pub(crate) fn parameter_key(operation: Operation, bytes: &[u8]) -> Result<CString, Error> {
-        CString::new(bytes).map_err(|_| Error::InvalidInput {
-            operation,
-            kind: InvalidInput::InteriorNul,
-        })
-    }
 }
 
 #[derive(Clone)]
 /// Control token for the process-wide native session.
 ///
-/// Dropping a token leaves the session active; explicit `shutdown` performs Finalize after every
-/// device closes.
+/// The SDK can be initialized only once per process. Dropping a token leaves Finalize to process
+/// exit; consuming `shutdown` performs Finalize when this is the sole session owner.
 pub struct Runtime {
     core: Arc<RuntimeCore>,
-    gate: Arc<Gate>,
 }
+
+static INITIALIZE_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 impl Runtime {
     /// Reads the raw SDK version independently of the initialized session.
@@ -153,11 +70,8 @@ impl Runtime {
         Err(Error::UnsupportedPlatform)
     }
 
+    /// Initializes the native SDK using the process's sole attempt.
     pub fn initialize() -> Result<Self, Error> {
-        Self::initialize_native()
-    }
-
-    fn initialize_native() -> Result<Self, Error> {
         #[cfg(all(
             feature = "native",
             target_os = "windows",
@@ -165,9 +79,17 @@ impl Runtime {
             target_env = "msvc"
         ))]
         {
-            static GATE: OnceLock<Arc<Gate>> = OnceLock::new();
-            let gate = Arc::clone(GATE.get_or_init(|| Arc::new(Gate::new())));
-            Self::initialize_driver(Box::new(crate::ffi::NativeDriver), gate)
+            claim_initialization(&INITIALIZE_CLAIMED)?;
+            let driver: Box<dyn Driver> = Box::new(crate::ffi::NativeDriver);
+            driver
+                .initialize()
+                .map_err(|error| map_driver_error(Operation::Initialize, error))?;
+            Ok(Self {
+                core: Arc::new(RuntimeCore {
+                    driver,
+                    image_processing: Mutex::new(()),
+                }),
+            })
         }
 
         #[cfg(not(all(
@@ -177,35 +99,8 @@ impl Runtime {
             target_env = "msvc"
         )))]
         {
-            let _ = OnceLock::<Arc<Gate>>::new();
             Err(Error::UnsupportedPlatform)
         }
-    }
-
-    fn initialize_driver(driver: Box<dyn Driver>, gate: Arc<Gate>) -> Result<Self, Error> {
-        let mut state = gate.write();
-        match &*state {
-            ProcessSdkState::Fresh => {}
-            ProcessSdkState::Active(core) => {
-                return Ok(Self {
-                    core: Arc::clone(core),
-                    gate: Arc::clone(&gate),
-                });
-            }
-        }
-
-        driver
-            .initialize()
-            .map_err(|error| map_driver_error(Operation::Initialize, error))?;
-
-        let core = Arc::new(RuntimeCore {
-            driver,
-            handles: Mutex::new(0),
-            image_processing: Mutex::new(()),
-        });
-        *state = ProcessSdkState::Active(Arc::clone(&core));
-        drop(state);
-        Ok(Self { core, gate })
     }
 
     pub fn device_count_hint(&self) -> Result<u32, Error> {
@@ -226,9 +121,10 @@ impl Runtime {
         if list.records.len() != reported {
             return Err(Error::ContractViolation {
                 operation: Operation::GetDeviceList,
-                kind: ContractViolation::DeviceListCountMismatch {
-                    reported: list.reported,
-                    returned: list.records.len(),
+                violation: ContractViolation::LengthMismatch {
+                    field: "device list",
+                    expected: reported,
+                    actual: list.records.len(),
                 },
             });
         }
@@ -249,7 +145,7 @@ impl Runtime {
 
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device, Error> {
         let address = CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
-        let handle = self.open(Operation::OpenDeviceByIp, |driver| {
+        let handle = self.call(Operation::OpenDeviceByIp, |driver| {
             driver.open_by_ip(&address)
         })?;
         Ok(Device::new(Arc::clone(&self.core), handle))
@@ -257,7 +153,7 @@ impl Runtime {
 
     pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device, Error> {
         let serial = validated_c_string(Operation::OpenDeviceBySn, serial_number, 16)?;
-        let handle = self.open(Operation::OpenDeviceBySn, |driver| {
+        let handle = self.call(Operation::OpenDeviceBySn, |driver| {
             driver.open_by_serial(&serial)
         })?;
         Ok(Device::new(Arc::clone(&self.core), handle))
@@ -316,47 +212,19 @@ impl Runtime {
         })
     }
 
-    /// Finalizes the native session after every owned device closes.
+    /// Finalizes the one-shot native session.
     ///
-    /// Repeating the call while the process remains Fresh succeeds; a stale token cannot finalize
-    /// a newer session.
-    pub fn shutdown(&self) -> Result<(), Error> {
-        let mut process = self.gate.write();
-        match &*process {
-            ProcessSdkState::Active(core) if Arc::ptr_eq(core, &self.core) => {}
-            ProcessSdkState::Fresh => return Ok(()),
-            ProcessSdkState::Active(_) => return Err(Error::RuntimeInactive),
-        }
-
-        let handles = self.core.lock_handles();
-        if *handles != 0 {
-            return Err(Error::UnclosedDevices {
-                live_handles: *handles,
-            });
-        }
-
-        let result = self
-            .core
-            .driver
+    /// Every `Device` and image-processing token must be dropped first. Consuming `self` prevents
+    /// Finalize from being retried or overlapping a call through another owner.
+    pub fn shutdown(self) -> Result<(), Error> {
+        let core = Arc::try_unwrap(self.core).map_err(|_| Error::InvalidState {
+            operation: Operation::Finalize,
+            expected: "all devices and image processors dropped",
+            actual: "session owners remain",
+        })?;
+        core.driver
             .finalize()
-            .map_err(|error| map_driver_error(Operation::Finalize, error));
-        drop(handles);
-        match result {
-            Ok(()) => {
-                *process = ProcessSdkState::Fresh;
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    fn open(
-        &self,
-        operation: Operation,
-        open: impl FnOnce(&dyn Driver) -> DriverResult<Handle>,
-    ) -> Result<Handle, Error> {
-        let _active = self.active_state()?;
-        self.core.open_handle(operation, open)
+            .map_err(|error| map_driver_error(Operation::Finalize, error))
     }
 
     fn call<T>(
@@ -364,29 +232,28 @@ impl Runtime {
         operation: Operation,
         call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
     ) -> Result<T, Error> {
-        let _active = self.active_state()?;
         self.core.call(operation, call)
     }
+}
 
-    /// Holds a shared session guard so Finalize cannot overlap a native call.
-    fn active_state(&self) -> Result<RwLockReadGuard<'_, ProcessSdkState>, Error> {
-        let state = self.gate.read();
-        match &*state {
-            ProcessSdkState::Active(core) if Arc::ptr_eq(core, &self.core) => Ok(state),
-            ProcessSdkState::Active(_) | ProcessSdkState::Fresh => Err(Error::RuntimeInactive),
-        }
+/// Consumes the process's sole Initialize attempt and never resets it.
+fn claim_initialization(claimed: &AtomicBool) -> Result<(), Error> {
+    if claimed.swap(true, Ordering::Relaxed) {
+        Err(Error::InvalidState {
+            operation: Operation::Initialize,
+            expected: "not previously initialized in this process",
+            actual: "already initialized",
+        })
+    } else {
+        Ok(())
     }
 }
 
 /// Serializes process-wide image helpers through the immediate SDK-output copy.
 fn image_processing_guard(lock: &Mutex<()>, operation: Operation) -> Option<MutexGuard<'_, ()>> {
-    operation_uses_image_processing_lock(operation).then(|| match lock.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            lock.clear_poison();
-            poisoned.into_inner()
-        }
-    })
+    operation_uses_image_processing_lock(operation)
+        // A previous unwind makes the SDK's transient image-output state unknown.
+        .then(|| lock.lock().unwrap_or_else(|_| std::process::abort()))
 }
 
 fn operation_uses_image_processing_lock(operation: Operation) -> bool {
@@ -401,14 +268,19 @@ fn operation_uses_image_processing_lock(operation: Operation) -> bool {
     )
 }
 
+/// Attaches public operation context to a low-level driver error.
 fn map_driver_error(operation: Operation, error: DriverError) -> Error {
     match error {
-        DriverError::Status(status) => Error::Sdk { operation, status },
-        DriverError::InvalidInput(kind) => Error::InvalidInput { operation, kind },
-        DriverError::Contract(kind) => Error::ContractViolation { operation, kind },
-        DriverError::Allocation { requested } => Error::AllocationFailed {
+        DriverError::Status(status) => {
+            Error::Sdk(SdkError::new(operation, StatusCode::from_raw(status)))
+        }
+        DriverError::InvalidInput(violation) => Error::InvalidInput {
+            field: operation.sdk_name(),
+            violation,
+        },
+        DriverError::Contract(violation) => Error::ContractViolation {
             operation,
-            requested,
+            violation,
         },
     }
 }
@@ -420,31 +292,46 @@ fn validated_c_string(
 ) -> Result<CString, Error> {
     if bytes.is_empty() {
         return Err(Error::InvalidInput {
-            operation,
-            kind: InvalidInput::Empty,
+            field: operation.sdk_name(),
+            violation: InputViolation::Empty,
         });
     }
     if bytes.len() > maximum {
         return Err(Error::InvalidInput {
-            operation,
-            kind: InvalidInput::TooLong {
+            field: operation.sdk_name(),
+            violation: InputViolation::TooLong {
+                max: maximum,
                 actual: bytes.len(),
-                maximum,
             },
         });
     }
     CString::new(bytes).map_err(|_| Error::InvalidInput {
-        operation,
-        kind: InvalidInput::InteriorNul,
+        field: operation.sdk_name(),
+        violation: InputViolation::InteriorNul,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
     use std::sync::{Mutex, TryLockError};
 
-    use super::image_processing_guard;
-    use crate::error::Operation;
+    use super::{claim_initialization, image_processing_guard};
+    use crate::error::{Error, Operation};
+
+    // 验证 Initialize 机会一旦消费就不再重试。
+    #[test]
+    fn initialization_is_claimed_once() {
+        let claimed = AtomicBool::new(false);
+        assert!(claim_initialization(&claimed).is_ok());
+        assert!(matches!(
+            claim_initialization(&claimed),
+            Err(Error::InvalidState {
+                operation: Operation::Initialize,
+                ..
+            })
+        ));
+    }
 
     // 验证六个 process-wide 图像接口共用串行锁，设备接口不受影响。
     #[test]

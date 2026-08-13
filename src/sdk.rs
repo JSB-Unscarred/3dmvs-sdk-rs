@@ -8,9 +8,9 @@ use crate::{
 /// A token for the process-wide 3DMVS SDK session.
 ///
 /// [`Device`] and [`ImageProcessor`] own their session access and do not borrow this value.
-/// Dropping an `Sdk` leaves the session active; call [`Sdk::shutdown`] after every device closes to
-/// run `Finalize` and observe its result. Successful shutdown makes native operations through
-/// other tokens from that session return [`Error::RuntimeInactive`]. `Sdk` is `Send + Sync`.
+/// Initialize is one-shot for the process. Dropping `Sdk` leaves Finalize to process exit;
+/// consuming [`Sdk::shutdown`] runs Finalize after all other session owners are dropped. `Sdk` is
+/// `Send + Sync`.
 pub struct Sdk {
     inner: mv3d_lp_internal::Runtime,
 }
@@ -18,27 +18,26 @@ pub struct Sdk {
 impl Sdk {
     /// Reads the SDK version without requiring Initialize.
     pub fn version() -> Result<SdkText> {
-        let bytes =
-            mv3d_lp_internal::Runtime::version_bytes().map_err(Error::map_internal_error)?;
+        let bytes = mv3d_lp_internal::Runtime::version_bytes()?;
         Ok(SdkText::from_sdk_bytes(bytes))
     }
 
-    /// Initializes the process-wide SDK or joins its active session.
+    /// Initializes the process-wide SDK once.
+    ///
+    /// On a supported native build, later calls, including calls after an initialization error or
+    /// shutdown, return [`Error::InvalidState`].
     pub fn initialize() -> Result<Self> {
-        let inner = mv3d_lp_internal::Runtime::initialize().map_err(Error::map_internal_error)?;
+        let inner = mv3d_lp_internal::Runtime::initialize()?;
         Ok(Self { inner })
     }
 
     pub fn device_count_hint(&self) -> Result<u32> {
-        self.inner
-            .device_count_hint()
-            .map_err(Error::map_internal_error)
+        self.inner.device_count_hint()
     }
 
     pub fn devices(&self) -> Result<Vec<DeviceInfo>> {
         self.inner
-            .devices()
-            .map_err(Error::map_internal_error)?
+            .devices()?
             .into_iter()
             .map(device_from_internal)
             .collect()
@@ -64,24 +63,19 @@ impl Sdk {
         };
         self.inner
             .set_ip_config(serial_number.as_bytes(), &internal_configuration)
-            .map_err(Error::map_internal_error)
     }
 
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device> {
-        self.inner
-            .open_by_ip(address)
-            .map(Device::from_internal)
-            .map_err(Error::map_internal_error)
+        self.inner.open_by_ip(address).map(Device::from_internal)
     }
 
     pub fn open_by_serial(&self, serial_number: &SerialNumber) -> Result<Device> {
         self.inner
             .open_by_serial(serial_number.as_bytes())
             .map(Device::from_internal)
-            .map_err(Error::map_internal_error)
     }
 
-    /// Creates an owned image-processing token for the active session.
+    /// Creates an owned image-processing token for this session.
     #[must_use]
     pub fn image_processor(&self) -> ImageProcessor {
         ImageProcessor {
@@ -89,13 +83,12 @@ impl Sdk {
         }
     }
 
-    /// Finalizes the active session after every `Device` has closed.
+    /// Finalizes the one-shot session and consumes this token.
     ///
-    /// A live device returns [`Error::UnclosedDevices`] and leaves the session active. Close every
-    /// device and retry. A repeated call returns `Ok(())` while no newer session is active; an old
-    /// token cannot finalize a newer session.
-    pub fn shutdown(&self) -> Result<()> {
-        self.inner.shutdown().map_err(Error::map_internal_error)
+    /// Drop every [`Device`] and [`ImageProcessor`] first. Remaining owners return
+    /// [`Error::InvalidState`]; Finalize is not retried.
+    pub fn shutdown(self) -> Result<()> {
+        self.inner.shutdown()
     }
 }
 

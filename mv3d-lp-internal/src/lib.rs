@@ -22,9 +22,9 @@ pub use callback::{ExceptionCallbackSink, ExceptionRecord, FrameCallbackSink};
 pub use device::{DeviceRecord, IpConfiguration};
 #[cfg(feature = "display-windows")]
 pub use display::DisplayRangeRecord;
-pub use error::{ContractViolation, Error, InvalidInput, Operation};
+pub use error::{ContractViolation, Error, InputViolation, Operation, SdkError, StatusCode};
 pub use file_transfer::FileProgress;
 pub use frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
-pub use opened_device::{Device, DeviceCleanupError};
+pub use opened_device::Device;
 pub use parameter::{ParameterRecord, ParameterValueRecord};
 pub use runtime::Runtime;

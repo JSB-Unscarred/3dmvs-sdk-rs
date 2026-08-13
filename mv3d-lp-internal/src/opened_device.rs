@@ -1,45 +1,13 @@
 use std::ffi::CString;
-use std::fmt;
 use std::sync::Arc;
 
 use crate::callback::{CallbackRegistration, ExceptionCallbackSink, FrameCallbackSink};
 use crate::driver::Handle;
-use crate::error::{Error, InvalidInput, Operation};
+use crate::error::{Error, InputViolation, Operation};
 use crate::file_transfer::FileProgress;
 use crate::frame::FrameRecord;
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
 use crate::runtime::RuntimeCore;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeviceCleanupError {
-    pub stop: Option<Box<Error>>,
-    pub close: Option<Box<Error>>,
-}
-
-impl fmt::Display for DeviceCleanupError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (&self.stop, &self.close) {
-            (Some(stop), Some(close)) => write!(
-                formatter,
-                "device cleanup failed while stopping ({stop}) and closing ({close})"
-            ),
-            (Some(stop), None) => write!(formatter, "device cleanup failed while stopping: {stop}"),
-            (None, Some(close)) => {
-                write!(formatter, "device cleanup failed while closing: {close}")
-            }
-            (None, None) => formatter.write_str("device cleanup failed without an SDK error"),
-        }
-    }
-}
-
-impl std::error::Error for DeviceCleanupError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.stop
-            .as_deref()
-            .or(self.close.as_deref())
-            .map(|error| error as &(dyn std::error::Error + 'static))
-    }
-}
 
 /// Opened device owning a lease on the initialized native session.
 pub struct Device {
@@ -96,7 +64,8 @@ impl Device {
         if !self.measuring {
             return Err(Error::InvalidState {
                 operation: Operation::StopMeasure,
-                state: "stopped",
+                expected: "measuring",
+                actual: "stopped",
             });
         }
         self.runtime
@@ -145,21 +114,21 @@ impl Device {
     }
 
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<ParameterRecord, Error> {
-        let key = RuntimeCore::parameter_key(Operation::GetParam, key)?;
+        let key = validated_c_string(Operation::GetParam, key)?;
         self.runtime.call(Operation::GetParam, |driver| {
             driver.get_parameter(self.handle(), &key)
         })
     }
 
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValueRecord) -> Result<(), Error> {
-        let key = RuntimeCore::parameter_key(Operation::SetParam, key)?;
+        let key = validated_c_string(Operation::SetParam, key)?;
         self.runtime.call(Operation::SetParam, |driver| {
             driver.set_parameter(self.handle(), &key, value)
         })
     }
 
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
-        let key = RuntimeCore::parameter_key(Operation::Execute, key)?;
+        let key = validated_c_string(Operation::Execute, key)?;
         self.runtime.call(Operation::Execute, |driver| {
             driver.execute(self.handle(), &key)
         })
@@ -190,8 +159,8 @@ impl Device {
         user_file_name: &[u8],
         device_file_name: &[u8],
     ) -> Result<(), Error> {
-        let user_file_name = validated_file_name(operation, user_file_name)?;
-        let device_file_name = validated_file_name(operation, device_file_name)?;
+        let user_file_name = validated_c_string(operation, user_file_name)?;
+        let device_file_name = validated_c_string(operation, device_file_name)?;
         let handle = self.handle();
         self.runtime.call(operation, |driver| match operation {
             Operation::FileAccessRead => {
@@ -218,11 +187,11 @@ impl Device {
     ///
     /// The consumed owner calls native Close exactly once. Returning consumes the handle for every
     /// status, and every Stop or Close error is reported.
-    pub fn close(mut self) -> Result<(), DeviceCleanupError> {
+    pub fn close(mut self) -> Result<(), Error> {
         self.cleanup()
     }
 
-    fn cleanup(&mut self) -> Result<(), DeviceCleanupError> {
+    fn cleanup(&mut self) -> Result<(), Error> {
         let Some(handle) = self.handle.take() else {
             return Ok(());
         };
@@ -235,9 +204,10 @@ impl Device {
         } else {
             None
         };
+        // Close returning permanently consumes this owner even when the SDK reports an error.
         let close = self
             .runtime
-            .cleanup_close_handle(handle)
+            .call(Operation::CloseDevice, |driver| driver.close(handle))
             .err()
             .map(Box::new);
         self.measuring = false;
@@ -248,7 +218,7 @@ impl Device {
         if stop.is_none() && close.is_none() {
             Ok(())
         } else {
-            Err(DeviceCleanupError { stop, close })
+            Err(Error::DeviceCleanup { stop, close })
         }
     }
 
@@ -260,7 +230,8 @@ impl Device {
         if self.measuring {
             Err(Error::InvalidState {
                 operation,
-                state: "measuring",
+                expected: "stopped",
+                actual: "measuring",
             })
         } else {
             Ok(())
@@ -268,10 +239,11 @@ impl Device {
     }
 }
 
-fn validated_file_name(operation: Operation, bytes: &[u8]) -> Result<CString, Error> {
+/// Owns one native string and rejects interior NUL bytes before the FFI call.
+fn validated_c_string(operation: Operation, bytes: &[u8]) -> Result<CString, Error> {
     CString::new(bytes).map_err(|_| Error::InvalidInput {
-        operation,
-        kind: InvalidInput::InteriorNul,
+        field: operation.sdk_name(),
+        violation: InputViolation::InteriorNul,
     })
 }
 

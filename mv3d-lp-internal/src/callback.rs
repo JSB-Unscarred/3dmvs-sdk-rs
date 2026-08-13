@@ -3,12 +3,10 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::num::NonZeroUsize;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::bindings;
-use crate::driver::{DriverError, DriverResult};
 use crate::frame::FrameRecord;
 
 /// Opaque callback identifier passed through the SDK without dereferencing native user data.
@@ -77,9 +75,8 @@ impl CallbackRegistry {
     }
 
     fn lock(&self) -> MutexGuard<'_, RegistryState> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        // Poisoning makes callback ownership unknowable, so recovery is unsafe.
+        self.state.lock().unwrap_or_else(|_| std::process::abort())
     }
 
     /// Inserts a sink under a never-reused cookie so a late callback cannot hit a newer sink.
@@ -144,57 +141,44 @@ impl Drop for CallbackRegistration {
     }
 }
 
-/// Copies one image callback into an owned Rust value without unwinding through the C ABI.
+/// Copies one image callback into an owned Rust value.
+///
+/// Panics in conversion or user code reach this non-unwinding ABI boundary and terminate the
+/// process, matching the crate's fail-fast callback policy.
 pub(crate) unsafe extern "system" fn image_trampoline(
     image: *mut bindings::MV3D_LP_IMAGE_DATA,
     user: *mut c_void,
 ) {
-    let cookie = CallbackCookie::from_user_pointer(user);
-    if catch_unwind(AssertUnwindSafe(|| {
-        if let Some(cookie) = cookie {
-            dispatch_image(cookie, image);
-        }
-    }))
-    .is_err()
-    {
-        if let Some(cookie) = cookie {
-            registry().remove(cookie);
-        }
-    }
+    let Some(cookie) = CallbackCookie::from_user_pointer(user) else {
+        std::process::abort();
+    };
+    dispatch_image(cookie, image);
 }
 
-/// Copies one exception callback into an owned Rust value without unwinding through the C ABI.
+/// Copies one exception callback into an owned Rust value under the same fail-fast policy.
 pub(crate) unsafe extern "system" fn exception_trampoline(
     exception: *mut bindings::MV3D_LP_EXCEPTION_INFO,
     user: *mut c_void,
 ) {
-    let cookie = CallbackCookie::from_user_pointer(user);
-    if catch_unwind(AssertUnwindSafe(|| {
-        if let Some(cookie) = cookie {
-            dispatch_exception(cookie, exception);
-        }
-    }))
-    .is_err()
-    {
-        if let Some(cookie) = cookie {
-            registry().remove(cookie);
-        }
-    }
+    let Some(cookie) = CallbackCookie::from_user_pointer(user) else {
+        std::process::abort();
+    };
+    dispatch_exception(cookie, exception);
 }
 
 fn dispatch_image(cookie: CallbackCookie, image: *mut bindings::MV3D_LP_IMAGE_DATA) {
     let Some(CallbackSink::Image(sink)) = registry().lookup(cookie, CallbackKind::Image) else {
         return;
     };
-    // SAFETY: the SDK owns the descriptor for the duration of this callback; null is ignored.
+    // SAFETY: the SDK owns the descriptor for the duration of this callback.
     let Some(image) = (unsafe { image.as_ref() }) else {
-        return;
+        std::process::abort();
     };
     // SAFETY: the callback converter validates pointer/length pairs before copying every payload.
-    if let Ok(frame) = unsafe { crate::ffi::callback_image_from_native(image) } {
-        if !sink(frame) {
-            registry().remove(cookie);
-        }
+    let frame = unsafe { crate::ffi::callback_image_from_native(image) }
+        .unwrap_or_else(|_| std::process::abort());
+    if !sink(frame) {
+        registry().remove(cookie);
     }
 }
 
@@ -203,38 +187,28 @@ fn dispatch_exception(cookie: CallbackCookie, exception: *mut bindings::MV3D_LP_
     else {
         return;
     };
-    // SAFETY: the SDK owns the descriptor for the duration of this callback; null is ignored.
+    // SAFETY: the SDK owns the descriptor for the duration of this callback.
     let Some(exception) = (unsafe { exception.as_ref() }) else {
-        return;
+        std::process::abort();
     };
-    if let Ok(exception) = exception_from_native(exception) {
-        if !sink(exception) {
-            registry().remove(cookie);
-        }
+    if !sink(exception_from_native(exception)) {
+        registry().remove(cookie);
     }
 }
 
-fn exception_from_native(
-    exception: &bindings::MV3D_LP_EXCEPTION_INFO,
-) -> DriverResult<ExceptionRecord> {
+fn exception_from_native(exception: &bindings::MV3D_LP_EXCEPTION_INFO) -> ExceptionRecord {
     let length = exception
         .chExceptionDesc
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(exception.chExceptionDesc.len());
-    let mut description = Vec::new();
-    description
-        .try_reserve_exact(length)
-        .map_err(|_| DriverError::Allocation { requested: length })?;
-    description.extend(
-        exception.chExceptionDesc[..length]
-            .iter()
-            .map(|byte| *byte as u8),
-    );
-    Ok(ExceptionRecord {
+    ExceptionRecord {
         kind: exception.enExceptionType,
-        description,
-    })
+        description: exception.chExceptionDesc[..length]
+            .iter()
+            .map(|byte| *byte as u8)
+            .collect(),
+    }
 }
 
 #[cfg(test)]

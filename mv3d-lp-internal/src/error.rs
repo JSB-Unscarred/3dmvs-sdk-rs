@@ -1,7 +1,9 @@
+use std::error::Error as StdError;
 use std::fmt;
 
 /// Identifies the SDK operation associated with an error.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
 pub enum Operation {
     GetVersion,
     Initialize,
@@ -75,47 +77,147 @@ impl fmt::Display for Operation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ContractViolation {
-    NullVersionPointer,
-    NullHandleOnSuccess,
-    DeviceListCountMismatch {
-        reported: u32,
-        returned: usize,
-    },
-    UnknownParameterType(i32),
-    EnumCountExceedsLimit {
-        reported: u32,
-        limit: usize,
-    },
-    StringMaxLengthExceedsLimit {
-        reported: u32,
-        limit: usize,
-    },
-    NullPointerWithLength {
-        field: &'static str,
-        length: usize,
-    },
-    LengthMismatch {
-        field: &'static str,
-        expected: usize,
-        actual: usize,
-    },
-    LengthOverflow {
-        field: &'static str,
-    },
-    InvalidImageValue {
-        field: &'static str,
-    },
+/// A status returned by the SDK, stored as its exact 32-bit bit pattern.
+///
+/// This is deliberately a newtype rather than a Rust enum so that statuses
+/// introduced by a newer runtime remain representable.
+#[repr(transparent)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct StatusCode(u32);
+
+impl StatusCode {
+    pub const OK: Self = Self(0x0000_0000);
+    pub const INVALID_HANDLE: Self = Self(0x8006_0000);
+    pub const UNSUPPORTED: Self = Self(0x8006_0001);
+    pub const BUFFER_OVERFLOW: Self = Self(0x8006_0002);
+    pub const INVALID_CALL_ORDER: Self = Self(0x8006_0003);
+    pub const INVALID_PARAMETER: Self = Self(0x8006_0004);
+    pub const RESOURCE_ERROR: Self = Self(0x8006_0005);
+    pub const NO_DATA: Self = Self(0x8006_0006);
+    pub const PRECONDITION_FAILED: Self = Self(0x8006_0007);
+    pub const VERSION_MISMATCH: Self = Self(0x8006_0008);
+    pub const INSUFFICIENT_BUFFER: Self = Self(0x8006_0009);
+    pub const ABNORMAL_IMAGE: Self = Self(0x8006_000A);
+    pub const LOAD_LIBRARY_FAILED: Self = Self(0x8006_000B);
+    pub const ALGORITHM_ERROR: Self = Self(0x8006_000C);
+    pub const DEVICE_OFFLINE: Self = Self(0x8006_000D);
+    pub const ACCESS_DENIED: Self = Self(0x8006_000E);
+    pub const OUT_OF_RANGE: Self = Self(0x8006_000F);
+    pub const UNKNOWN: Self = Self(0x8006_00FF);
+
+    #[must_use]
+    pub const fn from_raw(raw: i32) -> Self {
+        Self(raw as u32)
+    }
+
+    #[must_use]
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> i32 {
+        self.0 as i32
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_ok(self) -> bool {
+        self.0 == Self::OK.0
+    }
+
+    #[must_use]
+    pub const fn name(self) -> Option<&'static str> {
+        match self.0 {
+            0x0000_0000 => Some("MV3D_LP_OK"),
+            0x8006_0000 => Some("MV3D_LP_E_HANDLE"),
+            0x8006_0001 => Some("MV3D_LP_E_SUPPORT"),
+            0x8006_0002 => Some("MV3D_LP_E_BUFOVER"),
+            0x8006_0003 => Some("MV3D_LP_E_CALLORDER"),
+            0x8006_0004 => Some("MV3D_LP_E_PARAMETER"),
+            0x8006_0005 => Some("MV3D_LP_E_RESOURCE"),
+            0x8006_0006 => Some("MV3D_LP_E_NODATA"),
+            0x8006_0007 => Some("MV3D_LP_E_PRECONDITION"),
+            0x8006_0008 => Some("MV3D_LP_E_VERSION"),
+            0x8006_0009 => Some("MV3D_LP_E_NOENOUGH_BUF"),
+            0x8006_000A => Some("MV3D_LP_E_ABNORMAL_IMAGE"),
+            0x8006_000B => Some("MV3D_LP_E_LOAD_LIBRARY"),
+            0x8006_000C => Some("MV3D_LP_E_ALGORITHM"),
+            0x8006_000D => Some("MV3D_LP_E_DEVICE_OFFLINE"),
+            0x8006_000E => Some("MV3D_LP_E_ACCESS_DENIED"),
+            0x8006_000F => Some("MV3D_LP_E_OUTOFRANGE"),
+            0x8006_00FF => Some("MV3D_LP_E_UNKNOW"),
+            _ => None,
+        }
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum InvalidInput {
+impl fmt::Debug for StatusCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.name() {
+            Some(name) => write!(formatter, "StatusCode({name}, 0x{:08X})", self.0),
+            None => write!(formatter, "StatusCode(0x{:08X})", self.0),
+        }
+    }
+}
+
+impl fmt::Display for StatusCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.name() {
+            Some(name) => write!(formatter, "{name} (0x{:08X})", self.0),
+            None => write!(formatter, "unknown SDK status 0x{:08X}", self.0),
+        }
+    }
+}
+
+/// An error reported directly by an SDK function.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SdkError {
+    operation: Operation,
+    status: StatusCode,
+}
+
+impl SdkError {
+    #[must_use]
+    pub const fn new(operation: Operation, status: StatusCode) -> Self {
+        Self { operation, status }
+    }
+
+    #[must_use]
+    pub const fn operation(self) -> Operation {
+        self.operation
+    }
+
+    #[must_use]
+    pub const fn status(self) -> StatusCode {
+        self.status
+    }
+}
+
+impl fmt::Display for SdkError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} failed with {}", self.operation, self.status)
+    }
+}
+
+impl StdError for SdkError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum InputViolation {
     Empty,
     InteriorNul,
     TooLong {
+        max: usize,
         actual: usize,
-        maximum: usize,
+    },
+    TimeoutTooLong {
+        maximum_millis: u32,
+        actual_millis: u128,
     },
     ImageCount {
         minimum: usize,
@@ -125,77 +227,227 @@ pub enum InvalidInput {
     InvalidImageLayout {
         field: &'static str,
     },
+    WindowHandleUnavailable,
+    WindowHandleNotSupported,
+    NonWin32Window,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Error {
-    UnsupportedPlatform,
-    RuntimeInactive,
-    Sdk {
-        operation: Operation,
-        status: i32,
-    },
-    InvalidState {
-        operation: Operation,
-        state: &'static str,
-    },
-    InvalidInput {
-        operation: Operation,
-        kind: InvalidInput,
-    },
-    ContractViolation {
-        operation: Operation,
-        kind: ContractViolation,
-    },
-    AllocationFailed {
-        operation: Operation,
-        requested: usize,
-    },
-    UnclosedDevices {
-        live_handles: usize,
-    },
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl fmt::Display for InputViolation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedPlatform => f.write_str(
-                "native 3DMVS support requires x86_64-pc-windows-msvc and the `native` feature",
+            Self::Empty => formatter.write_str("the value is empty"),
+            Self::InteriorNul => formatter.write_str("the value contains a NUL byte"),
+            Self::TooLong { max, actual } => write!(
+                formatter,
+                "the value has {actual} bytes; at most {max} are allowed"
             ),
-            Self::RuntimeInactive => {
-                f.write_str("this token no longer refers to the active 3DMVS runtime")
-            }
-            Self::Sdk { operation, status } => {
-                write!(
-                    f,
-                    "{operation} failed with SDK status 0x{:08X}",
-                    *status as u32
-                )
-            }
-            Self::InvalidState { operation, state } => {
-                write!(f, "{operation} is not valid while the device is {state}")
-            }
-            Self::InvalidInput { operation, kind } => {
-                write!(f, "invalid input for {operation}: {kind:?}")
-            }
-            Self::ContractViolation { operation, kind } => {
-                write!(f, "the SDK violated the {operation} contract: {kind:?}")
-            }
-            Self::AllocationFailed {
-                operation,
-                requested,
-            } => {
-                write!(
-                    f,
-                    "could not allocate {requested} bytes or records for {operation}"
-                )
-            }
-            Self::UnclosedDevices { live_handles } => write!(
-                f,
-                "Finalize was skipped because {live_handles} device handle(s) remain live"
+            Self::TimeoutTooLong {
+                maximum_millis,
+                actual_millis,
+            } => write!(
+                formatter,
+                "the timeout is {actual_millis} milliseconds; at most {maximum_millis} milliseconds are allowed"
             ),
+            Self::ImageCount {
+                minimum,
+                maximum,
+                actual,
+            } => write!(
+                formatter,
+                "the image count is {actual}; expected {minimum}..={maximum}"
+            ),
+            Self::InvalidImageLayout { field } => {
+                write!(formatter, "the image has an invalid {field}")
+            }
+            Self::WindowHandleUnavailable => {
+                formatter.write_str("the window handle is unavailable")
+            }
+            Self::WindowHandleNotSupported => {
+                formatter.write_str("the window handle cannot be represented")
+            }
+            Self::NonWin32Window => formatter.write_str("the window does not expose a Win32 HWND"),
         }
     }
 }
 
-impl std::error::Error for Error {}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ContractViolation {
+    NullPointer {
+        field: &'static str,
+    },
+    NullPointerWithLength {
+        field: &'static str,
+        length: usize,
+    },
+    CountExceedsCapacity {
+        field: &'static str,
+        count: usize,
+        capacity: usize,
+    },
+    UnknownDiscriminant {
+        field: &'static str,
+        raw: u32,
+    },
+    LengthOverflow {
+        field: &'static str,
+    },
+    LengthMismatch {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    OutputTooLarge {
+        field: &'static str,
+        limit: usize,
+        actual: usize,
+    },
+    InvalidValue {
+        field: &'static str,
+    },
+}
+
+impl fmt::Display for ContractViolation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NullPointer { field } => write!(formatter, "{field} is null"),
+            Self::NullPointerWithLength { field, length } => {
+                write!(formatter, "{field} is null but its length is {length}")
+            }
+            Self::CountExceedsCapacity {
+                field,
+                count,
+                capacity,
+            } => write!(
+                formatter,
+                "{field} count {count} exceeds capacity {capacity}"
+            ),
+            Self::UnknownDiscriminant { field, raw } => {
+                write!(formatter, "{field} contains unknown value 0x{raw:08X}")
+            }
+            Self::LengthOverflow { field } => {
+                write!(formatter, "the computed length for {field} overflowed")
+            }
+            Self::LengthMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "{field} has length {actual}; expected {expected} for this SDK result"
+            ),
+            Self::OutputTooLarge {
+                field,
+                limit,
+                actual,
+            } => write!(
+                formatter,
+                "{field} has {actual} bytes, exceeding the configured limit of {limit}"
+            ),
+            Self::InvalidValue { field } => {
+                write!(formatter, "{field} contains an invalid SDK value")
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Error {
+    UnsupportedPlatform,
+    Sdk(SdkError),
+    InvalidInput {
+        field: &'static str,
+        violation: InputViolation,
+    },
+    InvalidState {
+        operation: Operation,
+        expected: &'static str,
+        actual: &'static str,
+    },
+    ContractViolation {
+        operation: Operation,
+        violation: ContractViolation,
+    },
+    DeviceCleanup {
+        stop: Option<Box<Error>>,
+        close: Option<Box<Error>>,
+    },
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedPlatform => formatter
+                .write_str("native 3DMVS support is available only on x86_64-pc-windows-msvc"),
+            Self::Sdk(error) => error.fmt(formatter),
+            Self::InvalidInput { field, violation } => {
+                write!(formatter, "invalid {field}: {violation}")
+            }
+            Self::InvalidState {
+                operation,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "{operation} requires state {expected}, but the current state is {actual}"
+            ),
+            Self::ContractViolation {
+                operation,
+                violation,
+            } => write!(
+                formatter,
+                "{operation} returned data that violates the SDK contract: {violation}"
+            ),
+            Self::DeviceCleanup { stop, close } => match (stop, close) {
+                (Some(stop), Some(close)) => write!(
+                    formatter,
+                    "device cleanup failed while stopping ({stop}) and closing ({close})"
+                ),
+                (Some(stop), None) => write!(formatter, "device cleanup failed: {stop}"),
+                (None, Some(close)) => write!(formatter, "device cleanup failed: {close}"),
+                (None, None) => formatter.write_str("device cleanup failed without an SDK status"),
+            },
+        }
+    }
+}
+
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::Sdk(error) => Some(error),
+            Self::DeviceCleanup {
+                stop: Some(error), ..
+            }
+            | Self::DeviceCleanup {
+                stop: None,
+                close: Some(error),
+            } => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl From<SdkError> for Error {
+    fn from(error: SdkError) -> Self {
+        Self::Sdk(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Operation, SdkError, StatusCode};
+
+    // 验证已知与未知 status 都保留厂商位模式和调用上下文。
+    #[test]
+    fn status_preserves_bits_and_operation() {
+        let known = StatusCode::from_raw(0x8006_000D_u32 as i32);
+        assert_eq!(known, StatusCode::DEVICE_OFFLINE);
+        assert_eq!(known.bits(), 0x8006_000D);
+
+        let unknown = StatusCode::from_bits(0xDEAD_BEEF);
+        let error = SdkError::new(Operation::GetParam, unknown);
+        assert_eq!(error.operation(), Operation::GetParam);
+        assert_eq!(error.status(), unknown);
+    }
+}

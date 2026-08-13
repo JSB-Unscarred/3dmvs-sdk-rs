@@ -1,4 +1,4 @@
-use crate::{Error, Image, ImageRef, ImageType, Operation, Result};
+use crate::{Image, ImageRef, ImageType, Result};
 
 /// A file representation supported by the vendor image writer.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -39,11 +39,10 @@ impl ImageFileFormat {
 
 /// An owned token for the process-wide LPSDK image-processing functions.
 ///
-/// `ImageProcessor` does not borrow [`crate::Sdk`] and is `Send + Sync`. Each call verifies that
-/// its session is active, delegates input validation to the internal FFI boundary, and copies SDK
-/// output into Rust-owned storage. Calls from the same session are serialized through the native
-/// call and immediate output copy, so another call cannot replace transient SDK output during the
-/// copy. Successful [`crate::Sdk::shutdown`] invalidates tokens from that session.
+/// `ImageProcessor` does not borrow [`crate::Sdk`] and is `Send + Sync`. Input validation stays at
+/// the internal FFI boundary, and each result is copied into Rust-owned storage. Calls from the
+/// same session are serialized through the native call and immediate copy so transient SDK output
+/// cannot be replaced early. Drop this token before [`crate::Sdk::shutdown`].
 ///
 /// # Native contract
 ///
@@ -61,16 +60,14 @@ impl ImageProcessor {
         self.inner
             .map_depth_to_point_cloud(input.to_internal())
             .map(Image::from_internal)
-            .map_err(Error::map_internal_error)
     }
 
     /// Converts multiple depth images to one round point cloud.
     pub fn depth_to_round_point_cloud(&self, inputs: &[ImageRef<'_>]) -> Result<Image> {
-        let inputs = prepare_multi(Operation::MapDepthToPointCloudRound, inputs)?;
+        let inputs = prepare_multi(inputs);
         self.inner
             .map_depth_to_point_cloud_round(&inputs)
             .map(Image::from_internal)
-            .map_err(Error::map_internal_error)
     }
 
     /// Converts an image to a vendor-supported target type.
@@ -81,16 +78,12 @@ impl ImageProcessor {
                 mv3d_lp_internal::ImageTypeRecord::from_bits(target.bits()),
             )
             .map(Image::from_internal)
-            .map_err(Error::map_internal_error)
     }
 
     /// Mosaics multiple depth images.
     pub fn mosaic_depth(&self, inputs: &[ImageRef<'_>]) -> Result<Image> {
-        let inputs = prepare_multi(Operation::DepthMosaic, inputs)?;
-        self.inner
-            .mosaic_depth(&inputs)
-            .map(Image::from_internal)
-            .map_err(Error::map_internal_error)
+        let inputs = prepare_multi(inputs);
+        self.inner.mosaic_depth(&inputs).map(Image::from_internal)
     }
 
     /// Saves an image using the vendor encoder.
@@ -105,19 +98,10 @@ impl ImageProcessor {
     ) -> Result<()> {
         self.inner
             .save_image(input.to_internal(), format.to_internal(), file_name)
-            .map_err(Error::map_internal_error)
     }
 }
 
 /// Builds borrowed internal descriptors; the FFI boundary validates their contents.
-fn prepare_multi<'a>(
-    operation: Operation,
-    inputs: &[ImageRef<'a>],
-) -> Result<Vec<mv3d_lp_internal::ImageInput<'a>>> {
-    let mut internal = Vec::new();
-    internal
-        .try_reserve_exact(inputs.len())
-        .map_err(|_| Error::AllocationFailed { operation })?;
-    internal.extend(inputs.iter().copied().map(ImageRef::to_internal));
-    Ok(internal)
+fn prepare_multi<'a>(inputs: &[ImageRef<'a>]) -> Vec<mv3d_lp_internal::ImageInput<'a>> {
+    inputs.iter().copied().map(ImageRef::to_internal).collect()
 }

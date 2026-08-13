@@ -68,7 +68,7 @@ use crate::display::DisplayRangeRecord;
 ))]
 use crate::driver::{Driver, Handle, status_result};
 use crate::driver::{DriverError, DriverResult};
-use crate::error::{ContractViolation, InvalidInput};
+use crate::error::{ContractViolation, InputViolation};
 use crate::file_transfer::FileProgress;
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::parameter::{ParameterRecord, ParameterValueRecord};
@@ -100,7 +100,9 @@ impl Driver for NativeDriver {
         // SAFETY: The linked LPSDK contract exposes this function without arguments.
         let pointer = unsafe { bindings::MV3D_LP_GetVersion() };
         if pointer.is_null() {
-            return Err(DriverError::Contract(ContractViolation::NullVersionPointer));
+            return Err(DriverError::Contract(ContractViolation::NullPointer {
+                field: "SDK version",
+            }));
         }
 
         // SAFETY: LPSDK documents the returned pointer as a NUL-terminated version string.
@@ -108,12 +110,12 @@ impl Driver for NativeDriver {
     }
 
     fn initialize(&self) -> DriverResult<()> {
-        // SAFETY: Runtime's lifecycle gate admits Initialize only from the Fresh state.
+        // SAFETY: Runtime admits Initialize only once during the process lifetime.
         status_result(unsafe { bindings::MV3D_LP_Initialize() })
     }
 
     fn finalize(&self) -> DriverResult<()> {
-        // SAFETY: Runtime calls Finalize once, after the owned-device handle ledger reaches zero.
+        // SAFETY: Runtime consumes the sole session owner before calling Finalize once.
         status_result(unsafe { bindings::MV3D_LP_Finalize() })
     }
 
@@ -130,11 +132,7 @@ impl Driver for NativeDriver {
                 field: "device list capacity",
             })
         })?;
-        let mut raw = Vec::new();
-        raw.try_reserve_exact(capacity)
-            .map_err(|_| DriverError::Allocation {
-                requested: capacity,
-            })?;
+        let mut raw = Vec::with_capacity(capacity);
         raw.resize_with(capacity, zeroed_device_info);
 
         let mut reported = 0;
@@ -174,9 +172,9 @@ impl Driver for NativeDriver {
         // SAFETY: raw is a valid writable handle slot and ip is NUL-terminated for the call.
         let status = unsafe { bindings::MV3D_LP_OpenDeviceByIP(&mut raw, ip.as_ptr()) };
         status_result(status)?;
-        Handle::from_ptr(raw).ok_or(DriverError::Contract(
-            ContractViolation::NullHandleOnSuccess,
-        ))
+        Handle::from_ptr(raw).ok_or(DriverError::Contract(ContractViolation::NullPointer {
+            field: "device handle",
+        }))
     }
 
     fn open_by_serial(&self, serial: &CStr) -> DriverResult<Handle> {
@@ -184,9 +182,9 @@ impl Driver for NativeDriver {
         // SAFETY: raw is a valid writable handle slot and serial is NUL-terminated for the call.
         let status = unsafe { bindings::MV3D_LP_OpenDeviceBySN(&mut raw, serial.as_ptr()) };
         status_result(status)?;
-        Handle::from_ptr(raw).ok_or(DriverError::Contract(
-            ContractViolation::NullHandleOnSuccess,
-        ))
+        Handle::from_ptr(raw).ok_or(DriverError::Contract(ContractViolation::NullPointer {
+            field: "device handle",
+        }))
     }
 
     fn close(&self, handle: Handle) -> DriverResult<()> {
@@ -585,18 +583,7 @@ fn prepare_multi_inputs(
     if inputs.len() > MAX_MULTI_IMAGE_COUNT {
         return Err(invalid_image_count(inputs.len()));
     }
-    let mut native = Vec::new();
-    native
-        .try_reserve_exact(inputs.len())
-        .map_err(|_| DriverError::Allocation {
-            requested: inputs
-                .len()
-                .saturating_mul(size_of::<bindings::MV3D_LP_IMAGE_DATA>()),
-        })?;
-    for input in inputs {
-        native.push(image_input_to_native(*input)?);
-    }
-    Ok(native)
+    inputs.iter().copied().map(image_input_to_native).collect()
 }
 
 #[cfg(any(
@@ -759,17 +746,11 @@ fn validate_image_layout(
 unsafe fn image_from_native(image: &bindings::MV3D_LP_IMAGE_DATA) -> DriverResult<FrameRecord> {
     let layout = validate_image_layout(image)?;
 
-    // Reserve every destination before reading SDK memory. If any allocation fails, no vendor
-    // pointer has been dereferenced and the call returns an ordinary allocation error.
-    let mut data = allocated_bytes(layout.data_len)?;
-    let mut intensity_data = match layout.intensity_len {
-        Some(length) => Some(allocated_bytes(length)?),
-        None => None,
-    };
-    let mut exposure_timestamps = match layout.exposure_count {
-        Some(count) => Some(allocated_i64s(count, layout.exposure_bytes)?),
-        None => None,
-    };
+    // Allocate every destination before reading SDK memory. The process terminates on allocation
+    // failure, so partially copied native payloads never escape.
+    let mut data = Vec::with_capacity(layout.data_len);
+    let mut intensity_data = layout.intensity_len.map(Vec::with_capacity);
+    let mut exposure_timestamps = layout.exposure_count.map(Vec::with_capacity);
 
     // SAFETY: validate_image_layout established a non-null data pointer and checked length. The
     // caller of image_from_native guarantees that the SDK allocation is readable for that extent
@@ -844,34 +825,16 @@ fn known_bytes_per_pixel(image_type: bindings::Mv3dLpImageType) -> Option<usize>
     }
 }
 
-fn allocated_bytes(length: usize) -> DriverResult<Vec<u8>> {
-    let mut destination = Vec::new();
-    destination
-        .try_reserve_exact(length)
-        .map_err(|_| DriverError::Allocation { requested: length })?;
-    Ok(destination)
-}
-
-fn allocated_i64s(count: usize, requested_bytes: usize) -> DriverResult<Vec<i64>> {
-    let mut destination = Vec::new();
-    destination
-        .try_reserve_exact(count)
-        .map_err(|_| DriverError::Allocation {
-            requested: requested_bytes,
-        })?;
-    Ok(destination)
-}
-
 fn usize_from_u32(value: u32, field: &'static str) -> DriverResult<usize> {
     usize::try_from(value).map_err(|_| sdk_length_overflow(field))
 }
 
-fn invalid_input(kind: InvalidInput) -> DriverError {
+fn invalid_input(kind: InputViolation) -> DriverError {
     DriverError::InvalidInput(kind)
 }
 
 fn invalid_image_count(actual: usize) -> DriverError {
-    invalid_input(InvalidInput::ImageCount {
+    invalid_input(InputViolation::ImageCount {
         minimum: 0,
         maximum: MAX_MULTI_IMAGE_COUNT,
         actual,
@@ -879,15 +842,18 @@ fn invalid_image_count(actual: usize) -> DriverError {
 }
 
 fn invalid_image_layout(field: &'static str) -> DriverError {
-    invalid_input(InvalidInput::InvalidImageLayout { field })
+    invalid_input(InputViolation::InvalidImageLayout { field })
 }
 
 fn input_too_long(maximum: usize, actual: usize) -> DriverError {
-    invalid_input(InvalidInput::TooLong { actual, maximum })
+    invalid_input(InputViolation::TooLong {
+        max: maximum,
+        actual,
+    })
 }
 
 fn invalid_sdk_image_value(field: &'static str) -> DriverError {
-    DriverError::Contract(ContractViolation::InvalidImageValue { field })
+    DriverError::Contract(ContractViolation::InvalidValue { field })
 }
 
 fn sdk_null_pointer_with_length(field: &'static str, length: usize) -> DriverError {
@@ -973,9 +939,10 @@ pub(crate) fn parameter_from_native(
             let supported_count = usize::try_from(value.nSupportedNum).unwrap_or(usize::MAX);
             if supported_count > bindings::MV3D_LP_MAX_ENUM_COUNT {
                 return Err(DriverError::Contract(
-                    ContractViolation::EnumCountExceedsLimit {
-                        reported: value.nSupportedNum,
-                        limit: bindings::MV3D_LP_MAX_ENUM_COUNT,
+                    ContractViolation::CountExceedsCapacity {
+                        field: "supported enumeration values",
+                        count: supported_count,
+                        capacity: bindings::MV3D_LP_MAX_ENUM_COUNT,
                     },
                 ));
             }
@@ -990,12 +957,11 @@ pub(crate) fn parameter_from_native(
             if usize::try_from(value.nMaxLength).unwrap_or(usize::MAX)
                 > bindings::MV3D_LP_MAX_STRING_LENGTH
             {
-                return Err(DriverError::Contract(
-                    ContractViolation::StringMaxLengthExceedsLimit {
-                        reported: value.nMaxLength,
-                        limit: bindings::MV3D_LP_MAX_STRING_LENGTH,
-                    },
-                ));
+                return Err(DriverError::Contract(ContractViolation::OutputTooLarge {
+                    field: "parameter string maximum length",
+                    limit: bindings::MV3D_LP_MAX_STRING_LENGTH,
+                    actual: usize::try_from(value.nMaxLength).unwrap_or(usize::MAX),
+                }));
             }
             let bytes = as_u8_array(&value.chCurValue);
             let length = bytes
@@ -1008,7 +974,10 @@ pub(crate) fn parameter_from_native(
             })
         }
         other => Err(DriverError::Contract(
-            ContractViolation::UnknownParameterType(other),
+            ContractViolation::UnknownDiscriminant {
+                field: "parameter type",
+                raw: other as u32,
+            },
         )),
     }
 }
@@ -1049,13 +1018,13 @@ pub(crate) fn parameter_to_native(
         }
         ParameterValueRecord::String(value) => {
             if value.len() >= bindings::MV3D_LP_MAX_STRING_LENGTH {
-                return Err(invalid_input(InvalidInput::TooLong {
+                return Err(invalid_input(InputViolation::TooLong {
+                    max: bindings::MV3D_LP_MAX_STRING_LENGTH - 1,
                     actual: value.len(),
-                    maximum: bindings::MV3D_LP_MAX_STRING_LENGTH - 1,
                 }));
             }
             if value.contains(&0) {
-                return Err(invalid_input(InvalidInput::InteriorNul));
+                return Err(invalid_input(InputViolation::InteriorNul));
             }
             let mut string = bindings::MV3D_LP_STRINGPARAM {
                 chCurValue: [0; bindings::MV3D_LP_MAX_STRING_LENGTH],
@@ -1162,7 +1131,7 @@ mod tests {
         assert!(matches!(
             parameter_from_native(&parameter),
             Err(DriverError::Contract(
-                ContractViolation::EnumCountExceedsLimit { .. }
+                ContractViolation::CountExceedsCapacity { .. }
             ))
         ));
 

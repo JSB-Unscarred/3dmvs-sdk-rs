@@ -49,8 +49,8 @@ sequenceDiagram
                 else Receiver 已关闭
                     Core->>Core: 移除 cookie，停止后续 Rust delivery
                 end
-            else payload 无法复制
-                Core->>Core: 忽略本次 callback
+            else descriptor 为空或违反指针、长度、布局契约
+                Core->>Core: fail-fast，终止进程
             end
             Core-->>Native: trampoline 返回
         end
@@ -92,6 +92,8 @@ sequenceDiagram
 `Receiver<Frame>` 与 `Frame` 均不借用 `Device`。trampoline 只复制 payload 并非阻塞入队，符合官方 CHM“图像 callback 内不建议调用其他 SDK 接口”的说明。image 队列满时丢弃最新帧并继续 delivery，避免阻塞 SDK callback thread。
 
 registry 的作用仅是隔离迟到 callback：cookie 从不复用，registration 撤销后，旧 callback 无法命中新 sink。callback 在撤销前若已取得 sink clone，仍可完成本次复制或入队；`stop()` 与 `disable_exception_delivery()` 不等待它返回。关闭路径依赖厂商契约：`MV3D_LP_CloseDevice` 返回前，该 handle 的 native callback 已静默；任意 Close status 都消费 handle。
+
+trampoline 是不可 unwind 的 FFI 边界。callback 中发生 panic、registry lock 中毒、cookie 为空或 descriptor 违反 SDK 契约时直接终止进程，不引入跨 FFI 恢复状态。未知或已撤销的非空 cookie 仍视为迟到 callback 并忽略。该终止路径不会执行 `Device::drop`；普通 SDK 错误则继续通过 `Result` 返回，由应用在局部 owner 离开 `run()` 作用域后决定是否 `abort()`。
 
 ## exception delivery 停止
 

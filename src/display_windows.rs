@@ -38,9 +38,7 @@ impl ImageProcessor {
                 mv3d_lp_internal::DisplayRangeRecord::Manual { minimum, maximum }
             }
         };
-        self.inner
-            .display_image(image.to_internal(), hwnd, range)
-            .map_err(Error::map_internal_error)
+        self.inner.display_image(image.to_internal(), hwnd, range)
     }
 }
 
