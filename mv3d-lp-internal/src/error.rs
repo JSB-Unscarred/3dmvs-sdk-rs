@@ -370,8 +370,8 @@ pub enum Error {
         violation: ContractViolation,
     },
     DeviceCleanup {
-        stop: Option<Box<Error>>,
-        close: Option<Box<Error>>,
+        stop: Box<Error>,
+        close: Box<Error>,
     },
 }
 
@@ -399,15 +399,10 @@ impl fmt::Display for Error {
                 formatter,
                 "{operation} returned data that violates the SDK contract: {violation}"
             ),
-            Self::DeviceCleanup { stop, close } => match (stop, close) {
-                (Some(stop), Some(close)) => write!(
-                    formatter,
-                    "device cleanup failed while stopping ({stop}) and closing ({close})"
-                ),
-                (Some(stop), None) => write!(formatter, "device cleanup failed: {stop}"),
-                (None, Some(close)) => write!(formatter, "device cleanup failed: {close}"),
-                (None, None) => formatter.write_str("device cleanup failed without an SDK status"),
-            },
+            Self::DeviceCleanup { stop, close } => write!(
+                formatter,
+                "device cleanup failed while stopping ({stop}) and closing ({close})"
+            ),
         }
     }
 }
@@ -416,13 +411,7 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Sdk(error) => Some(error),
-            Self::DeviceCleanup {
-                stop: Some(error), ..
-            }
-            | Self::DeviceCleanup {
-                stop: None,
-                close: Some(error),
-            } => Some(error.as_ref()),
+            Self::DeviceCleanup { close, .. } => Some(close.as_ref()),
             _ => None,
         }
     }
@@ -436,7 +425,9 @@ impl From<SdkError> for Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Operation, SdkError, StatusCode};
+    use std::error::Error as StdError;
+
+    use super::{Error, Operation, SdkError, StatusCode};
 
     // 验证已知与未知 status 都保留厂商位模式和调用上下文。
     #[test]
@@ -449,5 +440,25 @@ mod tests {
         let error = SdkError::new(Operation::GetParam, unknown);
         assert_eq!(error.operation(), Operation::GetParam);
         assert_eq!(error.status(), unknown);
+    }
+
+    // 验证双重清理失败保留两次调用信息，并以 terminal Close 作为 source。
+    #[test]
+    fn cleanup_preserves_stop_and_close_failures() {
+        let stop = SdkError::new(Operation::StopMeasure, StatusCode::RESOURCE_ERROR);
+        let close = SdkError::new(Operation::CloseDevice, StatusCode::INVALID_HANDLE);
+        let error = Error::DeviceCleanup {
+            stop: Box::new(stop.into()),
+            close: Box::new(close.into()),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            format!("device cleanup failed while stopping ({stop}) and closing ({close})")
+        );
+        assert_eq!(
+            StdError::source(&error).map(ToString::to_string),
+            Some(close.to_string())
+        );
     }
 }

@@ -33,7 +33,14 @@ use std::{net::Ipv4Addr, time::Duration};
 
 use mv3d_lp::{Result, Sdk};
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("fatal: {error}");
+        std::process::abort();
+    }
+}
+
+fn run() -> Result<()> {
     println!("SDK: {}", Sdk::version()?);
     let sdk = Sdk::initialize()?;
 
@@ -52,13 +59,21 @@ fn main() -> Result<()> {
 }
 ```
 
+该示例采用终止式错误策略。普通 SDK status、输入、状态和同步输出契约错误先通过
+`Result` 离开 `run()`；局部 owner 执行可完成的清理后，最终 binary 记录错误并结束进程。
+库只在 callback ABI 无法返回错误的边界直接终止进程。
+
+`Device::close()` 依次尝试必要的 Stop 和一次 Close。单一错误原样返回，两者同时失败时
+返回 `Error::DeviceCleanup`。Close 失败后不重试：所有成功 FileAccess 的文件名 backing
+封存至进程退出，进程级 Finalize 被阻止，调用方应停止 SDK 操作并结束进程。
+
 设备也可通过 `SerialNumber` 与 `Sdk::open_by_serial()` 打开。SDK 文本使用 `SdkText` 保存原始字节，可按需调用 `to_str()` 或 `to_string_lossy()`。
 
 需要无限等待下一帧时调用 `device.get_image_blocking()`；`get_image(Duration)` 只表达有限等待。
 
 ## 生命周期与时序
 
-所有 session owner、Device 状态、清理顺序、callback、FileAccess 与 fail-fast 约定集中在下列文档：
+所有 session owner、Device 状态、清理顺序、callback、FileAccess、错误传播与终止边界集中在下列文档：
 
 - [生命周期与时序图总览](生命周期与时序图.md)
 - [标准生命周期与 pull 采集](时序图/标准生命周期与-pull-采集.md)
@@ -73,16 +88,16 @@ fn main() -> Result<()> {
 | --- | --- | --- |
 | `MV3D_LP_GetVersion` | `Sdk::version()` | 不依赖 Initialize，返回 `SdkText` 原始字节；不解析版本段数 |
 | `MV3D_LP_Initialize` | `Sdk::initialize()` | 初始化进程级 SDK |
-| `MV3D_LP_Finalize` | `Sdk::shutdown(self)` | 结束进程级 SDK |
+| `MV3D_LP_Finalize` | `Sdk::shutdown(self)` | session owner 全部释放且未发生 Close failure 时调用；否则返回状态错误且不进入 native Finalize |
 | `MV3D_LP_GetDeviceNumber` | `Sdk::device_count_hint()` | 返回枚举容量提示 |
 | `MV3D_LP_GetDeviceList` | `Sdk::devices()` | 按一次 `GetDeviceNumber` 的结果调用一次；计数为 0 时直接返回空列表 |
 | `MV3D_LP_OpenDeviceByIP` | `Sdk::open_by_ip()` | status 成功且 handle 非空后才创建 `Device` |
 | `MV3D_LP_OpenDeviceBySN` | `Sdk::open_by_serial()` | 校验 `SerialNumber`；成功后才交付 handle |
-| `MV3D_LP_CloseDevice` | `Device::close()`、`Device` 的 `Drop` | 显式关闭或 owner 销毁时清理 |
+| `MV3D_LP_CloseDevice` | `Device::close()`、`Device` 的 `Drop` | 必要时先 Stop，再调用一次 Close；显式关闭按单错误原样、双错误聚合返回；Close failure 阻止 Finalize |
 | `MV3D_LP_SetIpConfig` | `Sdk::set_ip_config()` | 使用 `IpConfiguration` 表达配置模式 |
 | `MV3D_LP_RegisterExceptionCallBack` | `Device::exception_receiver()`、`Device::disable_exception_delivery()` | 接收或停止 Rust 异常投递 |
-| `MV3D_LP_StartMeasure` | `Device::start()`、`Device::start_receiving()` | 启动 pull 或 callback 采集 |
-| `MV3D_LP_StopMeasure` | `Device::stop()`、`Device::close()` 及 `Drop` | 停止采集 |
+| `MV3D_LP_StartMeasure` | `Device::start()`、`Device::start_receiving()` | 普通 Start 直接转发；callback 的 Register→Start 两步使用 `needs_stop` guard |
+| `MV3D_LP_StopMeasure` | `Device::stop()`、`Device::close()` 及 `Drop` | 普通 Stop 直接转发；成功后清除 Close 的 Stop 义务 |
 | `MV3D_LP_SoftTrigger` | `Device::soft_trigger()` | 直接转发，由 SDK 判断调用顺序 |
 | `MV3D_LP_GetImage` | `Device::get_image()`、`Device::get_image_blocking()` | pull 采集的有限等待与无限等待；internal FFI 校验后复制为 `Frame`（即 `Image`） |
 | `MV3D_LP_RegisterImageDataCallBack` | `Device::start_receiving()` | 返回有界 `Receiver<Frame>` |
@@ -90,8 +105,8 @@ fn main() -> Result<()> {
 | `MV3D_LP_GetParam` | `Device::get_parameter()` | 接收 `&str` Node Name，返回 `Parameter` |
 | `MV3D_LP_SetParam` | `Device::set_parameter()` | 接收 `&str` Node Name 与 `ParameterValue` |
 | `MV3D_LP_Execute` | `Device::execute()` | 接收 `&str` Command Node Name |
-| `MV3D_LP_FileAccessRead` | `Device::download_file()` | 下载设备文件 |
-| `MV3D_LP_FileAccessWrite` | `Device::upload_file()` | 上传主机文件 |
+| `MV3D_LP_FileAccessRead` | `Device::download_file()` | 下载设备文件；每次成功调用的文件名保存至 Close |
+| `MV3D_LP_FileAccessWrite` | `Device::upload_file()` | 上传主机文件；每次成功调用的文件名保存至 Close |
 | `MV3D_LP_GetFileAccessProgress` | `Device::file_transfer_progress()` | 返回 `i64` 原始进度快照，不解释完成状态 |
 | `MV3D_LP_GetDeviceIP` | 未直接封装 | 废弃接口；功能替代为从 `Sdk::devices()` 返回的 `DeviceInfo` 读取 IP |
 | `MV3D_LP_GetDeviceSN` | 未直接封装 | 废弃接口；功能替代为从 `Sdk::devices()` 返回的 `DeviceInfo` 读取序列号 |
@@ -120,7 +135,7 @@ fn main() -> Result<()> {
 | `MV3D_LP_STRINGPARAM` | `Parameter::String`、`ParameterValue::String` | 内容使用 `SdkText` 保存 |
 | `MV3D_LP_PARAM` | `Parameter`、`ParameterValue` | 通过 enum 取代 `ParamInfo` union 成员与判别字段；SDK 中不存在 `MV3D_LP_PARAM_INFO` 类型 |
 | `MV3D_LP_EXCEPTION_INFO` | `DeviceException`、`DeviceExceptionType` | 拥有化描述并保留未知类型值 |
-| `MV3D_LP_FILE_ACCESS` | `Device::download_file()`、`Device::upload_file()` | 文件传输 descriptor 由 wrapper 构造 |
+| `MV3D_LP_FILE_ACCESS` | `Device::download_file()`、`Device::upload_file()` | descriptor 由 wrapper 构造；每次成功调用的两段 CString 保存至 Close |
 | `MV3D_LP_FILE_ACCESS_PROGRESS` | `FileProgress` | 原样保留 signed `completed` 与 `total` |
 | `MVB3D_LP_POINT_XYZ_S16`、`MVB3D_LP_POINT_XYZ_F32` | `Image`（`Frame` 为别名）的字节载荷 | 废弃数据；不公开单点结构体 |
 | `MV3D_LP_PROFILE_DATA`、`MV3D_LP_DEPTH_DATA`、`MV3D_LP_INTENSITY_DATA` | `Frame` | 废弃数据；不直接映射旧采集结构体 |
@@ -132,7 +147,7 @@ SDK 的 reserved 字段、原始指针、回调函数指针和设备句柄只存
 
 - 公共 crate 使用 `#![forbid(unsafe_code)]`；FFI、指针校验、C union 读取和 callback trampoline 位于 `mv3d-lp-internal`。
 - 原生图像输入与输出的判别值、指针、长度、布局和算术校验集中在 internal FFI，再复制到 Rust 所有值；校验依据实际 slice 和 SDK 长度字段，不设置任意的 512 MiB 上限。
-- 所有权、线程契约、清理顺序、callback、FileAccess 与 fail-fast 边界统一见[生命周期与时序](生命周期与时序图.md)。
+- 所有权、线程契约、清理顺序、callback、FileAccess、错误传播与终止边界统一见[生命周期与时序](生命周期与时序图.md)。
 
 safe API 依赖同步调用期间输入可读、SDK 输出在复制完成前有效。SDK、头文件、ABI 或固件变化后应重新审计相关接口。
 

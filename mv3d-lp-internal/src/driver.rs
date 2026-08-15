@@ -17,7 +17,10 @@ use crate::parameter::{ParameterRecord, ParameterValueRecord};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DriverError {
     Status(i32),
-    InvalidInput(InputViolation),
+    InvalidInput {
+        field: &'static str,
+        violation: InputViolation,
+    },
     Contract(ContractViolation),
 }
 

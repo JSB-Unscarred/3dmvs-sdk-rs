@@ -8,9 +8,9 @@ use crate::{
 /// A token for the process-wide 3DMVS SDK session.
 ///
 /// [`Device`] and [`ImageProcessor`] own their session access and do not borrow this value.
-/// Initialize is one-shot for the process. Dropping `Sdk` leaves Finalize to process exit;
-/// consuming [`Sdk::shutdown`] runs Finalize after all other session owners are dropped. `Sdk` is
-/// `Send + Sync`.
+/// Initialize is one-shot for the process. Dropping `Sdk` skips Finalize and relies on process exit
+/// for native resource reclamation. Consuming [`Sdk::shutdown`] runs Finalize after all other
+/// session owners are dropped and every device Close succeeded. `Sdk` is `Send + Sync`.
 pub struct Sdk {
     inner: mv3d_lp_internal::Runtime,
 }
@@ -85,8 +85,8 @@ impl Sdk {
 
     /// Finalizes the one-shot session and consumes this token.
     ///
-    /// Drop every [`Device`] and [`ImageProcessor`] first. Remaining owners return
-    /// [`Error::InvalidState`]; Finalize is not retried.
+    /// Drop every [`Device`] and [`ImageProcessor`] first. Remaining owners or a prior device Close
+    /// failure return [`Error::InvalidState`]; Finalize is not called or retried.
     pub fn shutdown(self) -> Result<()> {
         self.inner.shutdown()
     }

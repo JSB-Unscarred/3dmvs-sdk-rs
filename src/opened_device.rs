@@ -12,7 +12,8 @@ use crate::{
 /// `Device` does not borrow [`crate::Sdk`] and remains usable after that token is dropped. A live
 /// device must be closed or dropped before [`crate::Sdk::shutdown`]. `Device` is `Send` but not
 /// `Sync`: unique ownership can move to another thread, while calls on different devices may run
-/// concurrently. Pull and callback acquisition use one local measurement flag.
+/// concurrently. One local flag records whether successful acquisition still requires Stop during
+/// cleanup; ordinary call-order errors come from the SDK.
 pub struct Device {
     inner: mv3d_lp_internal::Device,
 }
@@ -24,7 +25,7 @@ impl Device {
 
     /// Starts pull acquisition on this device.
     ///
-    /// A failed start leaves the device open so callers may retry.
+    /// Call order is forwarded to the SDK. Only SDK success creates a later Stop obligation.
     pub fn start(&mut self) -> Result<()> {
         self.inner.start()
     }
@@ -63,17 +64,16 @@ impl Device {
     ///
     /// On success, the image callback cookie is retired. A callback that already cloned its sink
     /// may still enqueue one frame after this method returns, so success is not a callback
-    /// quiescence barrier. On failure, the acquisition owner stays intact so the caller may retry
-    /// or close the device.
+    /// quiescence barrier. On failure, the Stop obligation and callback registration remain for a
+    /// later caller decision or device cleanup.
     pub fn stop(&mut self) -> Result<()> {
         self.inner.stop()
     }
 
     /// Registers native image delivery, starts measurement, and returns a bounded receiver.
     ///
-    /// After [`Device::stop`] succeeds, another callback acquisition may be started on the same
-    /// device handle. If the native SDK rejects re-registration, its error is returned to the
-    /// caller.
+    /// After [`Device::stop`] succeeds, the wrapper forwards a later registration attempt and
+    /// returns the SDK result; the vendor's cross-Stop re-registration contract remains unconfirmed.
     ///
     /// # Native contract
     ///
@@ -139,9 +139,9 @@ impl Device {
     /// Starts copying a file from the device to the host.
     ///
     /// Names are passed as original narrow-string bytes because the vendor SDK does not document
-    /// their encoding. Because the asynchronous API does not state whether it copies them, this
-    /// device retains both names until another transfer starts successfully or the device closes.
-    /// Poll through [`Device::file_transfer_progress`].
+    /// their encoding. Because the asynchronous API does not state whether it copies them, the
+    /// device retains every successful transfer's names until Close. Poll through
+    /// [`Device::file_transfer_progress`].
     pub fn download_file(&mut self, device_file_name: &[u8], local_file_name: &[u8]) -> Result<()> {
         self.inner.download_file(device_file_name, local_file_name)
     }
@@ -163,10 +163,10 @@ impl Device {
 
     /// Stops acquisition when needed and closes the owned handle.
     ///
-    /// The consumed owner calls native Close once and reports both Stop and Close failures. Native
-    /// Close returning is the callback quiescence barrier even when its status reports an error:
-    /// no callback can enqueue afterward, while events already waiting in receivers remain
-    /// readable.
+    /// The consumed owner calls native Close once. A single Stop or Close error is returned
+    /// directly; simultaneous failures are aggregated. Successful Close releases retained native
+    /// input backing. Failed Close is terminal for this process session: FileAccess backing is left
+    /// for process exit and [`crate::Sdk::shutdown`] refuses to call Finalize.
     pub fn close(self) -> Result<()> {
         self.inner.close()
     }

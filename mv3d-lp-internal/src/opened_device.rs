@@ -13,11 +13,11 @@ use crate::runtime::RuntimeCore;
 pub struct Device {
     runtime: Arc<RuntimeCore>,
     handle: Option<Handle>,
-    measuring: bool,
+    needs_stop: bool,
     image_registration: Option<CallbackRegistration>,
     exception_registration: Option<CallbackRegistration>,
-    // The asynchronous FileAccess contract does not say whether native code copies these names.
-    file_names: Option<(CString, CString)>,
+    // Successful asynchronous FileAccess calls may retain every submitted name until Close.
+    file_names: Vec<(CString, CString)>,
 }
 
 impl Device {
@@ -25,27 +25,32 @@ impl Device {
         Self {
             runtime,
             handle: Some(handle),
-            measuring: false,
+            needs_stop: false,
             image_registration: None,
             exception_registration: None,
-            file_names: None,
+            file_names: Vec::new(),
         }
     }
 
-    /// Starts pull acquisition while keeping the session state on the device.
+    /// Starts pull acquisition and records the Stop obligation after native success.
     pub fn start(&mut self) -> Result<(), Error> {
-        self.require_stopped(Operation::StartMeasure)?;
         self.runtime.call(Operation::StartMeasure, |driver| {
             driver.start(self.handle())
         })?;
-        self.measuring = true;
+        self.needs_stop = true;
         Ok(())
     }
 
     /// Starts callback acquisition and retains the registration until stop or close.
     pub fn start_callback(&mut self, sink: FrameCallbackSink) -> Result<(), Error> {
         const OPERATION: Operation = Operation::RegisterImageDataCallback;
-        self.require_stopped(OPERATION)?;
+        if self.needs_stop {
+            return Err(Error::InvalidState {
+                operation: OPERATION,
+                expected: "stopped",
+                actual: "measuring",
+            });
+        }
 
         let registration = CallbackRegistration::image(sink);
         self.runtime.call(OPERATION, |driver| {
@@ -55,22 +60,15 @@ impl Device {
             driver.start(self.handle())
         })?;
         self.image_registration = Some(registration);
-        self.measuring = true;
+        self.needs_stop = true;
         Ok(())
     }
 
     /// Stops the active acquisition and then retires its image callback registration.
     pub fn stop(&mut self) -> Result<(), Error> {
-        if !self.measuring {
-            return Err(Error::InvalidState {
-                operation: Operation::StopMeasure,
-                expected: "measuring",
-                actual: "stopped",
-            });
-        }
         self.runtime
             .call(Operation::StopMeasure, |driver| driver.stop(self.handle()))?;
-        self.measuring = false;
+        self.needs_stop = false;
         drop(self.image_registration.take());
         Ok(())
     }
@@ -114,21 +112,21 @@ impl Device {
     }
 
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<ParameterRecord, Error> {
-        let key = validated_c_string(Operation::GetParam, key)?;
+        let key = validated_c_string("parameter key", key)?;
         self.runtime.call(Operation::GetParam, |driver| {
             driver.get_parameter(self.handle(), &key)
         })
     }
 
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValueRecord) -> Result<(), Error> {
-        let key = validated_c_string(Operation::SetParam, key)?;
+        let key = validated_c_string("parameter key", key)?;
         self.runtime.call(Operation::SetParam, |driver| {
             driver.set_parameter(self.handle(), &key, value)
         })
     }
 
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
-        let key = validated_c_string(Operation::Execute, key)?;
+        let key = validated_c_string("command key", key)?;
         self.runtime.call(Operation::Execute, |driver| {
             driver.execute(self.handle(), &key)
         })
@@ -152,15 +150,17 @@ impl Device {
         self.begin_file_transfer(Operation::FileAccessWrite, user_file_name, device_file_name)
     }
 
-    /// Replaces retained file names only after the next transfer starts successfully.
+    /// Retains every successfully submitted name pair until device cleanup.
     fn begin_file_transfer(
         &mut self,
         operation: Operation,
         user_file_name: &[u8],
         device_file_name: &[u8],
     ) -> Result<(), Error> {
-        let user_file_name = validated_c_string(operation, user_file_name)?;
-        let device_file_name = validated_c_string(operation, device_file_name)?;
+        let user_file_name = validated_c_string("local file name", user_file_name)?;
+        let device_file_name = validated_c_string("device file name", device_file_name)?;
+        // Reserve before native success so retaining its borrowed inputs cannot allocate afterward.
+        self.file_names.reserve(1);
         let handle = self.handle();
         self.runtime.call(operation, |driver| match operation {
             Operation::FileAccessRead => {
@@ -171,7 +171,7 @@ impl Device {
             }
             _ => unreachable!("begin_file_transfer accepts only file access operations"),
         })?;
-        self.file_names = Some((user_file_name, device_file_name));
+        self.file_names.push((user_file_name, device_file_name));
         Ok(())
     }
 
@@ -196,59 +196,107 @@ impl Device {
             return Ok(());
         };
 
-        let stop = if self.measuring {
+        let stop = if self.needs_stop {
             self.runtime
                 .call(Operation::StopMeasure, |driver| driver.stop(handle))
                 .err()
-                .map(Box::new)
         } else {
             None
         };
-        // Close returning permanently consumes this owner even when the SDK reports an error.
         let close = self
             .runtime
             .call(Operation::CloseDevice, |driver| driver.close(handle))
-            .err()
-            .map(Box::new);
-        self.measuring = false;
+            .err();
+        self.needs_stop = false;
+
+        if close.is_some() {
+            // A failed Close makes Finalize unsafe and may leave native FileAccess borrows alive.
+            self.runtime.block_finalize();
+            std::mem::forget(std::mem::take(&mut self.file_names));
+        } else {
+            drop(std::mem::take(&mut self.file_names));
+        }
+        // Cookies are opaque and never reused, so revocation safely silences late callbacks.
         drop(self.image_registration.take());
         drop(self.exception_registration.take());
-        drop(self.file_names.take());
 
-        if stop.is_none() && close.is_none() {
-            Ok(())
-        } else {
-            Err(Error::DeviceCleanup { stop, close })
-        }
+        cleanup_result(stop, close)
     }
 
     fn handle(&self) -> Handle {
         self.handle.expect("a live device always has a handle")
     }
-
-    fn require_stopped(&self, operation: Operation) -> Result<(), Error> {
-        if self.measuring {
-            Err(Error::InvalidState {
-                operation,
-                expected: "stopped",
-                actual: "measuring",
-            })
-        } else {
-            Ok(())
-        }
-    }
 }
 
 /// Owns one native string and rejects interior NUL bytes before the FFI call.
-fn validated_c_string(operation: Operation, bytes: &[u8]) -> Result<CString, Error> {
+fn validated_c_string(field: &'static str, bytes: &[u8]) -> Result<CString, Error> {
     CString::new(bytes).map_err(|_| Error::InvalidInput {
-        field: operation.sdk_name(),
+        field,
         violation: InputViolation::InteriorNul,
     })
+}
+
+/// Returns one cleanup error unchanged and aggregates only simultaneous failures.
+fn cleanup_result(stop: Option<Error>, close: Option<Error>) -> Result<(), Error> {
+    match (stop, close) {
+        (None, None) => Ok(()),
+        (Some(error), None) | (None, Some(error)) => Err(error),
+        (Some(stop), Some(close)) => Err(Error::DeviceCleanup {
+            stop: Box::new(stop),
+            close: Box::new(close),
+        }),
+    }
 }
 
 impl Drop for Device {
     fn drop(&mut self) {
         let _ = self.cleanup();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cleanup_result, validated_c_string};
+    use crate::error::{Error, InputViolation, Operation, SdkError, StatusCode};
+
+    // 验证清理只在 Stop 与 Close 同时失败时引入聚合错误。
+    #[test]
+    fn cleanup_returns_single_errors_unchanged() {
+        let stop = Error::Sdk(SdkError::new(
+            Operation::StopMeasure,
+            StatusCode::RESOURCE_ERROR,
+        ));
+        let close = Error::Sdk(SdkError::new(
+            Operation::CloseDevice,
+            StatusCode::INVALID_HANDLE,
+        ));
+
+        assert_eq!(cleanup_result(None, None), Ok(()));
+        assert_eq!(cleanup_result(Some(stop.clone()), None), Err(stop.clone()));
+        assert_eq!(
+            cleanup_result(None, Some(close.clone())),
+            Err(close.clone())
+        );
+        assert_eq!(
+            cleanup_result(Some(stop.clone()), Some(close.clone())),
+            Err(Error::DeviceCleanup {
+                stop: Box::new(stop),
+                close: Box::new(close),
+            })
+        );
+    }
+
+    // 验证同一 FileAccess 调用的两个字符串错误仍能定位到具体参数。
+    #[test]
+    fn file_name_input_errors_preserve_the_field() {
+        for field in ["local file name", "device file name"] {
+            assert!(matches!(
+                validated_c_string(field, b"a\0b"),
+                Err(Error::InvalidInput {
+                    field: actual,
+                    violation: InputViolation::InteriorNul,
+                }) if actual == field
+            ));
+        }
     }
 }

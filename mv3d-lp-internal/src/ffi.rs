@@ -472,7 +472,7 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
         return Err(invalid_image_layout("data length"));
     }
     let data_len = u32::try_from(input.data.len())
-        .map_err(|_| input_too_long(u32::MAX as usize, input.data.len()))?;
+        .map_err(|_| input_too_long("image data", u32::MAX as usize, input.data.len()))?;
     let pixels = usize::try_from(input.width)
         .unwrap_or(usize::MAX)
         .checked_mul(usize::try_from(input.height).unwrap_or(usize::MAX))
@@ -489,8 +489,9 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
         Some(intensity) if intensity.len() < pixels => {
             return Err(invalid_image_layout("intensity data length"));
         }
-        Some(intensity) => u32::try_from(intensity.len())
-            .map_err(|_| input_too_long(u32::MAX as usize, intensity.len()))?,
+        Some(intensity) => u32::try_from(intensity.len()).map_err(|_| {
+            input_too_long("image intensity data", u32::MAX as usize, intensity.len())
+        })?,
         None => 0,
     };
     if let Some(timestamps) = input.exposure_timestamps {
@@ -829,27 +830,33 @@ fn usize_from_u32(value: u32, field: &'static str) -> DriverResult<usize> {
     usize::try_from(value).map_err(|_| sdk_length_overflow(field))
 }
 
-fn invalid_input(kind: InputViolation) -> DriverError {
-    DriverError::InvalidInput(kind)
+fn invalid_input(field: &'static str, violation: InputViolation) -> DriverError {
+    DriverError::InvalidInput { field, violation }
 }
 
 fn invalid_image_count(actual: usize) -> DriverError {
-    invalid_input(InputViolation::ImageCount {
-        minimum: 0,
-        maximum: MAX_MULTI_IMAGE_COUNT,
-        actual,
-    })
+    invalid_input(
+        "images",
+        InputViolation::ImageCount {
+            minimum: 0,
+            maximum: MAX_MULTI_IMAGE_COUNT,
+            actual,
+        },
+    )
 }
 
 fn invalid_image_layout(field: &'static str) -> DriverError {
-    invalid_input(InputViolation::InvalidImageLayout { field })
+    invalid_input("image", InputViolation::InvalidImageLayout { field })
 }
 
-fn input_too_long(maximum: usize, actual: usize) -> DriverError {
-    invalid_input(InputViolation::TooLong {
-        max: maximum,
-        actual,
-    })
+fn input_too_long(field: &'static str, maximum: usize, actual: usize) -> DriverError {
+    invalid_input(
+        field,
+        InputViolation::TooLong {
+            max: maximum,
+            actual,
+        },
+    )
 }
 
 fn invalid_sdk_image_value(field: &'static str) -> DriverError {
@@ -1018,13 +1025,19 @@ pub(crate) fn parameter_to_native(
         }
         ParameterValueRecord::String(value) => {
             if value.len() >= bindings::MV3D_LP_MAX_STRING_LENGTH {
-                return Err(invalid_input(InputViolation::TooLong {
-                    max: bindings::MV3D_LP_MAX_STRING_LENGTH - 1,
-                    actual: value.len(),
-                }));
+                return Err(invalid_input(
+                    "parameter value",
+                    InputViolation::TooLong {
+                        max: bindings::MV3D_LP_MAX_STRING_LENGTH - 1,
+                        actual: value.len(),
+                    },
+                ));
             }
             if value.contains(&0) {
-                return Err(invalid_input(InputViolation::InteriorNul));
+                return Err(invalid_input(
+                    "parameter value",
+                    InputViolation::InteriorNul,
+                ));
             }
             let mut string = bindings::MV3D_LP_STRINGPARAM {
                 chCurValue: [0; bindings::MV3D_LP_MAX_STRING_LENGTH],
@@ -1067,7 +1080,7 @@ mod tests {
     };
     use crate::bindings;
     use crate::driver::DriverError;
-    use crate::error::ContractViolation;
+    use crate::error::{ContractViolation, InputViolation};
     use crate::parameter::{ParameterRecord, ParameterValueRecord};
 
     // 验证 SDK 图像的指针/长度边界，并确认 callback 返回前完成深拷贝。
@@ -1139,5 +1152,13 @@ mod tests {
         assert_eq!(boolean.enParamType, bindings::ParamType_Bool);
         // SAFETY: the discriminator above identifies bBoolParam as the active member.
         assert_eq!(unsafe { boolean.ParamInfo.bBoolParam }, 1);
+
+        assert!(matches!(
+            parameter_to_native(&ParameterValueRecord::String(b"a\0b".to_vec())),
+            Err(DriverError::InvalidInput {
+                field: "parameter value",
+                violation: InputViolation::InteriorNul,
+            })
+        ));
     }
 }

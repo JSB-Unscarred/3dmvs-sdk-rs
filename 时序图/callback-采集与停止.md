@@ -12,25 +12,31 @@ sequenceDiagram
     App->>Public: device.start_receiving(options)
     Public->>Queue: sync_channel(queue_capacity)
     Public->>Core: Device::start_callback(sink)
-    Core->>Core: 用不复用的 cookie 注册 sink
-    Core->>Native: MV3D_LP_RegisterImageDataCallBack(handle, trampoline, cookie)
-    Native-->>Core: register status
-    alt register 成功
-        Core->>Native: MV3D_LP_StartMeasure(handle)
-        Native-->>Core: start status
-        alt Start 成功
-            Core->>Core: 保存 registration，measuring = true
-            Core-->>Public: Ok
-            Public-->>App: Receiver&lt;Frame&gt;
-        else Start 失败
+    Core->>Core: 检查 needs_stop
+    alt needs_stop = true
+        Core-->>Public: InvalidState，不调用 Register 或 Start
+        Public-->>App: Err
+    else needs_stop = false
+        Core->>Core: 用不复用的 cookie 注册 sink
+        Core->>Native: MV3D_LP_RegisterImageDataCallBack(handle, trampoline, cookie)
+        Native-->>Core: register status
+        alt register 成功
+            Core->>Native: MV3D_LP_StartMeasure(handle)
+            Native-->>Core: start status
+            alt Start 成功
+                Core->>Core: 保存 registration，needs_stop = true
+                Core-->>Public: Ok
+                Public-->>App: Receiver&lt;Frame&gt;
+            else Start 失败
+                Core->>Core: 移除本次 cookie，needs_stop 仍为 false
+                Core-->>Public: Err
+                Public-->>App: Err
+            end
+        else register 失败
             Core->>Core: 移除本次 cookie
             Core-->>Public: Err
             Public-->>App: Err
         end
-    else register 失败
-        Core->>Core: 移除本次 cookie
-        Core-->>Public: Err
-        Public-->>App: Err
     end
 
     loop 每次原生图像回调
@@ -67,33 +73,39 @@ sequenceDiagram
     Core->>Native: MV3D_LP_StopMeasure(handle)
     Native-->>Core: status
     alt Stop 成功
-        Core->>Core: measuring = false，移除 image cookie
+        Core->>Core: needs_stop = false，移除 image cookie
         Core-->>Public: Ok
         Public-->>App: Ok
     else Stop 失败
-        Core->>Core: 保留 measuring 与 registration
+        Core->>Core: needs_stop 仍为 true，registration 仍由 Device 持有
         Core-->>Public: Err
-        Public-->>App: Err；可再次 stop 或关闭
+        Public-->>App: Err
     end
 
     opt 显式 close 或 Drop
         Core->>Core: 取走 handle
-        opt measuring = true
+        opt needs_stop = true
             Core->>Native: MV3D_LP_StopMeasure(handle) 一次
             Native-->>Core: stop status
         end
         Core->>Native: MV3D_LP_CloseDevice(handle) 一次
         Native-->>Core: close status
-        Note over Core,Native: 任意 status 都使 handle 失效；返回前 native callback 已静默
-        Core->>Core: 移除 image 与 exception cookie
+        alt Close 成功
+            Note over Core,Native: 返回前该 handle 的 native callback 已静默
+            Core->>Core: 移除 image 与 exception cookie
+        else Close 失败
+            Core->>Core: 移除 cookie，finalize_blocked = true
+            Core->>Core: FileAccess backing 封存至进程退出
+            Note over Core,Native: 不推断 native callback 或 handle 状态；调用方结束进程
+        end
     end
 ```
 
 `Receiver<Frame>` 与 `Frame` 均不借用 `Device`。trampoline 只复制 payload 并非阻塞入队，符合官方 CHM“图像 callback 内不建议调用其他 SDK 接口”的说明。image 队列满时丢弃最新帧并继续 delivery，避免阻塞 SDK callback thread。
 
-registry 的作用仅是隔离迟到 callback：cookie 从不复用，registration 撤销后，旧 callback 无法命中新 sink。callback 在撤销前若已取得 sink clone，仍可完成本次复制或入队；`stop()` 与 `disable_exception_delivery()` 不等待它返回。关闭路径依赖厂商契约：`MV3D_LP_CloseDevice` 返回前，该 handle 的 native callback 已静默；任意 Close status 都消费 handle。
+`start_receiving()` 因 Register→Start 包含两个 native 调用，只在 `needs_stop` 为 true 时由 wrapper 拒绝；普通 `start()` 与 `stop()` 的调用顺序直接交给 SDK。registry 的作用仅是隔离迟到 callback：cookie 从不复用且不作为指针解引用，registration 撤销后，旧 callback 无法命中新 sink。callback 在撤销前若已取得 sink clone，仍可完成本次复制或入队；`stop()`、`disable_exception_delivery()` 与 Close failure 路径都不等待它返回。仅成功的 `MV3D_LP_CloseDevice` 被视为 native callback 静默边界。Close 失败时 wrapper 仍可安全移除 cookie；迟到 callback lookup miss，已取得的 sink clone 自行完成。随后 `finalize_blocked` 阻止 Finalize，由调用方结束进程。
 
-trampoline 是不可 unwind 的 FFI 边界。callback 中发生 panic、registry lock 中毒、cookie 为空或 descriptor 违反 SDK 契约时直接终止进程，不引入跨 FFI 恢复状态。未知或已撤销的非空 cookie 仍视为迟到 callback 并忽略。该终止路径不会执行 `Device::drop`；普通 SDK 错误则继续通过 `Result` 返回，由应用在局部 owner 离开 `run()` 作用域后决定是否 `abort()`。
+trampoline 是不可 unwind 的 FFI 边界。callback 中发生 panic、cookie 为空或 descriptor 违反 SDK 契约时直接终止进程，不引入跨 FFI 恢复状态。未知或已撤销的非空 cookie 仍视为迟到 callback 并忽略。registry mutex 遇到 poison 时继续取得已拥有的 entries，不把普通 Rust panic 改写为库级 abort。上述终止路径不会执行 `Device::drop`；普通 SDK 错误继续通过 `Result` 返回，由应用在局部 owner 离开 `run()` 作用域后决定是否结束进程。
 
 ## exception delivery 停止
 
@@ -124,7 +136,7 @@ sequenceDiagram
 
 厂商接口只提供 exception callback register，因此 `disable_exception_delivery()` 只停止后续 Rust delivery。Receiver 会在 registry sender 和可能存在的 sink clone 都释放后断开；调用方无需把“方法返回”解释为原生 callback 已静默。
 
-exception callback 使用有界非阻塞队列。队列满时丢弃当前异常并移除 registry 中的 sink，终止后续 Rust delivery；已有 callback 释放 sink 后，Receiver 仍可读完已经排队的异常，随后得到 disconnected。image callback 则在队列满时仅丢弃最新帧并继续 delivery。
+exception callback 使用有界非阻塞队列。队列满时丢弃当前异常并移除 registry 中的 sink，终止后续 Rust delivery；已有 callback 释放 sink 后，Receiver 仍可读完已经排队的异常，随后得到 disconnected。断开原因不编码，调用方无法仅凭 Receiver 区分队列溢出、显式停止或设备关闭。image callback 则在队列满时只丢弃最新帧并继续 delivery。
 
 ## 待确认厂商契约
 

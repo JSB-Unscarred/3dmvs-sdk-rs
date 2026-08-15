@@ -1,6 +1,6 @@
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle};
 
-use crate::{Error, ImageProcessor, ImageRef, InputViolation, Operation, Result};
+use crate::{Error, ImageProcessor, ImageRef, InputViolation, Result};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DisplayRange {
@@ -42,10 +42,10 @@ impl ImageProcessor {
     }
 }
 
-/// Maps window-handle extraction failures to the display operation.
+/// Maps window-handle extraction failures to the window input.
 fn invalid_window(violation: InputViolation) -> Error {
     Error::InvalidInput {
-        field: Operation::DisplayImage.sdk_name(),
+        field: "window",
         violation,
     }
 }

@@ -20,6 +20,8 @@ pub(crate) struct RuntimeCore {
     driver: Box<dyn Driver>,
     // 图像处理输出只在下一次处理调用前有效；同一 session 串行到 owned copy 完成。
     image_processing: Mutex<()>,
+    // Close 失败后 native handle 状态未知；该单向 latch 禁止随后 Finalize。
+    finalize_blocked: AtomicBool,
 }
 
 impl RuntimeCore {
@@ -32,13 +34,19 @@ impl RuntimeCore {
         let _image_processing = image_processing_guard(&self.image_processing, operation);
         call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
     }
+
+    /// Blocks Finalize after one device reports a failed native Close.
+    pub(crate) fn block_finalize(&self) {
+        self.finalize_blocked.store(true, Ordering::Release);
+    }
 }
 
 #[derive(Clone)]
 /// Control token for the process-wide native session.
 ///
-/// The SDK can be initialized only once per process. Dropping a token leaves Finalize to process
-/// exit; consuming `shutdown` performs Finalize when this is the sole session owner.
+/// The SDK can be initialized only once per process. Dropping a token skips Finalize and relies on
+/// process exit for native resource reclamation. Consuming `shutdown` performs Finalize when this
+/// is the sole session owner and every device Close succeeded.
 pub struct Runtime {
     core: Arc<RuntimeCore>,
 }
@@ -88,6 +96,7 @@ impl Runtime {
                 core: Arc::new(RuntimeCore {
                     driver,
                     image_processing: Mutex::new(()),
+                    finalize_blocked: AtomicBool::new(false),
                 }),
             })
         }
@@ -136,7 +145,7 @@ impl Runtime {
         serial_number: &[u8],
         configuration: &IpConfiguration,
     ) -> Result<(), Error> {
-        let serial = validated_c_string(Operation::SetIpConfig, serial_number, 16)?;
+        let serial = validated_c_string("serial number", serial_number, 16)?;
         let raw = IpConfigRaw::from(configuration);
         self.call(Operation::SetIpConfig, |driver| {
             driver.set_ip_config(&serial, &raw)
@@ -152,7 +161,7 @@ impl Runtime {
     }
 
     pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device, Error> {
-        let serial = validated_c_string(Operation::OpenDeviceBySn, serial_number, 16)?;
+        let serial = validated_c_string("serial number", serial_number, 16)?;
         let handle = self.call(Operation::OpenDeviceBySn, |driver| {
             driver.open_by_serial(&serial)
         })?;
@@ -194,7 +203,7 @@ impl Runtime {
         format: ImageFileFormatRecord,
         file_name: &[u8],
     ) -> Result<(), Error> {
-        let file_name = validated_c_string(Operation::SaveImage, file_name, u32::MAX as usize)?;
+        let file_name = validated_c_string("file name", file_name, u32::MAX as usize)?;
         self.call(Operation::SaveImage, |driver| {
             driver.save_image(input, format, &file_name)
         })
@@ -214,14 +223,15 @@ impl Runtime {
 
     /// Finalizes the one-shot native session.
     ///
-    /// Every `Device` and image-processing token must be dropped first. Consuming `self` prevents
-    /// Finalize from being retried or overlapping a call through another owner.
+    /// Every `Device` and image-processing token must be dropped first. A prior device Close error
+    /// permanently blocks Finalize. Consuming `self` prevents retry or overlap with another owner.
     pub fn shutdown(self) -> Result<(), Error> {
         let core = Arc::try_unwrap(self.core).map_err(|_| Error::InvalidState {
             operation: Operation::Finalize,
             expected: "all devices and image processors dropped",
             actual: "session owners remain",
         })?;
+        ensure_finalization_allowed(&core.finalize_blocked)?;
         core.driver
             .finalize()
             .map_err(|error| map_driver_error(Operation::Finalize, error))
@@ -252,8 +262,8 @@ fn claim_initialization(claimed: &AtomicBool) -> Result<(), Error> {
 /// Serializes process-wide image helpers through the immediate SDK-output copy.
 fn image_processing_guard(lock: &Mutex<()>, operation: Operation) -> Option<MutexGuard<'_, ()>> {
     operation_uses_image_processing_lock(operation)
-        // A previous unwind makes the SDK's transient image-output state unknown.
-        .then(|| lock.lock().unwrap_or_else(|_| std::process::abort()))
+        // The mutex is only a call gate and protects no Rust state.
+        .then(|| lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
 }
 
 fn operation_uses_image_processing_lock(operation: Operation) -> bool {
@@ -274,10 +284,7 @@ fn map_driver_error(operation: Operation, error: DriverError) -> Error {
         DriverError::Status(status) => {
             Error::Sdk(SdkError::new(operation, StatusCode::from_raw(status)))
         }
-        DriverError::InvalidInput(violation) => Error::InvalidInput {
-            field: operation.sdk_name(),
-            violation,
-        },
+        DriverError::InvalidInput { field, violation } => Error::InvalidInput { field, violation },
         DriverError::Contract(violation) => Error::ContractViolation {
             operation,
             violation,
@@ -285,20 +292,16 @@ fn map_driver_error(operation: Operation, error: DriverError) -> Error {
     }
 }
 
-fn validated_c_string(
-    operation: Operation,
-    bytes: &[u8],
-    maximum: usize,
-) -> Result<CString, Error> {
+fn validated_c_string(field: &'static str, bytes: &[u8], maximum: usize) -> Result<CString, Error> {
     if bytes.is_empty() {
         return Err(Error::InvalidInput {
-            field: operation.sdk_name(),
+            field,
             violation: InputViolation::Empty,
         });
     }
     if bytes.len() > maximum {
         return Err(Error::InvalidInput {
-            field: operation.sdk_name(),
+            field,
             violation: InputViolation::TooLong {
                 max: maximum,
                 actual: bytes.len(),
@@ -306,17 +309,30 @@ fn validated_c_string(
         });
     }
     CString::new(bytes).map_err(|_| Error::InvalidInput {
-        field: operation.sdk_name(),
+        field,
         violation: InputViolation::InteriorNul,
     })
 }
 
+/// Rejects Finalize after Close left a native handle's lifetime unknown.
+fn ensure_finalization_allowed(blocked: &AtomicBool) -> Result<(), Error> {
+    if blocked.load(Ordering::Acquire) {
+        Err(Error::InvalidState {
+            operation: Operation::Finalize,
+            expected: "all device handles closed successfully",
+            actual: "a device Close failed",
+        })
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, TryLockError};
 
-    use super::{claim_initialization, image_processing_guard};
+    use super::{claim_initialization, ensure_finalization_allowed, image_processing_guard};
     use crate::error::{Error, Operation};
 
     // 验证 Initialize 机会一旦消费就不再重试。
@@ -331,6 +347,24 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    // 验证任一 Close 失败后 Finalize barrier 只允许从可用变为永久禁止。
+    #[test]
+    fn finalize_barrier_is_one_way() {
+        let blocked = AtomicBool::new(false);
+        assert!(ensure_finalization_allowed(&blocked).is_ok());
+
+        blocked.store(true, Ordering::Release);
+        for _ in 0..2 {
+            assert!(matches!(
+                ensure_finalization_allowed(&blocked),
+                Err(Error::InvalidState {
+                    operation: Operation::Finalize,
+                    ..
+                })
+            ));
+        }
     }
 
     // 验证六个 process-wide 图像接口共用串行锁，设备接口不受影响。

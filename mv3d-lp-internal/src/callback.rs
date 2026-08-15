@@ -75,8 +75,10 @@ impl CallbackRegistry {
     }
 
     fn lock(&self) -> MutexGuard<'_, RegistryState> {
-        // Poisoning makes callback ownership unknowable, so recovery is unsafe.
-        self.state.lock().unwrap_or_else(|_| std::process::abort())
+        // Sink code runs after releasing the guard; poisoning does not invalidate owned entries.
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Inserts a sink under a never-reused cookie so a late callback cannot hit a newer sink.

@@ -9,7 +9,7 @@ use crate::SdkText;
 /// unbounded number of owned event buffers. Native callback trampolines use
 /// non-blocking sends: image delivery discards a new frame when this queue is
 /// full, while exception delivery discards the current event and stops so the
-/// receiver observes that its event stream is incomplete.
+/// receiver observes a disconnection. The channel does not encode the disconnection reason.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub struct CallbackOptions {
