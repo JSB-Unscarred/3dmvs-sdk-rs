@@ -96,11 +96,11 @@ fn run() -> Result<()> {
 | `MV3D_LP_CloseDevice` | `Device::close()`、`Device` 的 `Drop` | 必要时先 Stop，再调用一次 Close；显式关闭按单错误原样、双错误聚合返回；Close failure 阻止 Finalize |
 | `MV3D_LP_SetIpConfig` | `Sdk::set_ip_config()` | 使用 `IpConfiguration` 表达配置模式 |
 | `MV3D_LP_RegisterExceptionCallBack` | `Device::exception_receiver()`、`Device::disable_exception_delivery()` | 接收或停止 Rust 异常投递 |
-| `MV3D_LP_StartMeasure` | `Device::start()`、`Device::start_receiving()` | 普通 Start 直接转发；callback 的 Register→Start 两步使用 `needs_stop` guard |
-| `MV3D_LP_StopMeasure` | `Device::stop()`、`Device::close()` 及 `Drop` | 普通 Stop 直接转发；成功后清除 Close 的 Stop 义务 |
+| `MV3D_LP_StartMeasure` | `Device::start()`、`Device::start_receiving()` | 仅允许从 `Idle` 开始；pull 与 callback 状态互斥 |
+| `MV3D_LP_StopMeasure` | `Device::stop()`、`Device::close()` 及 `Drop` | 仅停止运行中的采集；pull 成功回到 `Idle`，callback registration 保存至 Close |
 | `MV3D_LP_SoftTrigger` | `Device::soft_trigger()` | 直接转发，由 SDK 判断调用顺序 |
 | `MV3D_LP_GetImage` | `Device::get_image()`、`Device::get_image_blocking()` | pull 采集的有限等待与无限等待；internal FFI 校验后复制为 `Frame`（即 `Image`） |
-| `MV3D_LP_RegisterImageDataCallBack` | `Device::start_receiving()` | 返回有界 `Receiver<Frame>` |
+| `MV3D_LP_RegisterImageDataCallBack` | `Device::start_receiving()` | 返回有界 `Receiver<Frame>`；Register 成功后该 handle 绑定 callback 至 Close |
 | `MV3D_LP_ClearDataBuffer` | `Device::clear_buffer()` | 直接转发；允许状态待厂商确认 |
 | `MV3D_LP_GetParam` | `Device::get_parameter()` | 接收 `&str` Node Name，返回 `Parameter` |
 | `MV3D_LP_SetParam` | `Device::set_parameter()` | 接收 `&str` Node Name 与 `ParameterValue` |
@@ -146,7 +146,7 @@ SDK 的 reserved 字段、原始指针、回调函数指针和设备句柄只存
 ## 安全边界
 
 - 公共 crate 使用 `#![forbid(unsafe_code)]`；FFI、指针校验、C union 读取和 callback trampoline 位于 `mv3d-lp-internal`。
-- 原生图像输入与输出的判别值、指针、长度、布局和算术校验集中在 internal FFI，再复制到 Rust 所有值；校验依据实际 slice 和 SDK 长度字段，不设置任意的 512 MiB 上限。
+- 原生图像输入与输出的判别值、指针、长度、布局和算术校验集中在 internal FFI，再复制到 Rust 所有值；已知格式要求主数据、可选亮度数据和曝光时间戳与宽高精确对应。
 - 所有权、线程契约、清理顺序、callback、FileAccess、错误传播与终止边界统一见[生命周期与时序](生命周期与时序图.md)。
 
 safe API 依赖同步调用期间输入可读、SDK 输出在复制完成前有效。SDK、头文件、ABI 或固件变化后应重新审计相关接口。

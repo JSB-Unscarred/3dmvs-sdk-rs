@@ -13,8 +13,7 @@ use crate::runtime::RuntimeCore;
 pub struct Device {
     runtime: Arc<RuntimeCore>,
     handle: Option<Handle>,
-    needs_stop: bool,
-    image_registration: Option<CallbackRegistration>,
+    acquisition: AcquisitionState,
     exception_registration: Option<CallbackRegistration>,
     // Successful asynchronous FileAccess calls may retain every submitted name until Close.
     file_names: Vec<(CString, CString)>,
@@ -25,51 +24,64 @@ impl Device {
         Self {
             runtime,
             handle: Some(handle),
-            needs_stop: false,
-            image_registration: None,
+            acquisition: AcquisitionState::Idle,
             exception_registration: None,
             file_names: Vec::new(),
         }
     }
 
-    /// Starts pull acquisition and records the Stop obligation after native success.
+    /// Starts pull acquisition only from the idle state.
     pub fn start(&mut self) -> Result<(), Error> {
+        self.acquisition.require_idle(Operation::StartMeasure)?;
         self.runtime.call(Operation::StartMeasure, |driver| {
             driver.start(self.handle())
         })?;
-        self.needs_stop = true;
+        self.acquisition = AcquisitionState::Pulling;
         Ok(())
     }
 
-    /// Starts callback acquisition and retains the registration until stop or close.
+    /// Registers callback acquisition and retains its cookie through Close.
     pub fn start_callback(&mut self, sink: FrameCallbackSink) -> Result<(), Error> {
         const OPERATION: Operation = Operation::RegisterImageDataCallback;
-        if self.needs_stop {
-            return Err(Error::InvalidState {
-                operation: OPERATION,
-                expected: "stopped",
-                actual: "measuring",
-            });
-        }
+        self.acquisition.require_idle(OPERATION)?;
 
         let registration = CallbackRegistration::image(sink);
         self.runtime.call(OPERATION, |driver| {
             driver.register_image_callback(self.handle(), registration.cookie())
         })?;
+        // Register has no native unregister API, so the device remains callback-bound even when
+        // the following Start fails.
+        self.acquisition = AcquisitionState::CallbackStopped(registration);
         self.runtime.call(Operation::StartMeasure, |driver| {
             driver.start(self.handle())
         })?;
-        self.image_registration = Some(registration);
-        self.needs_stop = true;
+        let AcquisitionState::CallbackStopped(registration) =
+            std::mem::replace(&mut self.acquisition, AcquisitionState::Idle)
+        else {
+            unreachable!("callback registration was saved before Start")
+        };
+        self.acquisition = AcquisitionState::CallbackRunning(registration);
         Ok(())
     }
 
-    /// Stops the active acquisition and then retires its image callback registration.
+    /// Stops active acquisition; callback registration remains valid through Close.
     pub fn stop(&mut self) -> Result<(), Error> {
+        if !self.acquisition.needs_stop() {
+            return Err(Error::InvalidState {
+                operation: Operation::StopMeasure,
+                expected: "pull or callback acquisition running",
+                actual: self.acquisition.name(),
+            });
+        }
         self.runtime
             .call(Operation::StopMeasure, |driver| driver.stop(self.handle()))?;
-        self.needs_stop = false;
-        drop(self.image_registration.take());
+        self.acquisition = match std::mem::replace(&mut self.acquisition, AcquisitionState::Idle) {
+            AcquisitionState::Pulling => AcquisitionState::Idle,
+            AcquisitionState::CallbackRunning(registration) => {
+                AcquisitionState::CallbackStopped(registration)
+            }
+            _ => unreachable!("only a running acquisition reaches native Stop"),
+        };
         Ok(())
     }
 
@@ -196,7 +208,7 @@ impl Device {
             return Ok(());
         };
 
-        let stop = if self.needs_stop {
+        let stop = if self.acquisition.needs_stop() {
             self.runtime
                 .call(Operation::StopMeasure, |driver| driver.stop(handle))
                 .err()
@@ -207,7 +219,6 @@ impl Device {
             .runtime
             .call(Operation::CloseDevice, |driver| driver.close(handle))
             .err();
-        self.needs_stop = false;
 
         if close.is_some() {
             // A failed Close makes Finalize unsafe and may leave native FileAccess borrows alive.
@@ -216,8 +227,8 @@ impl Device {
         } else {
             drop(std::mem::take(&mut self.file_names));
         }
-        // Cookies are opaque and never reused, so revocation safely silences late callbacks.
-        drop(self.image_registration.take());
+        // Registration may outlive Stop, so opaque cookies are revoked after the sole Close call.
+        self.acquisition = AcquisitionState::Idle;
         drop(self.exception_registration.take());
 
         cleanup_result(stop, close)
@@ -225,6 +236,44 @@ impl Device {
 
     fn handle(&self) -> Handle {
         self.handle.expect("a live device always has a handle")
+    }
+}
+
+/// Locally prevents acquisition modes from sharing one native handle or callback slot.
+enum AcquisitionState {
+    Idle,
+    Pulling,
+    CallbackRunning(CallbackRegistration),
+    CallbackStopped(CallbackRegistration),
+}
+
+impl AcquisitionState {
+    /// Rejects a second acquisition mode on the same handle or callback slot.
+    fn require_idle(&self, operation: Operation) -> Result<(), Error> {
+        if matches!(self, Self::Idle) {
+            Ok(())
+        } else {
+            Err(Error::InvalidState {
+                operation,
+                expected: "idle",
+                actual: self.name(),
+            })
+        }
+    }
+
+    /// Reports whether cleanup owes the native handle one Stop call.
+    fn needs_stop(&self) -> bool {
+        matches!(self, Self::Pulling | Self::CallbackRunning(_))
+    }
+
+    /// Supplies a stable description for public state errors.
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Pulling => "pull acquisition running",
+            Self::CallbackRunning(_) => "callback acquisition running",
+            Self::CallbackStopped(_) => "callback registered and stopped",
+        }
     }
 }
 
@@ -256,7 +305,10 @@ impl Drop for Device {
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_result, validated_c_string};
+    use std::sync::Arc;
+
+    use super::{AcquisitionState, cleanup_result, validated_c_string};
+    use crate::callback::CallbackRegistration;
     use crate::error::{Error, InputViolation, Operation, SdkError, StatusCode};
 
     // 验证清理只在 Stop 与 Close 同时失败时引入聚合错误。
@@ -296,6 +348,27 @@ mod tests {
                     field: actual,
                     violation: InputViolation::InteriorNul,
                 }) if actual == field
+            ));
+        }
+    }
+
+    // 验证 callback 注册后即绑定到 Close，停止态不能切换采集模式。
+    #[test]
+    fn stopped_callback_registration_is_terminal() {
+        let state =
+            AcquisitionState::CallbackStopped(CallbackRegistration::image(Arc::new(|_| true)));
+
+        assert!(!state.needs_stop());
+        for operation in [
+            Operation::StartMeasure,
+            Operation::RegisterImageDataCallback,
+        ] {
+            assert!(matches!(
+                state.require_idle(operation),
+                Err(Error::InvalidState {
+                    operation: actual,
+                    ..
+                }) if actual == operation
             ));
         }
     }

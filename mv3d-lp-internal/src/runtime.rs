@@ -10,14 +10,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::device::{DeviceRecord, IpConfigRaw, IpConfiguration};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRangeRecord;
-use crate::driver::{Driver, DriverError, DriverResult};
+use crate::driver::{DriverError, DriverResult};
 use crate::error::{ContractViolation, Error, InputViolation, Operation, SdkError, StatusCode};
+use crate::ffi::NativeDriver;
 use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
 use crate::opened_device::Device;
 
 /// Owned native session shared by all session owners.
 pub(crate) struct RuntimeCore {
-    driver: Box<dyn Driver>,
+    driver: NativeDriver,
     // 图像处理输出只在下一次处理调用前有效；同一 session 串行到 owned copy 完成。
     image_processing: Mutex<()>,
     // Close 失败后 native handle 状态未知；该单向 latch 禁止随后 Finalize。
@@ -29,10 +30,10 @@ impl RuntimeCore {
     pub(crate) fn call<T>(
         &self,
         operation: Operation,
-        call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
+        call: impl FnOnce(&NativeDriver) -> DriverResult<T>,
     ) -> Result<T, Error> {
         let _image_processing = image_processing_guard(&self.image_processing, operation);
-        call(self.driver.as_ref()).map_err(|error| map_driver_error(operation, error))
+        call(&self.driver).map_err(|error| map_driver_error(operation, error))
     }
 
     /// Blocks Finalize after one device reports a failed native Close.
@@ -88,7 +89,7 @@ impl Runtime {
         ))]
         {
             claim_initialization(&INITIALIZE_CLAIMED)?;
-            let driver: Box<dyn Driver> = Box::new(crate::ffi::NativeDriver);
+            let driver = NativeDriver;
             driver
                 .initialize()
                 .map_err(|error| map_driver_error(Operation::Initialize, error))?;
@@ -137,7 +138,7 @@ impl Runtime {
                 },
             });
         }
-        Ok(list.records.into_iter().map(DeviceRecord::from).collect())
+        Ok(list.records)
     }
 
     pub fn set_ip_config(
@@ -240,7 +241,7 @@ impl Runtime {
     fn call<T>(
         &self,
         operation: Operation,
-        call: impl FnOnce(&dyn Driver) -> DriverResult<T>,
+        call: impl FnOnce(&NativeDriver) -> DriverResult<T>,
     ) -> Result<T, Error> {
         self.core.call(operation, call)
     }

@@ -12,8 +12,8 @@ use crate::{
 /// `Device` does not borrow [`crate::Sdk`] and remains usable after that token is dropped. A live
 /// device must be closed or dropped before [`crate::Sdk::shutdown`]. `Device` is `Send` but not
 /// `Sync`: unique ownership can move to another thread, while calls on different devices may run
-/// concurrently. One local flag records whether successful acquisition still requires Stop during
-/// cleanup; ordinary call-order errors come from the SDK.
+/// concurrently. Its local acquisition state prevents pull and callback modes from sharing one
+/// handle or callback slot.
 pub struct Device {
     inner: mv3d_lp_internal::Device,
 }
@@ -25,7 +25,7 @@ impl Device {
 
     /// Starts pull acquisition on this device.
     ///
-    /// Call order is forwarded to the SDK. Only SDK success creates a later Stop obligation.
+    /// Only an idle device can start. Native failure leaves it idle.
     pub fn start(&mut self) -> Result<()> {
         self.inner.start()
     }
@@ -62,18 +62,18 @@ impl Device {
 
     /// Stops the active pull or callback acquisition.
     ///
-    /// On success, the image callback cookie is retired. A callback that already cloned its sink
-    /// may still enqueue one frame after this method returns, so success is not a callback
-    /// quiescence barrier. On failure, the Stop obligation and callback registration remain for a
-    /// later caller decision or device cleanup.
+    /// Pull success returns the device to idle. Callback success retains its registration until
+    /// Close, so that device cannot restart or switch acquisition mode. Stop failure leaves the
+    /// running state unchanged. This method is not a callback quiescence barrier.
     pub fn stop(&mut self) -> Result<()> {
         self.inner.stop()
     }
 
     /// Registers native image delivery, starts measurement, and returns a bounded receiver.
     ///
-    /// After [`Device::stop`] succeeds, the wrapper forwards a later registration attempt and
-    /// returns the SDK result; the vendor's cross-Stop re-registration contract remains unconfirmed.
+    /// Once native registration succeeds, this device remains callback-bound until Close. That
+    /// rule also applies when the following native Start fails. After a successful Stop, drop the
+    /// receiver when queued frames are no longer needed.
     ///
     /// # Native contract
     ///

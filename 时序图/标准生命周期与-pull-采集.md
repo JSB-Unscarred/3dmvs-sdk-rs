@@ -55,7 +55,7 @@ sequenceDiagram
     Core->>Native: MV3D_LP_OpenDeviceByIP(...)
     Native-->>Core: status + 原生 handle
     alt status 成功且 handle 非空
-        Core->>Core: Device 获取 RuntimeCore 的 Arc owner，needs_stop = false
+        Core->>Core: Device 获取 RuntimeCore 的 Arc owner，acquisition = Idle
         Core-->>Public: internal Device
         Public-->>App: Device
     else status 失败或成功时 handle 为空
@@ -74,14 +74,19 @@ sequenceDiagram
 
     App->>Public: device.start()
     Public->>Core: Device::start()
-    Core->>Native: MV3D_LP_StartMeasure(handle)
-    Native-->>Core: status
-    alt StartMeasure 成功
-        Core->>Core: needs_stop = true
-        Core-->>Public: Ok
-        Public-->>App: Ok
-    else StartMeasure 失败
-        Core-->>Public: Err，needs_stop 仍为 false
+    alt acquisition = Idle
+        Core->>Native: MV3D_LP_StartMeasure(handle)
+        Native-->>Core: status
+        alt StartMeasure 成功
+            Core->>Core: acquisition = Pulling
+            Core-->>Public: Ok
+            Public-->>App: Ok
+        else StartMeasure 失败
+            Core-->>Public: Err，acquisition 仍为 Idle
+            Public-->>App: Err
+        end
+    else 其他状态
+        Core-->>Public: InvalidState
         Public-->>App: Err
     end
 
@@ -106,17 +111,17 @@ sequenceDiagram
     Core->>Native: MV3D_LP_StopMeasure(handle)
     Native-->>Core: status
     alt Stop 成功
-        Core->>Core: needs_stop = false
+        Core->>Core: acquisition = Idle
         Core-->>Public: Ok
         Public-->>App: Ok
     else Stop 失败
-        Core-->>Public: Err，needs_stop 仍为 true
+        Core-->>Public: Err，acquisition 仍为 Pulling
         Public-->>App: Err
     end
 
     App->>Public: device.close()
     Public->>Core: Device::close() 消费 owner 并取走 handle
-    opt needs_stop = true
+    opt acquisition = Pulling 或 CallbackRunning
         Core->>Native: MV3D_LP_StopMeasure(handle) 一次
         Native-->>Core: stop status
     end
@@ -164,8 +169,8 @@ sequenceDiagram
     end
 ```
 
-`Device` 通过 `Arc` 独立拥有 session，打开后可释放 `Sdk`，也可将唯一 device owner 移入普通 worker thread。`get_image()` 使用有限超时，`get_image_blocking()` 传入 SDK 的无限等待值；两者返回拥有 payload 的 `Frame`。普通 `start()` 与 `stop()` 直接进入 SDK；`needs_stop` 只在成功结果后记录或清除 Close 前的 Stop 义务，不承担普通调用顺序检查。`get_image`、`soft_trigger`、参数、Execute 与 `clear_buffer` 的调用顺序同样由 SDK 判定。
+`Device` 通过 `Arc` 独立拥有 session，打开后可释放 `Sdk`，也可将唯一 device owner 移入普通 worker thread。`get_image()` 使用有限超时，`get_image_blocking()` 传入 SDK 的无限等待值；两者返回拥有 payload 的 `Frame`。`start()` 仅接受 `Idle`，`stop()` 仅接受 `Pulling` 或 `CallbackRunning`；native 调用失败时状态不变。`get_image`、`soft_trigger`、参数、Execute 与 `clear_buffer` 的调用顺序仍由 SDK 判定。
 
-显式 `close()` 与 `Drop` 共用清理路径：`needs_stop` 为 true 时尝试一次 Stop，随后调用一次 Close。Close 成功才作为 native callback 与 FileAccess 引用结束的边界；Close 失败时封存全部 FileAccess backing、置位 `finalize_blocked`，并把 native handle 状态交给进程退出处理。每个 `Device` owner 最多提交一次 Close；显式关闭按单错误原样、双错误聚合的规则返回，Drop 无法返回错误。完整总览见[生命周期与时序图总览](../生命周期与时序图.md)。
+显式 `close()` 与 `Drop` 共用清理路径：运行态先尝试一次 Stop，随后调用一次 Close。Close 返回后才撤销 callback cookie；Close 失败时封存全部 FileAccess backing、置位 `finalize_blocked`，并把 native handle 状态交给进程退出处理。每个 `Device` owner 最多提交一次 Close；显式关闭按单错误原样、双错误聚合的规则返回，Drop 无法返回错误。完整总览见[生命周期与时序图总览](../生命周期与时序图.md)。
 
 `shutdown(self)` 前应先释放全部 `Device` 和 `ImageProcessor`。Arc 唯一性取代 owner 计数，单向 `finalize_blocked` 只记录“曾有 Close 失败”；任一条件不满足都拒绝 Finalize。Finalize status 原样返回且不重试。终止式业务让错误先离开持有局部 owner 的 `run()`，再由 `main()` 记录并结束进程。

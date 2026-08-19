@@ -80,10 +80,9 @@ impl Default for ImageCalibration {
 
 /// A borrowed image view accepted by [`crate::ImageProcessor`].
 ///
-/// Known uncompressed formats must contain at least their tightly packed pixel payload. Complete
-/// slice lengths are passed to the SDK; because the descriptor has no stride field, the wrapper
-/// does not infer row padding or interpret trailing bytes, and the SDK decides whether they are
-/// supported.
+/// Known uncompressed formats require exactly their tightly packed pixel payload. Optional
+/// intensity data contains one byte per pixel, and exposure timestamps contain one entry per row.
+/// Unknown image types pass their complete non-empty payload to the SDK.
 #[derive(Clone, Copy)]
 pub struct ImageRef<'a> {
     pub image_type: ImageType,
