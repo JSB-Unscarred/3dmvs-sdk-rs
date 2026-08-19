@@ -66,7 +66,7 @@ impl fmt::Display for IpConfigurationMode {
 /// An owned device descriptor converted from the SDK's fixed C structure.
 ///
 /// All strings have been copied out of the SDK and no pointer or native handle
-/// is retained.
+/// is retained. The snapshot owns no session lease and is `Send + Sync`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct DeviceInfo {

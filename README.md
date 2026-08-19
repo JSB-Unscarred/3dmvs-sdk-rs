@@ -67,6 +67,18 @@ fn run() -> Result<()> {
 返回 `Error::DeviceCleanup`。Close 失败后不重试：所有成功 FileAccess 的文件名 backing
 封存至进程退出，进程级 Finalize 被阻止，调用方应停止 SDK 操作并结束进程。
 
+## 与 MVS wrapper 的共同生命周期骨架
+
+3dmvs 与 MVS wrapper 都使用一次性 Initialize、唯一 `Sdk::shutdown(self)` 入口和内部
+`Arc<RuntimeCore>` session lease。`DeviceInfo` 是可跨线程传递的 owned snapshot；已打开的
+`Device`/`Camera` 为 `Send + !Sync`，各自唯一拥有 native handle。
+
+厂商接口决定以下差异：3dmvs 的 Close 是 handle 生命周期终点，因此 Close failure 永久阻止
+Finalize；MVS 还会继续尝试独立的 DestroyHandle，只有 Destroy failure 才阻止 Finalize。
+3dmvs 取图在返回前复制为 owned `Frame`，MVS polling 可返回需要显式归还的零拷贝
+`FrameGuard`。3dmvs 缺少可靠的 callback unregister，使用 cookie registry 隔离迟到 callback；
+MVS 使用 Camera-owned callback slot，并在注销或 Destroy 边界释放。
+
 设备也可通过 `SerialNumber` 与 `Sdk::open_by_serial()` 打开。SDK 文本使用 `SdkText` 保存原始字节，可按需调用 `to_str()` 或 `to_string_lossy()`。
 
 需要无限等待下一帧时调用 `device.get_image_blocking()`；`get_image(Duration)` 只表达有限等待。
