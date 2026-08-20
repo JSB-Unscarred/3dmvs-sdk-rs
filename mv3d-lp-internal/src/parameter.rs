@@ -1,32 +1,52 @@
+use crate::text::SdkText;
+
+/// An owned parameter value together with the limits reported by the SDK.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ParameterRecord {
+#[non_exhaustive]
+pub enum Parameter {
     Bool(bool),
     Integer {
         value: i64,
-        minimum: i64,
-        maximum: i64,
+        min: i64,
+        max: i64,
         increment: i64,
     },
     Float {
         value: f32,
-        minimum: f32,
-        maximum: f32,
+        min: f32,
+        max: f32,
     },
     Enumeration {
         value: u32,
         supported: Vec<u32>,
     },
     String {
-        value: Vec<u8>,
-        maximum_length: u32,
+        value: SdkText,
+        max_length: u32,
     },
 }
 
+impl Parameter {
+    /// Extracts the current value without the limits returned by `GetParam`.
+    #[must_use]
+    pub fn value(&self) -> ParameterValue {
+        match self {
+            Self::Bool(value) => ParameterValue::Bool(*value),
+            Self::Integer { value, .. } => ParameterValue::Integer(*value),
+            Self::Float { value, .. } => ParameterValue::Float(*value),
+            Self::Enumeration { value, .. } => ParameterValue::Enumeration(*value),
+            Self::String { value, .. } => ParameterValue::String(value.clone()),
+        }
+    }
+}
+
+/// A value accepted by the SDK's parameter-setting operation.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ParameterValueRecord {
+#[non_exhaustive]
+pub enum ParameterValue {
     Bool(bool),
     Integer(i64),
     Float(f32),
     Enumeration(u32),
-    String(Vec<u8>),
+    String(SdkText),
 }

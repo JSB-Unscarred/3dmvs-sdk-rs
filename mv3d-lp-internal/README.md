@@ -3,7 +3,8 @@
 `mv3d-lp-internal` is the private implementation crate for
 [`mv3d-lp`](https://github.com/JSB-Unscarred/3dmvs-sdk-rs). It isolates the audited raw
 LPSDK bindings, process-wide runtime state, callback registry, and native
-resource cleanup from the public safe facade.
+resource cleanup from the public safe facade. Public types such as `Image`,
+`Parameter`, and `DeviceInfo` are defined here and re-exported by `mv3d-lp`.
 
 Production native calls, union reads, and image pointer conversion live in `ffi.rs`. Callback
 trampoline entry, raw-pointer admission, and exception copying live in `callback.rs`. `bindings.rs`

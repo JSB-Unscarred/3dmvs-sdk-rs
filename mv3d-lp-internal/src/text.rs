@@ -1,20 +1,22 @@
-use crate::{Error, InputViolation, Result};
 use std::borrow::Cow;
 use std::fmt;
 use std::str::{FromStr, Utf8Error};
+
+use crate::cstr::c_string;
+use crate::error::{Error, InputViolation};
 
 /// SDK-originated text kept as owned bytes without assuming an encoding.
 #[derive(Clone, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SdkText(Vec<u8>);
 
 impl SdkText {
-    pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self> {
+    pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self, Error> {
         let bytes = bytes.as_ref();
         reject_nul("SDK text", bytes)?;
         Ok(Self(bytes.to_vec()))
     }
 
-    fn from_vec(bytes: Vec<u8>) -> Result<Self> {
+    fn from_vec(bytes: Vec<u8>) -> Result<Self, Error> {
         reject_nul("SDK text", &bytes)?;
         Ok(Self(bytes))
     }
@@ -80,7 +82,7 @@ impl AsRef<[u8]> for SdkText {
 impl TryFrom<&[u8]> for SdkText {
     type Error = Error;
 
-    fn try_from(value: &[u8]) -> Result<Self> {
+    fn try_from(value: &[u8]) -> Result<Self, Error> {
         Self::new(value)
     }
 }
@@ -88,7 +90,7 @@ impl TryFrom<&[u8]> for SdkText {
 impl TryFrom<Vec<u8>> for SdkText {
     type Error = Error;
 
-    fn try_from(value: Vec<u8>) -> Result<Self> {
+    fn try_from(value: Vec<u8>) -> Result<Self, Error> {
         Self::from_vec(value)
     }
 }
@@ -96,7 +98,7 @@ impl TryFrom<Vec<u8>> for SdkText {
 impl TryFrom<&str> for SdkText {
     type Error = Error;
 
-    fn try_from(value: &str) -> Result<Self> {
+    fn try_from(value: &str) -> Result<Self, Error> {
         Self::new(value.as_bytes())
     }
 }
@@ -104,7 +106,7 @@ impl TryFrom<&str> for SdkText {
 impl TryFrom<String> for SdkText {
     type Error = Error;
 
-    fn try_from(value: String) -> Result<Self> {
+    fn try_from(value: String) -> Result<Self, Error> {
         Self::from_vec(value.into_bytes())
     }
 }
@@ -112,7 +114,7 @@ impl TryFrom<String> for SdkText {
 impl FromStr for SdkText {
     type Err = Error;
 
-    fn from_str(value: &str) -> Result<Self> {
+    fn from_str(value: &str) -> Result<Self, Error> {
         Self::try_from(value)
     }
 }
@@ -124,18 +126,19 @@ pub struct SerialNumber(Vec<u8>);
 impl SerialNumber {
     pub const MAX_LEN: usize = 16;
 
-    pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self> {
+    pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self, Error> {
         let bytes = bytes.as_ref();
         validate_serial(bytes)?;
         Ok(Self(bytes.to_vec()))
     }
 
-    fn from_vec(bytes: Vec<u8>) -> Result<Self> {
+    fn from_vec(bytes: Vec<u8>) -> Result<Self, Error> {
         validate_serial(&bytes)?;
         Ok(Self(bytes))
     }
 
     /// Accepts a serial copied from the SDK's fixed 16-byte field.
+    #[allow(dead_code)]
     pub(crate) fn from_sdk_bytes(bytes: Vec<u8>) -> Self {
         debug_assert!(bytes.len() <= Self::MAX_LEN && !bytes.contains(&0));
         Self(bytes)
@@ -196,7 +199,7 @@ impl AsRef<[u8]> for SerialNumber {
 impl TryFrom<&[u8]> for SerialNumber {
     type Error = Error;
 
-    fn try_from(value: &[u8]) -> Result<Self> {
+    fn try_from(value: &[u8]) -> Result<Self, Error> {
         Self::new(value)
     }
 }
@@ -204,7 +207,7 @@ impl TryFrom<&[u8]> for SerialNumber {
 impl TryFrom<Vec<u8>> for SerialNumber {
     type Error = Error;
 
-    fn try_from(value: Vec<u8>) -> Result<Self> {
+    fn try_from(value: Vec<u8>) -> Result<Self, Error> {
         Self::from_vec(value)
     }
 }
@@ -212,7 +215,7 @@ impl TryFrom<Vec<u8>> for SerialNumber {
 impl TryFrom<&str> for SerialNumber {
     type Error = Error;
 
-    fn try_from(value: &str) -> Result<Self> {
+    fn try_from(value: &str) -> Result<Self, Error> {
         Self::new(value.as_bytes())
     }
 }
@@ -220,7 +223,7 @@ impl TryFrom<&str> for SerialNumber {
 impl TryFrom<String> for SerialNumber {
     type Error = Error;
 
-    fn try_from(value: String) -> Result<Self> {
+    fn try_from(value: String) -> Result<Self, Error> {
         Self::from_vec(value.into_bytes())
     }
 }
@@ -228,39 +231,29 @@ impl TryFrom<String> for SerialNumber {
 impl FromStr for SerialNumber {
     type Err = Error;
 
-    fn from_str(value: &str) -> Result<Self> {
+    fn from_str(value: &str) -> Result<Self, Error> {
         Self::try_from(value)
     }
 }
 
-fn validate_serial(bytes: &[u8]) -> Result<()> {
-    if bytes.len() > SerialNumber::MAX_LEN {
-        return Err(Error::InvalidInput {
-            field: "serial number",
-            violation: InputViolation::TooLong {
-                max: SerialNumber::MAX_LEN,
-                actual: bytes.len(),
-            },
-        });
-    }
-    reject_nul("serial number", bytes)
+fn validate_serial(bytes: &[u8]) -> Result<(), Error> {
+    c_string("serial number", bytes, Some(SerialNumber::MAX_LEN)).map(drop)
 }
 
-fn reject_nul(field: &'static str, bytes: &[u8]) -> Result<()> {
+fn reject_nul(field: &'static str, bytes: &[u8]) -> Result<(), Error> {
     if bytes.contains(&0) {
         return Err(Error::InvalidInput {
             field,
             violation: InputViolation::InteriorNul,
         });
     }
-
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{SdkText, SerialNumber};
-    use crate::{Error, InputViolation};
+    use crate::error::{Error, InputViolation};
 
     // 验证 SDK 文本保留非 UTF-8 字节，输入 C 字符串拒绝 interior NUL。
     #[test]

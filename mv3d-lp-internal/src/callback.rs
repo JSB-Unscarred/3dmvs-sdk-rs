@@ -3,11 +3,36 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::num::NonZeroUsize;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::bindings;
-use crate::frame::FrameRecord;
+use crate::bits::bit_newtype;
+use crate::frame::Image;
+use crate::text::SdkText;
+
+bit_newtype! {
+    /// A device exception type reported by the SDK, preserving unknown values.
+    pub struct DeviceExceptionType;
+    UNDEFINED = 0xFFFF_FFFF => "undefined",
+    DISCONNECTED = 0x0000_0001 => "disconnected",
+}
+
+/// An owned device exception delivered by the safe callback facade.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct DeviceException {
+    pub kind: DeviceExceptionType,
+    pub description: SdkText,
+}
+
+impl DeviceException {
+    #[must_use]
+    pub const fn new(kind: DeviceExceptionType, description: SdkText) -> Self {
+        Self { kind, description }
+    }
+}
 
 /// Opaque callback identifier passed through the SDK without dereferencing native user data.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -23,21 +48,13 @@ impl CallbackCookie {
     }
 }
 
-/// Returns `false` after the receiver disconnects so the registry can stop delivery.
-pub type FrameCallbackSink = Arc<dyn Fn(FrameRecord) -> bool + Send + Sync + 'static>;
-pub type ExceptionCallbackSink = Arc<dyn Fn(ExceptionRecord) -> bool + Send + Sync + 'static>;
-
-/// Owned exception payload copied before the native callback returns.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExceptionRecord {
-    pub kind: i32,
-    pub description: Vec<u8>,
-}
+pub type ImageCallback = Arc<dyn Fn(Image) + Send + Sync + 'static>;
+pub type ExceptionCallback = Arc<dyn Fn(DeviceException) + Send + Sync + 'static>;
 
 #[derive(Clone)]
 enum CallbackSink {
-    Image(FrameCallbackSink),
-    Exception(ExceptionCallbackSink),
+    Image(ImageCallback),
+    Exception(ExceptionCallback),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -75,7 +92,6 @@ impl CallbackRegistry {
     }
 
     fn lock(&self) -> MutexGuard<'_, RegistryState> {
-        // Sink code runs after releasing the guard; poisoning does not invalidate owned entries.
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -96,7 +112,6 @@ impl CallbackRegistry {
         cookie
     }
 
-    /// Clones the sink so an admitted callback can finish if registration is removed concurrently.
     fn lookup(&self, cookie: CallbackCookie, expected: CallbackKind) -> Option<CallbackSink> {
         let sink = self.lock().entries.get(&cookie).cloned()?;
         (sink.kind() == expected).then_some(sink)
@@ -118,11 +133,11 @@ pub(crate) struct CallbackRegistration {
 }
 
 impl CallbackRegistration {
-    pub(crate) fn image(sink: FrameCallbackSink) -> Self {
+    pub(crate) fn image(sink: ImageCallback) -> Self {
         Self::new(CallbackSink::Image(sink))
     }
 
-    pub(crate) fn exception(sink: ExceptionCallbackSink) -> Self {
+    pub(crate) fn exception(sink: ExceptionCallback) -> Self {
         Self::new(CallbackSink::Exception(sink))
     }
 
@@ -143,27 +158,22 @@ impl Drop for CallbackRegistration {
     }
 }
 
-/// Copies one image callback into an owned Rust value.
-///
-/// Panics in conversion or user code reach this non-unwinding ABI boundary and terminate the
-/// process, matching the crate's fail-fast callback policy.
 pub(crate) unsafe extern "system" fn image_trampoline(
     image: *mut bindings::MV3D_LP_IMAGE_DATA,
     user: *mut c_void,
 ) {
     let Some(cookie) = CallbackCookie::from_user_pointer(user) else {
-        std::process::abort();
+        return;
     };
     dispatch_image(cookie, image);
 }
 
-/// Copies one exception callback into an owned Rust value under the same fail-fast policy.
 pub(crate) unsafe extern "system" fn exception_trampoline(
     exception: *mut bindings::MV3D_LP_EXCEPTION_INFO,
     user: *mut c_void,
 ) {
     let Some(cookie) = CallbackCookie::from_user_pointer(user) else {
-        std::process::abort();
+        return;
     };
     dispatch_exception(cookie, exception);
 }
@@ -174,12 +184,13 @@ fn dispatch_image(cookie: CallbackCookie, image: *mut bindings::MV3D_LP_IMAGE_DA
     };
     // SAFETY: the SDK owns the descriptor for the duration of this callback.
     let Some(image) = (unsafe { image.as_ref() }) else {
-        std::process::abort();
+        return;
     };
-    // SAFETY: the callback converter validates pointer/length pairs before copying every payload.
-    let frame = unsafe { crate::ffi::callback_image_from_native(image) }
-        .unwrap_or_else(|_| std::process::abort());
-    if !sink(frame) {
+    // SAFETY: conversion validates pointer/length pairs before copying. Invalid layouts are skipped.
+    let Ok(frame) = (unsafe { crate::ffi::callback_image_from_native(image) }) else {
+        return;
+    };
+    if catch_unwind(AssertUnwindSafe(|| sink(frame))).is_err() {
         registry().remove(cookie);
     }
 }
@@ -191,33 +202,35 @@ fn dispatch_exception(cookie: CallbackCookie, exception: *mut bindings::MV3D_LP_
     };
     // SAFETY: the SDK owns the descriptor for the duration of this callback.
     let Some(exception) = (unsafe { exception.as_ref() }) else {
-        std::process::abort();
+        return;
     };
-    if !sink(exception_from_native(exception)) {
+    let event = exception_from_native(exception);
+    if catch_unwind(AssertUnwindSafe(|| sink(event))).is_err() {
         registry().remove(cookie);
     }
 }
 
-fn exception_from_native(exception: &bindings::MV3D_LP_EXCEPTION_INFO) -> ExceptionRecord {
+fn exception_from_native(exception: &bindings::MV3D_LP_EXCEPTION_INFO) -> DeviceException {
     let length = exception
         .chExceptionDesc
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(exception.chExceptionDesc.len());
-    ExceptionRecord {
-        kind: exception.enExceptionType,
-        description: exception.chExceptionDesc[..length]
-            .iter()
-            .map(|byte| *byte as u8)
-            .collect(),
-    }
+    let description = exception.chExceptionDesc[..length]
+        .iter()
+        .map(|byte| *byte as u8)
+        .collect();
+    DeviceException::new(
+        DeviceExceptionType::from_raw(exception.enExceptionType),
+        SdkText::from_sdk_bytes(description),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::{CallbackRegistration, FrameCallbackSink, image_trampoline};
+    use super::{CallbackRegistration, ImageCallback, image_trampoline};
     use crate::{bindings, ffi};
 
     // 验证 callback 立即复制 payload；registration 销毁后迟到 callback 不再投递。
@@ -225,9 +238,8 @@ mod tests {
     fn image_callback_owns_payload_and_retires_registration() {
         let received = Arc::new(Mutex::new(Vec::new()));
         let output = Arc::clone(&received);
-        let sink: FrameCallbackSink = Arc::new(move |frame| {
+        let sink: ImageCallback = Arc::new(move |frame| {
             output.lock().unwrap().push(frame);
-            true
         });
         let registration = CallbackRegistration::image(sink);
         let cookie = registration.cookie();

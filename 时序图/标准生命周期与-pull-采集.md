@@ -38,16 +38,16 @@ sequenceDiagram
     Note over App,Native: 以下为初始化成功后的主路径
     App->>Public: sdk.devices()
     Public->>Core: Runtime::devices()
-    Core->>Native: MV3D_LP_GetDeviceNumber()
-    Native-->>Core: count hint
-    alt count = 0
-        Core-->>Public: 空列表
-    else count > 0
-        Core->>Native: MV3D_LP_GetDeviceList(count)
-        Native-->>Core: 设备描述符
-        Core->>Core: 校验数量并复制为 DeviceRecord
-        Core-->>Public: DeviceRecord 列表
-    end
+        Core->>Native: MV3D_LP_GetDeviceNumber()
+        Native-->>Core: count snapshot
+        alt count = 0
+            Core-->>Public: 空列表
+        else count > 0
+            Core->>Native: MV3D_LP_GetDeviceList(count)
+            Native-->>Core: 设备描述符
+            Core->>Core: 复制已填入的 DeviceInfo；填入条数可以少于最新计数
+            Core-->>Public: DeviceInfo 列表
+        end
     Public-->>App: DeviceInfo 列表
 
     App->>Public: sdk.open_by_ip(address)
@@ -92,7 +92,7 @@ sequenceDiagram
 
     loop 按需获取图像
         alt 有限等待
-            App->>Public: device.get_image(timeout)
+            App->>Public: device.get_image(timeout_ms)
             Public->>Core: Device::get_image(timeout_ms)
         else 无限等待
             App->>Public: device.get_image_blocking()
@@ -102,8 +102,8 @@ sequenceDiagram
         Native-->>Core: status + 图像描述符和临时 payload 指针
         Core->>Core: status 成功后校验指针、长度、布局与算术
         Core->>Core: 立即复制主数据、亮度数据和曝光时间戳
-        Core-->>Public: FrameRecord（拥有 payload）
-        Public-->>App: Frame（Image 的别名）
+        Core-->>Public: Image（拥有 payload）
+        Public-->>App: Image
     end
 
     App->>Public: device.stop()
@@ -128,15 +128,15 @@ sequenceDiagram
     Core->>Native: MV3D_LP_CloseDevice(handle) 一次
     Native-->>Core: close status
     alt Close 成功
-        Note over Core,Native: native handle 已关闭，callback 已静默，FileAccess 已结束引用
-        Core->>Core: 撤销 callback cookie并释放全部 FileAccess backing
+        Note over Core,Native: native handle 已关闭，callback 已静默
+        Core->>Core: 撤销 callback cookie
         alt Stop 也成功或未调用
             Core-->>Public: Ok
         else Stop 失败
             Core-->>Public: 原始 Stop Err
         end
     else Close 失败
-        Core->>Core: 撤销 callback cookie，forget 全部 FileAccess backing
+        Core->>Core: 撤销 callback cookie
         Core->>Core: finalize_blocked = true，释放 Device 的 RuntimeCore Arc owner
         alt Stop 也失败
             Core-->>Public: DeviceCleanup { stop, close }
@@ -151,7 +151,7 @@ sequenceDiagram
         App->>Public: sdk.shutdown()，消费 Sdk
         Public->>Core: Runtime::shutdown(self)
         Core->>Core: Arc::try_unwrap(RuntimeCore)
-        alt Device 或 ImageProcessor owner 仍存在
+        alt Device owner 仍存在
             Core-->>Public: InvalidState；不调用 Finalize
             Public-->>App: Err；Sdk 已消费
         else Sdk 是最后一个 owner
@@ -169,8 +169,8 @@ sequenceDiagram
     end
 ```
 
-`Device` 通过 `Arc` 独立拥有 session，打开后可释放 `Sdk`，也可将唯一 device owner 移入普通 worker thread。`get_image()` 使用有限超时，`get_image_blocking()` 传入 SDK 的无限等待值；两者返回拥有 payload 的 `Frame`。`start()` 仅接受 `Idle`，`stop()` 仅接受 `Pulling` 或 `CallbackRunning`；native 调用失败时状态不变。`get_image`、`soft_trigger`、参数、Execute 与 `clear_buffer` 的调用顺序仍由 SDK 判定。
+`Device` 通过 `Arc` 独立拥有 session，打开后可释放 `Sdk`，也可将唯一 device owner 移入普通 worker thread。`get_image(timeout_ms)` 使用 SDK 毫秒超时，`get_image_blocking()` 传入 SDK 的无限等待值；两者返回拥有 payload 的 `Image`。`start()` 接受 `Idle`（pull）或 `CallbackStopped`（callback）；`stop()` 仅接受 `Pulling` 或 `CallbackRunning`；native 调用失败时状态不变。`get_image`、`soft_trigger`、参数、Execute 与 `clear_buffer` 的调用顺序仍由 SDK 判定。
 
-显式 `close()` 与 `Drop` 共用清理路径：运行态先尝试一次 Stop，随后调用一次 Close。Close 返回后才撤销 callback cookie；Close 失败时封存全部 FileAccess backing、置位 `finalize_blocked`，并把 native handle 状态交给进程退出处理。每个 `Device` owner 最多提交一次 Close；显式关闭按单错误原样、双错误聚合的规则返回，Drop 无法返回错误。完整总览见[生命周期与时序图总览](../生命周期与时序图.md)。
+显式 `close()` 与 `Drop` 共用清理路径：运行态先尝试一次 Stop，随后调用一次 Close。Close 返回后才撤销 callback cookie；Close 失败时置位 `finalize_blocked`，并把 native handle 状态交给进程退出处理。每个 `Device` owner 最多提交一次 Close；显式关闭按单错误原样、双错误聚合的规则返回，Drop 无法返回错误。完整总览见[生命周期与时序图总览](../生命周期与时序图.md)。
 
-`shutdown(self)` 前应先释放全部 `Device` 和 `ImageProcessor`。Arc 唯一性取代 owner 计数，单向 `finalize_blocked` 只记录“曾有 Close 失败”；任一条件不满足都拒绝 Finalize。Finalize status 原样返回且不重试。终止式业务让错误先离开持有局部 owner 的 `run()`，再由 `main()` 记录并结束进程。
+`shutdown(self)` 前应先释放全部 `Device`。Arc 唯一性取代 owner 计数，单向 `finalize_blocked` 只记录“曾有 Close 失败”；任一条件不满足都拒绝 Finalize。Finalize status 原样返回且不重试。终止式业务让错误先离开持有局部 owner 的 `run()`，再由 `main()` 记录并结束进程。

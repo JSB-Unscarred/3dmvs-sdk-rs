@@ -1,7 +1,6 @@
 #![cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 
 use std::env;
-use std::time::Duration;
 
 use mv3d_lp::{Sdk, SerialNumber};
 
@@ -20,10 +19,8 @@ fn native_pull_smoke() {
         .open_by_serial(&serial)
         .expect("open the configured device");
     device.start().expect("start acquisition");
-    let frame = device
-        .get_image(Duration::from_secs(10))
-        .expect("pull one frame");
-    assert!(frame.valid);
+    let image = device.get_image(10_000).expect("pull one frame");
+    assert!(image.valid);
     device.stop().expect("stop acquisition");
     device.close().expect("close the device");
     sdk.shutdown().expect("finalize the SDK");

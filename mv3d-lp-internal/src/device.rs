@@ -1,26 +1,50 @@
 use std::net::Ipv4Addr;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeviceRecord {
-    pub manufacturer_name: Vec<u8>,
-    pub model_name: Vec<u8>,
-    pub device_version: Vec<u8>,
-    pub manufacturer_specific_info: Vec<u8>,
-    pub serial_number: Vec<u8>,
-    pub user_defined_name: Vec<u8>,
-    pub mac_address: [u8; 8],
-    pub ip_configuration_mode: i32,
-    pub current_ip: Vec<u8>,
-    pub current_subnet_mask: Vec<u8>,
-    pub default_gateway: Vec<u8>,
-    pub interface_ip: Vec<u8>,
-    pub device_type: u32,
+use crate::bits::bit_newtype;
+use crate::text::{SdkText, SerialNumber};
+
+bit_newtype! {
+    /// The device's reported IP configuration mode, preserving unknown SDK bits.
+    pub struct IpConfigurationMode;
+    STATIC = 0x0000_0001 => "static",
+    DHCP = 0x0000_0002 => "DHCP",
+    LINK_LOCAL = 0x0000_0004 => "link-local",
+    UNDEFINED = 0xFFFF_FFFF => "undefined",
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl Default for IpConfigurationMode {
+    fn default() -> Self {
+        Self::UNDEFINED
+    }
+}
+
+/// An owned device descriptor converted from the SDK's fixed C structure.
+///
+/// IP fields that are empty or not dotted-decimal IPv4 become `None` and do not fail enumeration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct DeviceInfo {
+    pub manufacturer_name: SdkText,
+    pub model_name: SdkText,
+    pub device_version: SdkText,
+    pub manufacturer_specific_info: SdkText,
+    pub serial_number: SerialNumber,
+    pub user_defined_name: SdkText,
+    pub mac_address: [u8; 8],
+    pub ip_configuration_mode: IpConfigurationMode,
+    pub current_ip: Option<Ipv4Addr>,
+    pub current_subnet_mask: Option<Ipv4Addr>,
+    pub default_gateway: Option<Ipv4Addr>,
+    pub network_interface_ip: Option<Ipv4Addr>,
+    pub device_type_info: u32,
+}
+
+/// A validated IP configuration request for `MV3D_LP_SetIpConfig`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
 pub enum IpConfiguration {
     Static {
-        address: Ipv4Addr,
+        ip: Ipv4Addr,
         subnet_mask: Ipv4Addr,
         gateway: Ipv4Addr,
     },
@@ -28,10 +52,24 @@ pub enum IpConfiguration {
     LinkLocal,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DeviceListAttempt {
-    pub(crate) records: Vec<DeviceRecord>,
-    pub(crate) reported: u32,
+impl IpConfiguration {
+    #[must_use]
+    pub const fn static_address(ip: Ipv4Addr, subnet_mask: Ipv4Addr, gateway: Ipv4Addr) -> Self {
+        Self::Static {
+            ip,
+            subnet_mask,
+            gateway,
+        }
+    }
+
+    #[must_use]
+    pub const fn mode(self) -> IpConfigurationMode {
+        match self {
+            Self::Static { .. } => IpConfigurationMode::STATIC,
+            Self::Dhcp => IpConfigurationMode::DHCP,
+            Self::LinkLocal => IpConfigurationMode::LINK_LOCAL,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,12 +90,12 @@ impl From<&IpConfiguration> for IpConfigRaw {
         };
         match value {
             IpConfiguration::Static {
-                address,
+                ip,
                 subnet_mask,
                 gateway,
             } => {
                 raw.mode = 1;
-                write_ipv4(&mut raw.address, *address);
+                write_ipv4(&mut raw.address, *ip);
                 write_ipv4(&mut raw.subnet_mask, *subnet_mask);
                 write_ipv4(&mut raw.gateway, *gateway);
             }
@@ -71,4 +109,13 @@ impl From<&IpConfiguration> for IpConfigRaw {
 fn write_ipv4(destination: &mut [u8; 16], address: Ipv4Addr) {
     let text = address.to_string();
     destination[..text.len()].copy_from_slice(text.as_bytes());
+}
+
+pub(crate) fn parse_optional_ipv4(bytes: &[u8]) -> Option<Ipv4Addr> {
+    if bytes.is_empty() {
+        return None;
+    }
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|text| text.parse().ok())
 }

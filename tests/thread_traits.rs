@@ -1,4 +1,4 @@
-use mv3d_lp::{Device, DeviceInfo, ImageProcessor, Sdk};
+use mv3d_lp::{Device, DeviceInfo, Sdk};
 
 macro_rules! assert_not_impl {
     ($type:ty: $bound:path) => {
@@ -16,7 +16,7 @@ macro_rules! assert_not_impl {
 
 assert_not_impl!(Device: Sync);
 
-// 验证共享 Runtime/processor 与独占 Device 的线程契约。
+// 验证共享 Runtime 与独占 Device 的线程契约。
 #[test]
 fn public_runtime_types_follow_the_thread_contract() {
     fn assert_send<T: Send>() {}
@@ -24,6 +24,5 @@ fn public_runtime_types_follow_the_thread_contract() {
 
     assert_send_sync::<Sdk>();
     assert_send_sync::<DeviceInfo>();
-    assert_send_sync::<ImageProcessor>();
     assert_send::<Device>();
 }

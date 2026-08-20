@@ -1,20 +1,21 @@
 #![cfg_attr(not(feature = "native"), allow(dead_code))]
 
-use std::ffi::CString;
 use std::net::Ipv4Addr;
 #[cfg(feature = "display-windows")]
 use std::num::NonZeroIsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::device::{DeviceRecord, IpConfigRaw, IpConfiguration};
+use crate::cstr::c_string;
+use crate::device::{DeviceInfo, IpConfigRaw, IpConfiguration};
 #[cfg(feature = "display-windows")]
-use crate::display::DisplayRangeRecord;
+use crate::display::DisplayRange;
 use crate::driver::{DriverError, DriverResult};
-use crate::error::{ContractViolation, Error, InputViolation, Operation, SdkError, StatusCode};
+use crate::error::{Error, Operation, SdkError, StatusCode};
 use crate::ffi::NativeDriver;
-use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
+use crate::frame::{Image, ImageFileFormat, ImageRef, ImageType};
 use crate::opened_device::Device;
+use crate::text::SerialNumber;
 
 /// Owned native session shared by all session owners.
 pub(crate) struct RuntimeCore {
@@ -44,10 +45,6 @@ impl RuntimeCore {
 
 #[derive(Clone)]
 /// Control token for the process-wide native session.
-///
-/// The SDK can be initialized only once per process. Dropping a token skips Finalize and relies on
-/// process exit for native resource reclamation. Consuming `shutdown` performs Finalize when this
-/// is the sole session owner and every device Close succeeded.
 pub struct Runtime {
     core: Arc<RuntimeCore>,
 }
@@ -55,6 +52,11 @@ pub struct Runtime {
 static INITIALIZE_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 impl Runtime {
+    /// Reads the SDK version independently of the initialized session.
+    pub fn version() -> Result<crate::text::SdkText, Error> {
+        Self::version_bytes().map(crate::text::SdkText::from_sdk_bytes)
+    }
+
     /// Reads the raw SDK version independently of the initialized session.
     pub fn version_bytes() -> Result<Vec<u8>, Error> {
         #[cfg(all(
@@ -113,32 +115,20 @@ impl Runtime {
         }
     }
 
-    pub fn device_count_hint(&self) -> Result<u32, Error> {
+    pub fn device_count(&self) -> Result<u32, Error> {
         self.call(Operation::GetDeviceNumber, |driver| driver.device_number())
     }
 
-    pub fn devices(&self) -> Result<Vec<DeviceRecord>, Error> {
-        let count = self.device_count_hint()?;
+    pub fn devices(&self) -> Result<Vec<DeviceInfo>, Error> {
+        let count = self.device_count()?;
         if count == 0 {
             return Ok(Vec::new());
         }
 
         let capacity = usize::try_from(count).expect("u32 fits usize on supported targets");
-        let list = self.call(Operation::GetDeviceList, |driver| {
+        self.call(Operation::GetDeviceList, |driver| {
             driver.device_list(capacity)
-        })?;
-        let reported = usize::try_from(list.reported).expect("u32 fits usize on supported targets");
-        if list.records.len() != reported {
-            return Err(Error::ContractViolation {
-                operation: Operation::GetDeviceList,
-                violation: ContractViolation::LengthMismatch {
-                    field: "device list",
-                    expected: reported,
-                    actual: list.records.len(),
-                },
-            });
-        }
-        Ok(list.records)
+        })
     }
 
     pub fn set_ip_config(
@@ -146,7 +136,7 @@ impl Runtime {
         serial_number: &[u8],
         configuration: &IpConfiguration,
     ) -> Result<(), Error> {
-        let serial = validated_c_string("serial number", serial_number, 16)?;
+        let serial = c_string("serial number", serial_number, Some(SerialNumber::MAX_LEN))?;
         let raw = IpConfigRaw::from(configuration);
         self.call(Operation::SetIpConfig, |driver| {
             driver.set_ip_config(&serial, &raw)
@@ -154,7 +144,8 @@ impl Runtime {
     }
 
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device, Error> {
-        let address = CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
+        let address =
+            std::ffi::CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
         let handle = self.call(Operation::OpenDeviceByIp, |driver| {
             driver.open_by_ip(&address)
         })?;
@@ -162,49 +153,42 @@ impl Runtime {
     }
 
     pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device, Error> {
-        let serial = validated_c_string("serial number", serial_number, 16)?;
+        let serial = c_string("serial number", serial_number, Some(SerialNumber::MAX_LEN))?;
         let handle = self.call(Operation::OpenDeviceBySn, |driver| {
             driver.open_by_serial(&serial)
         })?;
         Ok(Device::new(Arc::clone(&self.core), handle))
     }
 
-    pub fn map_depth_to_point_cloud(&self, input: ImageInput<'_>) -> Result<FrameRecord, Error> {
+    pub fn map_depth_to_point_cloud(&self, input: ImageRef<'_>) -> Result<Image, Error> {
         self.call(Operation::MapDepthToPointCloud, |driver| {
             driver.map_depth_to_point_cloud(input)
         })
     }
 
-    pub fn map_depth_to_point_cloud_round(
-        &self,
-        inputs: &[ImageInput<'_>],
-    ) -> Result<FrameRecord, Error> {
+    pub fn map_depth_to_point_cloud_round(&self, inputs: &[ImageRef<'_>]) -> Result<Image, Error> {
         self.call(Operation::MapDepthToPointCloudRound, |driver| {
             driver.map_depth_to_point_cloud_round(inputs)
         })
     }
 
-    pub fn convert_image(
-        &self,
-        input: ImageInput<'_>,
-        target: ImageTypeRecord,
-    ) -> Result<FrameRecord, Error> {
+    pub fn convert_image(&self, input: ImageRef<'_>, target: ImageType) -> Result<Image, Error> {
         self.call(Operation::ImageConvert, |driver| {
             driver.convert_image(input, target)
         })
     }
 
-    pub fn mosaic_depth(&self, inputs: &[ImageInput<'_>]) -> Result<FrameRecord, Error> {
+    pub fn mosaic_depth(&self, inputs: &[ImageRef<'_>]) -> Result<Image, Error> {
         self.call(Operation::DepthMosaic, |driver| driver.mosaic_depth(inputs))
     }
 
     pub fn save_image(
         &self,
-        input: ImageInput<'_>,
-        format: ImageFileFormatRecord,
+        input: ImageRef<'_>,
+        format: ImageFileFormat,
         file_name: &[u8],
     ) -> Result<(), Error> {
-        let file_name = validated_c_string("file name", file_name, u32::MAX as usize)?;
+        let file_name = c_string("file name", file_name, Some(u32::MAX as usize))?;
         self.call(Operation::SaveImage, |driver| {
             driver.save_image(input, format, &file_name)
         })
@@ -213,9 +197,9 @@ impl Runtime {
     #[cfg(feature = "display-windows")]
     pub fn display_image(
         &self,
-        input: ImageInput<'_>,
+        input: ImageRef<'_>,
         window: NonZeroIsize,
-        range: DisplayRangeRecord,
+        range: DisplayRange,
     ) -> Result<(), Error> {
         self.call(Operation::DisplayImage, |driver| {
             driver.display_image(input, window, range)
@@ -223,13 +207,10 @@ impl Runtime {
     }
 
     /// Finalizes the one-shot native session.
-    ///
-    /// Every `Device` and image-processing token must be dropped first. A prior device Close error
-    /// permanently blocks Finalize. Consuming `self` prevents retry or overlap with another owner.
     pub fn shutdown(self) -> Result<(), Error> {
         let core = Arc::try_unwrap(self.core).map_err(|_| Error::InvalidState {
             operation: Operation::Finalize,
-            expected: "all devices and image processors dropped",
+            expected: "all devices dropped",
             actual: "session owners remain",
         })?;
         ensure_finalization_allowed(&core.finalize_blocked)?;
@@ -247,7 +228,6 @@ impl Runtime {
     }
 }
 
-/// Consumes the process's sole Initialize attempt and never resets it.
 fn claim_initialization(claimed: &AtomicBool) -> Result<(), Error> {
     if claimed.swap(true, Ordering::Relaxed) {
         Err(Error::InvalidState {
@@ -260,10 +240,8 @@ fn claim_initialization(claimed: &AtomicBool) -> Result<(), Error> {
     }
 }
 
-/// Serializes process-wide image helpers through the immediate SDK-output copy.
 fn image_processing_guard(lock: &Mutex<()>, operation: Operation) -> Option<MutexGuard<'_, ()>> {
     operation_uses_image_processing_lock(operation)
-        // The mutex is only a call gate and protects no Rust state.
         .then(|| lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
 }
 
@@ -279,7 +257,6 @@ fn operation_uses_image_processing_lock(operation: Operation) -> bool {
     )
 }
 
-/// Attaches public operation context to a low-level driver error.
 fn map_driver_error(operation: Operation, error: DriverError) -> Error {
     match error {
         DriverError::Status(status) => {
@@ -293,29 +270,6 @@ fn map_driver_error(operation: Operation, error: DriverError) -> Error {
     }
 }
 
-fn validated_c_string(field: &'static str, bytes: &[u8], maximum: usize) -> Result<CString, Error> {
-    if bytes.is_empty() {
-        return Err(Error::InvalidInput {
-            field,
-            violation: InputViolation::Empty,
-        });
-    }
-    if bytes.len() > maximum {
-        return Err(Error::InvalidInput {
-            field,
-            violation: InputViolation::TooLong {
-                max: maximum,
-                actual: bytes.len(),
-            },
-        });
-    }
-    CString::new(bytes).map_err(|_| Error::InvalidInput {
-        field,
-        violation: InputViolation::InteriorNul,
-    })
-}
-
-/// Rejects Finalize after Close left a native handle's lifetime unknown.
 fn ensure_finalization_allowed(blocked: &AtomicBool) -> Result<(), Error> {
     if blocked.load(Ordering::Acquire) {
         Err(Error::InvalidState {

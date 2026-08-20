@@ -13,19 +13,20 @@ use std::ptr;
 
 use crate::bindings;
 use crate::callback::{CallbackCookie, exception_trampoline, image_trampoline};
-use crate::device::{DeviceListAttempt, DeviceRecord, IpConfigRaw};
+use crate::device::{DeviceInfo, IpConfigRaw, parse_optional_ipv4};
 #[cfg(all(
     feature = "display-windows",
     target_os = "windows",
     target_arch = "x86_64",
     target_env = "msvc"
 ))]
-use crate::display::DisplayRangeRecord;
+use crate::display::DisplayRange;
 use crate::driver::{DriverError, DriverResult, Handle, status_result};
 use crate::error::{ContractViolation, InputViolation};
 use crate::file_transfer::FileProgress;
-use crate::frame::{FrameRecord, ImageFileFormatRecord, ImageInput, ImageTypeRecord};
-use crate::parameter::{ParameterRecord, ParameterValueRecord};
+use crate::frame::{Image, ImageCalibration, ImageFileFormat, ImageRef, ImageType};
+use crate::parameter::{Parameter, ParameterValue};
+use crate::text::{SdkText, SerialNumber};
 
 const MAX_MULTI_IMAGE_COUNT: usize = 8;
 
@@ -69,7 +70,7 @@ impl NativeDriver {
         Ok(count)
     }
 
-    pub(crate) fn device_list(&self, capacity: usize) -> DriverResult<DeviceListAttempt> {
+    pub(crate) fn device_list(&self, capacity: usize) -> DriverResult<Vec<DeviceInfo>> {
         let native_capacity = u32::try_from(capacity).map_err(|_| {
             DriverError::Contract(ContractViolation::LengthOverflow {
                 field: "device list capacity",
@@ -94,7 +95,7 @@ impl NativeDriver {
             .take(returned)
             .map(device_info_from_native)
             .collect();
-        Ok(DeviceListAttempt { records, reported })
+        Ok(records)
     }
 
     pub(crate) fn set_ip_config(&self, serial: &CStr, config: &IpConfigRaw) -> DriverResult<()> {
@@ -160,20 +161,16 @@ impl NativeDriver {
         status_result(unsafe { bindings::MV3D_LP_ClearDataBuffer(handle.as_ptr()) })
     }
 
-    pub(crate) fn get_image(&self, handle: Handle, timeout_ms: u32) -> DriverResult<FrameRecord> {
+    pub(crate) fn get_image(&self, handle: Handle, timeout_ms: u32) -> DriverResult<Image> {
         let mut image = zeroed_image();
         // SAFETY: image is a fully zeroed writable SDK output, Device owns the live handle, and
         // Device's unique ownership prevents another safe call from using this handle until the
         // descriptor and payload copies below finish.
         let status = unsafe { bindings::MV3D_LP_GetImage(handle.as_ptr(), &mut image, timeout_ms) };
-        // A failed SDK call does not initialize a trustworthy output descriptor. In particular,
-        // never inspect or dereference pointer fields before checking the status.
         status_result(status)?;
         // SAFETY: On success the audited SDK contract guarantees that every non-null output
         // pointer remains readable for its reported extent until the immediate copy completes.
-        // validate_image_layout checks lengths, null pairs, and arithmetic before
-        // image_from_native dereferences any pointer.
-        unsafe { image_from_native(&image) }
+        unsafe { image_from_native(&image, LengthRule::Padded) }
     }
 
     pub(crate) fn register_image_callback(
@@ -208,11 +205,7 @@ impl NativeDriver {
         })
     }
 
-    pub(crate) fn get_parameter(
-        &self,
-        handle: Handle,
-        key: &CStr,
-    ) -> DriverResult<ParameterRecord> {
+    pub(crate) fn get_parameter(&self, handle: Handle, key: &CStr) -> DriverResult<Parameter> {
         let mut parameter = zeroed_parameter();
         // SAFETY: parameter is a fully zeroed writable output and key is NUL-terminated for the
         // call. The tagged union is read only after a successful status and discriminator check.
@@ -226,7 +219,7 @@ impl NativeDriver {
         &self,
         handle: Handle,
         key: &CStr,
-        value: &ParameterValueRecord,
+        value: &ParameterValue,
     ) -> DriverResult<()> {
         let mut parameter = parameter_to_native(value)?;
         // SAFETY: key is NUL-terminated, parameter's active union member matches its
@@ -253,7 +246,7 @@ impl NativeDriver {
             nReserved: [0; 32],
         };
         // SAFETY: Device owns the handle, the `[IN]` descriptor is initialized for this call, and
-        // both strings are NUL-terminated. Device retains them after a successful async start.
+        // both strings are NUL-terminated for the duration of the call.
         status_result(unsafe { bindings::MV3D_LP_FileAccessRead(handle.as_ptr(), &mut access) })
     }
 
@@ -268,8 +261,7 @@ impl NativeDriver {
             pDevFileName: device_file_name.as_ptr(),
             nReserved: [0; 32],
         };
-        // SAFETY: the same initialized descriptor, retained strings, and live handle guarantees
-        // as FileAccessRead apply.
+        // SAFETY: the same initialized descriptor and live handle guarantees as FileAccessRead apply.
         status_result(unsafe { bindings::MV3D_LP_FileAccessWrite(handle.as_ptr(), &mut access) })
     }
 
@@ -289,90 +281,57 @@ impl NativeDriver {
         })
     }
 
-    pub(crate) fn map_depth_to_point_cloud(
-        &self,
-        input: ImageInput<'_>,
-    ) -> DriverResult<FrameRecord> {
+    pub(crate) fn map_depth_to_point_cloud(&self, input: ImageRef<'_>) -> DriverResult<Image> {
         let mut input = image_input_to_native(input)?;
         let mut output = zeroed_image();
         // SAFETY: input borrows a validated payload for the duration of this serialized call;
         // the vendor marks it [IN], so the SDK must not write through its legacy mutable pointer.
-        // Output is a fully zeroed writable descriptor and receives transient SDK-owned data.
         status_result(unsafe { bindings::MV3D_LP_MapDepthToPointCloud(&mut input, &mut output) })?;
-        // SAFETY: the successful SDK call guarantees its returned payload remains readable until
-        // the next image-processing call; Runtime keeps the session image-processing lock through
-        // this copy.
-        unsafe {
-            processed_image_from_native(
-                &output,
-                ImageTypeRecord::from_raw(bindings::ImageType_PointCloud),
-            )
-        }
+        unsafe { processed_image_from_native(&output, ImageType::POINT_CLOUD) }
     }
 
     pub(crate) fn map_depth_to_point_cloud_round(
         &self,
-        inputs: &[ImageInput<'_>],
-    ) -> DriverResult<FrameRecord> {
+        inputs: &[ImageRef<'_>],
+    ) -> DriverResult<Image> {
         let mut inputs = prepare_multi_inputs(inputs)?;
         let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
         let mut output = zeroed_image();
-        // SAFETY: every descriptor borrows a validated, vendor-[IN] read-only payload, count
-        // matches the initialized descriptor array, and output is writable for the call.
         status_result(unsafe {
             bindings::MV3D_LP_MapDepthToPointCloudRound(inputs.as_mut_ptr(), count, &mut output)
         })?;
-        // SAFETY: see map_depth_to_point_cloud; the output is copied before releasing the gate.
-        unsafe {
-            processed_image_from_native(
-                &output,
-                ImageTypeRecord::from_raw(bindings::ImageType_PointCloud),
-            )
-        }
+        unsafe { processed_image_from_native(&output, ImageType::POINT_CLOUD) }
     }
 
     pub(crate) fn convert_image(
         &self,
-        input: ImageInput<'_>,
-        target: ImageTypeRecord,
-    ) -> DriverResult<FrameRecord> {
+        input: ImageRef<'_>,
+        target: ImageType,
+    ) -> DriverResult<Image> {
         let mut input = image_input_to_native(input)?;
         let mut output = zeroed_image();
         output.enImageType = target.raw();
-        // SAFETY: the header requires only the requested output type in the otherwise zeroed
-        // output descriptor. The vendor marks input [IN] and must not write its borrowed payload.
         status_result(unsafe { bindings::MV3D_LP_ImageConvert(&mut input, &mut output) })?;
-        // SAFETY: the SDK returned success and its transient output is copied before another call.
         unsafe { processed_image_from_native(&output, target) }
     }
 
-    pub(crate) fn mosaic_depth(&self, inputs: &[ImageInput<'_>]) -> DriverResult<FrameRecord> {
+    pub(crate) fn mosaic_depth(&self, inputs: &[ImageRef<'_>]) -> DriverResult<Image> {
         let mut inputs = prepare_multi_inputs(inputs)?;
         let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
         let mut output = zeroed_image();
-        // SAFETY: descriptors and count describe initialized vendor-[IN] read-only inputs;
-        // output is writable and receives SDK-owned transient payloads.
         status_result(unsafe {
             bindings::MV3D_LP_DepthMosaic(inputs.as_mut_ptr(), count, &mut output)
         })?;
-        // SAFETY: the SDK output is validated and copied while the process gate is still held.
-        unsafe {
-            processed_image_from_native(
-                &output,
-                ImageTypeRecord::from_raw(bindings::ImageType_Depth),
-            )
-        }
+        unsafe { processed_image_from_native(&output, ImageType::DEPTH) }
     }
 
     pub(crate) fn save_image(
         &self,
-        input: ImageInput<'_>,
-        format: ImageFileFormatRecord,
+        input: ImageRef<'_>,
+        format: ImageFileFormat,
         file_name: &CStr,
     ) -> DriverResult<()> {
         let mut input = image_input_to_native(input)?;
-        // SAFETY: input payload and filename are vendor-[IN], read-only borrows for this
-        // synchronous call; the SDK must neither write them nor retain their addresses.
         status_result(unsafe {
             bindings::MV3D_LP_SaveImage(&mut input, format as i32, file_name.as_ptr())
         })
@@ -381,14 +340,14 @@ impl NativeDriver {
     #[cfg(feature = "display-windows")]
     pub(crate) fn display_image(
         &self,
-        input: ImageInput<'_>,
+        input: ImageRef<'_>,
         window: NonZeroIsize,
-        range: DisplayRangeRecord,
+        range: DisplayRange,
     ) -> DriverResult<()> {
         let mut input = image_input_to_native(input)?;
         let (display_type, minimum, maximum) = match range {
-            DisplayRangeRecord::Auto => (bindings::DisplayType_Auto, 0, 0),
-            DisplayRangeRecord::Manual { minimum, maximum } => {
+            DisplayRange::Auto => (bindings::DisplayType_Auto, 0, 0),
+            DisplayRange::Manual { minimum, maximum } => {
                 (bindings::DisplayType_Manual, minimum, maximum)
             }
         };
@@ -435,7 +394,7 @@ macro_rules! unavailable_methods {
 unavailable_methods! {
     fn finalize() -> ();
     fn device_number() -> u32;
-    fn device_list(capacity: usize) -> DeviceListAttempt;
+    fn device_list(capacity: usize) -> Vec<DeviceInfo>;
     fn set_ip_config(serial: &CStr, config: &IpConfigRaw) -> ();
     fn open_by_ip(ip: &CStr) -> Handle;
     fn open_by_serial(serial: &CStr) -> Handle;
@@ -444,20 +403,20 @@ unavailable_methods! {
     fn stop(handle: Handle) -> ();
     fn soft_trigger(handle: Handle) -> ();
     fn clear_buffer(handle: Handle) -> ();
-    fn get_image(handle: Handle, timeout_ms: u32) -> FrameRecord;
+    fn get_image(handle: Handle, timeout_ms: u32) -> Image;
     fn register_image_callback(handle: Handle, cookie: CallbackCookie) -> ();
     fn register_exception_callback(handle: Handle, cookie: CallbackCookie) -> ();
-    fn get_parameter(handle: Handle, key: &CStr) -> ParameterRecord;
-    fn set_parameter(handle: Handle, key: &CStr, value: &ParameterValueRecord) -> ();
+    fn get_parameter(handle: Handle, key: &CStr) -> Parameter;
+    fn set_parameter(handle: Handle, key: &CStr, value: &ParameterValue) -> ();
     fn execute(handle: Handle, key: &CStr) -> ();
     fn file_access_read(handle: Handle, user_file_name: &CStr, device_file_name: &CStr) -> ();
     fn file_access_write(handle: Handle, user_file_name: &CStr, device_file_name: &CStr) -> ();
     fn file_access_progress(handle: Handle) -> FileProgress;
-    fn map_depth_to_point_cloud(input: ImageInput<'_>) -> FrameRecord;
-    fn map_depth_to_point_cloud_round(inputs: &[ImageInput<'_>]) -> FrameRecord;
-    fn convert_image(input: ImageInput<'_>, target: ImageTypeRecord) -> FrameRecord;
-    fn mosaic_depth(inputs: &[ImageInput<'_>]) -> FrameRecord;
-    fn save_image(input: ImageInput<'_>, format: ImageFileFormatRecord, file_name: &CStr) -> ();
+    fn map_depth_to_point_cloud(input: ImageRef<'_>) -> Image;
+    fn map_depth_to_point_cloud_round(inputs: &[ImageRef<'_>]) -> Image;
+    fn convert_image(input: ImageRef<'_>, target: ImageType) -> Image;
+    fn mosaic_depth(inputs: &[ImageRef<'_>]) -> Image;
+    fn save_image(input: ImageRef<'_>, format: ImageFileFormat, file_name: &CStr) -> ();
 }
 
 #[cfg(any(
@@ -469,58 +428,16 @@ unavailable_methods! {
         target_env = "msvc"
     )
 ))]
-fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_LP_IMAGE_DATA> {
-    if input.width == 0 {
-        return Err(invalid_image_layout("width"));
-    }
-    if input.height == 0 {
-        return Err(invalid_image_layout("height"));
-    }
-    if input.data.is_empty() {
-        return Err(invalid_image_layout("data length"));
-    }
+fn image_input_to_native(input: ImageRef<'_>) -> DriverResult<bindings::MV3D_LP_IMAGE_DATA> {
     let data_len = u32::try_from(input.data.len())
         .map_err(|_| input_too_long("image data", u32::MAX as usize, input.data.len()))?;
-    let pixels = usize::try_from(input.width)
-        .unwrap_or(usize::MAX)
-        .checked_mul(usize::try_from(input.height).unwrap_or(usize::MAX))
-        .ok_or_else(|| invalid_image_layout("dimensions"))?;
-    if let Some(bytes_per_pixel) = known_bytes_per_pixel(input.image_type.raw()) {
-        let expected = pixels
-            .checked_mul(bytes_per_pixel)
-            .ok_or_else(|| invalid_image_layout("data length"))?;
-        if input.data.len() != expected {
-            return Err(invalid_image_layout("data length"));
-        }
-    }
     let intensity_len = match input.intensity_data {
-        Some(intensity) if intensity.len() != pixels => {
-            return Err(invalid_image_layout("intensity data length"));
-        }
         Some(intensity) => u32::try_from(intensity.len()).map_err(|_| {
             input_too_long("image intensity data", u32::MAX as usize, intensity.len())
         })?,
         None => 0,
     };
-    if let Some(timestamps) = input.exposure_timestamps {
-        if timestamps.len() != usize::try_from(input.height).unwrap_or(usize::MAX) {
-            return Err(invalid_image_layout("exposure timestamp count"));
-        }
-    }
-    let exposure_bytes = input.exposure_timestamps.map_or(Ok(0), |timestamps| {
-        timestamps
-            .len()
-            .checked_mul(size_of::<i64>())
-            .ok_or_else(|| invalid_image_layout("exposure timestamp bytes"))
-    })?;
-    input
-        .data
-        .len()
-        .checked_add(usize::try_from(intensity_len).unwrap_or(usize::MAX))
-        .and_then(|bytes| bytes.checked_add(exposure_bytes))
-        .ok_or_else(|| invalid_image_layout("aggregate input length"))?;
-
-    Ok(bindings::MV3D_LP_IMAGE_DATA {
+    let native = bindings::MV3D_LP_IMAGE_DATA {
         enImageType: input.image_type.raw(),
         nWidth: input.width,
         nHeight: input.height,
@@ -533,17 +450,33 @@ fn image_input_to_native(input: ImageInput<'_>) -> DriverResult<bindings::MV3D_L
         nFrameNum: input.frame_number,
         nTimeStamp: input.device_timestamp,
         bValid: i32::from(input.valid),
-        fXScale: input.x_scale,
-        fYScale: input.y_scale,
-        fZScale: input.z_scale,
-        nXOffset: input.x_offset,
-        nYOffset: input.y_offset,
-        nZOffset: input.z_offset,
+        fXScale: input.calibration.x_scale,
+        fYScale: input.calibration.y_scale,
+        fZScale: input.calibration.z_scale,
+        nXOffset: input.calibration.x_offset,
+        nYOffset: input.calibration.y_offset,
+        nZOffset: input.calibration.z_offset,
         pExposureTimeStamp: input
             .exposure_timestamps
             .map_or(ptr::null_mut(), |timestamps| timestamps.as_ptr().cast_mut()),
         nReserved: [0; 12],
-    })
+    };
+    if let Some(timestamps) = input.exposure_timestamps {
+        let height = usize::try_from(input.height).unwrap_or(usize::MAX);
+        if timestamps.len() != height {
+            return Err(invalid_image_layout("exposure timestamp count"));
+        }
+    }
+    validate_image_layout(&native, LengthRule::Exact).map_err(|error| match error {
+        DriverError::Contract(ContractViolation::InvalidValue { field })
+        | DriverError::Contract(ContractViolation::LengthMismatch { field, .. })
+        | DriverError::Contract(ContractViolation::LengthOverflow { field })
+        | DriverError::Contract(ContractViolation::NullPointerWithLength { field, .. }) => {
+            invalid_image_layout(field)
+        }
+        other => other,
+    })?;
+    Ok(native)
 }
 
 #[cfg(any(
@@ -587,7 +520,7 @@ pub(crate) unsafe fn native_display_image_call(
     )
 ))]
 fn prepare_multi_inputs(
-    inputs: &[ImageInput<'_>],
+    inputs: &[ImageRef<'_>],
 ) -> DriverResult<Vec<bindings::MV3D_LP_IMAGE_DATA>> {
     if inputs.len() > MAX_MULTI_IMAGE_COUNT {
         return Err(invalid_image_count(inputs.len()));
@@ -606,47 +539,14 @@ fn prepare_multi_inputs(
 ))]
 unsafe fn processed_image_from_native(
     output: &bindings::MV3D_LP_IMAGE_DATA,
-    expected: ImageTypeRecord,
-) -> DriverResult<FrameRecord> {
+    expected: ImageType,
+) -> DriverResult<Image> {
     if output.enImageType != expected.raw() {
         return Err(invalid_sdk_image_value("output image type"));
     }
-    validate_processed_image_lengths(output)?;
     // SAFETY: the caller holds the session image-processing lock and guarantees a successful SDK
-    // ImgProc call.
-    unsafe { image_from_native(output) }
-}
-
-#[cfg(any(
-    test,
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
-fn validate_processed_image_lengths(image: &bindings::MV3D_LP_IMAGE_DATA) -> DriverResult<()> {
-    let pixels = usize::try_from(image.nWidth)
-        .unwrap_or(usize::MAX)
-        .checked_mul(usize::try_from(image.nHeight).unwrap_or(usize::MAX))
-        .ok_or_else(|| sdk_length_overflow("dimensions"))?;
-    if let Some(bytes_per_pixel) = known_bytes_per_pixel(image.enImageType) {
-        let expected = pixels
-            .checked_mul(bytes_per_pixel)
-            .ok_or_else(|| sdk_length_overflow("data"))?;
-        let actual = usize::try_from(image.nDataLen).unwrap_or(usize::MAX);
-        if actual != expected {
-            return Err(sdk_length_mismatch("data", expected, actual));
-        }
-    }
-    if image.nIntensityDataLen != 0 {
-        let actual = usize::try_from(image.nIntensityDataLen).unwrap_or(usize::MAX);
-        if actual != pixels {
-            return Err(sdk_length_mismatch("intensity data", pixels, actual));
-        }
-    }
-    Ok(())
+    // ImgProc call. Exact packed sizes are required for processed output.
+    unsafe { image_from_native(output, LengthRule::Exact) }
 }
 
 #[cfg(any(
@@ -671,6 +571,14 @@ pub(crate) fn zeroed_image() -> bindings::MV3D_LP_IMAGE_DATA {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LengthRule {
+    /// GetImage / callback: known formats may include padding.
+    Padded,
+    /// User input and processed SDK output: known formats must match packed size.
+    Exact,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ValidatedImageLayout {
     data_len: usize,
     intensity_len: Option<usize>,
@@ -678,8 +586,16 @@ struct ValidatedImageLayout {
     exposure_bytes: usize,
 }
 
+fn length_ok(actual: usize, expected: usize, rule: LengthRule) -> bool {
+    match rule {
+        LengthRule::Padded => actual >= expected,
+        LengthRule::Exact => actual == expected,
+    }
+}
+
 fn validate_image_layout(
     image: &bindings::MV3D_LP_IMAGE_DATA,
+    rule: LengthRule,
 ) -> DriverResult<ValidatedImageLayout> {
     if image.nWidth == 0 {
         return Err(invalid_sdk_image_value("width"));
@@ -695,8 +611,6 @@ fn validate_image_layout(
         .ok_or_else(|| sdk_length_overflow("dimensions"))?;
     let data_len = usize_from_u32(image.nDataLen, "data")?;
 
-    // Pointer/length pairs are checked before format-specific arithmetic so a null pointer with
-    // a claimed readable extent is always reported without trying to access it.
     if data_len != 0 && image.pData.is_null() {
         return Err(sdk_null_pointer_with_length("data", data_len));
     }
@@ -708,7 +622,7 @@ fn validate_image_layout(
         let expected = pixels
             .checked_mul(bytes_per_pixel)
             .ok_or_else(|| sdk_length_overflow("data"))?;
-        if data_len < expected {
+        if !length_ok(data_len, expected, rule) {
             return Err(sdk_length_mismatch("data", expected, data_len));
         }
     }
@@ -720,7 +634,7 @@ fn validate_image_layout(
             return Err(sdk_null_pointer_with_length("intensity data", length));
         }
         length => {
-            if length < pixels {
+            if !length_ok(length, pixels, rule) {
                 return Err(sdk_length_mismatch("intensity data", pixels, length));
             }
             Some(length)
@@ -752,34 +666,29 @@ fn validate_image_layout(
     })
 }
 
-unsafe fn image_from_native(image: &bindings::MV3D_LP_IMAGE_DATA) -> DriverResult<FrameRecord> {
-    let layout = validate_image_layout(image)?;
+unsafe fn image_from_native(
+    image: &bindings::MV3D_LP_IMAGE_DATA,
+    rule: LengthRule,
+) -> DriverResult<Image> {
+    let layout = validate_image_layout(image, rule)?;
 
-    // Allocate every destination before reading SDK memory. The process terminates on allocation
-    // failure, so partially copied native payloads never escape.
     let mut data = Vec::with_capacity(layout.data_len);
     let mut intensity_data = layout.intensity_len.map(Vec::with_capacity);
     let mut exposure_timestamps = layout.exposure_count.map(Vec::with_capacity);
 
-    // SAFETY: validate_image_layout established a non-null data pointer and checked length. The
-    // caller of image_from_native guarantees that the SDK allocation is readable for that extent
-    // until this immediate copy finishes.
+    // SAFETY: validate_image_layout established a non-null data pointer and checked length.
     let source = unsafe { std::slice::from_raw_parts(image.pData.cast_const(), layout.data_len) };
     data.extend_from_slice(source);
 
     if let (Some(destination), Some(length)) = (&mut intensity_data, layout.intensity_len) {
-        // SAFETY: The same conditions as for data apply to the optional intensity pointer, and
-        // validate_image_layout additionally checked its minimum pixel count.
+        // SAFETY: validate_image_layout checked the optional intensity pointer and length.
         let source =
             unsafe { std::slice::from_raw_parts(image.pIntensityData.cast_const(), length) };
         destination.extend_from_slice(source);
     }
 
     if let (Some(destination), Some(count)) = (&mut exposure_timestamps, layout.exposure_count) {
-        // Read exposure timestamps as bytes. This intentionally does not require the vendor's
-        // pointer to satisfy Rust's i64 alignment even though its C type is int64_t*.
-        // SAFETY: The caller guarantees `height * sizeof(i64)` readable bytes and validation
-        // bounded that byte count before this slice is constructed.
+        // SAFETY: validation bounded `height * sizeof(i64)` readable bytes.
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 image.pExposureTimeStamp.cast::<u8>().cast_const(),
@@ -794,8 +703,8 @@ unsafe fn image_from_native(image: &bindings::MV3D_LP_IMAGE_DATA) -> DriverResul
         }
     }
 
-    Ok(FrameRecord {
-        image_type: ImageTypeRecord::from_raw(image.enImageType),
+    Ok(Image {
+        image_type: ImageType::from_raw(image.enImageType),
         width: image.nWidth,
         height: image.nHeight,
         data,
@@ -804,22 +713,22 @@ unsafe fn image_from_native(image: &bindings::MV3D_LP_IMAGE_DATA) -> DriverResul
         frame_number: image.nFrameNum,
         device_timestamp: image.nTimeStamp,
         valid: image.bValid != 0,
-        x_scale: image.fXScale,
-        y_scale: image.fYScale,
-        z_scale: image.fZScale,
-        x_offset: image.nXOffset,
-        y_offset: image.nYOffset,
-        z_offset: image.nZOffset,
+        calibration: ImageCalibration {
+            x_scale: image.fXScale,
+            y_scale: image.fYScale,
+            z_scale: image.fZScale,
+            x_offset: image.nXOffset,
+            y_offset: image.nYOffset,
+            z_offset: image.nZOffset,
+        },
     })
 }
 
 pub(crate) unsafe fn callback_image_from_native(
     image: &bindings::MV3D_LP_IMAGE_DATA,
-) -> DriverResult<FrameRecord> {
-    // SAFETY: the native callback trampoline guarantees that `image` and its SDK-owned payloads
-    // remain readable for this immediate conversion. The shared converter validates every
-    // pointer/length pair and aggregate arithmetic before dereferencing a payload.
-    unsafe { image_from_native(image) }
+) -> DriverResult<Image> {
+    // SAFETY: the trampoline keeps the descriptor and payloads readable for this copy.
+    unsafe { image_from_native(image, LengthRule::Padded) }
 }
 
 fn known_bytes_per_pixel(image_type: bindings::Mv3dLpImageType) -> Option<usize> {
@@ -903,50 +812,52 @@ pub(crate) fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {
     )
 ))]
 /// Copies one fixed native device descriptor directly into its owned Rust record.
-fn device_info_from_native(native: bindings::MV3D_LP_DEVICE_INFO) -> DeviceRecord {
-    DeviceRecord {
-        manufacturer_name: bounded_c_bytes(&native.chManufacturerName),
-        model_name: bounded_c_bytes(&native.chModelName),
-        device_version: bounded_c_bytes(&native.chDeviceVersion),
-        manufacturer_specific_info: bounded_c_bytes(&native.chManufacturerSpecificInfo),
-        serial_number: bounded_c_bytes(&native.chSerialNumber),
-        user_defined_name: bounded_c_bytes(&native.chUserDefinedName),
+fn device_info_from_native(native: bindings::MV3D_LP_DEVICE_INFO) -> DeviceInfo {
+    DeviceInfo {
+        manufacturer_name: SdkText::from_sdk_bytes(bounded_c_bytes(&native.chManufacturerName)),
+        model_name: SdkText::from_sdk_bytes(bounded_c_bytes(&native.chModelName)),
+        device_version: SdkText::from_sdk_bytes(bounded_c_bytes(&native.chDeviceVersion)),
+        manufacturer_specific_info: SdkText::from_sdk_bytes(bounded_c_bytes(
+            &native.chManufacturerSpecificInfo,
+        )),
+        serial_number: SerialNumber::from_sdk_bytes(bounded_c_bytes(&native.chSerialNumber)),
+        user_defined_name: SdkText::from_sdk_bytes(bounded_c_bytes(&native.chUserDefinedName)),
         mac_address: native.chMacAddress,
-        ip_configuration_mode: native.enIPCfgMode,
-        current_ip: bounded_c_bytes(&native.chCurrentIp),
-        current_subnet_mask: bounded_c_bytes(&native.chCurrentSubNetMask),
-        default_gateway: bounded_c_bytes(&native.chDefultGateWay),
-        interface_ip: bounded_c_bytes(&native.chNetExport),
-        device_type: native.nDevTypeInfo,
+        ip_configuration_mode: crate::device::IpConfigurationMode::from_raw(native.enIPCfgMode),
+        current_ip: parse_optional_ipv4(&bounded_c_bytes(&native.chCurrentIp)),
+        current_subnet_mask: parse_optional_ipv4(&bounded_c_bytes(&native.chCurrentSubNetMask)),
+        default_gateway: parse_optional_ipv4(&bounded_c_bytes(&native.chDefultGateWay)),
+        network_interface_ip: parse_optional_ipv4(&bounded_c_bytes(&native.chNetExport)),
+        device_type_info: native.nDevTypeInfo,
     }
 }
 
 pub(crate) fn parameter_from_native(
     parameter: &bindings::MV3D_LP_PARAM,
-) -> DriverResult<ParameterRecord> {
+) -> DriverResult<Parameter> {
     match parameter.enParamType {
         bindings::ParamType_Bool => {
             // SAFETY: enParamType identifies bBoolParam as the active union member.
             let value = unsafe { parameter.ParamInfo.bBoolParam };
-            Ok(ParameterRecord::Bool(value != 0))
+            Ok(Parameter::Bool(value != 0))
         }
         bindings::ParamType_Int => {
             // SAFETY: enParamType identifies stIntParam as the active union member.
             let value = unsafe { parameter.ParamInfo.stIntParam };
-            Ok(ParameterRecord::Integer {
+            Ok(Parameter::Integer {
                 value: value.nCurValue,
-                minimum: value.nMin,
-                maximum: value.nMax,
+                min: value.nMin,
+                max: value.nMax,
                 increment: value.nInc,
             })
         }
         bindings::ParamType_Float => {
             // SAFETY: enParamType identifies stFloatParam as the active union member.
             let value = unsafe { parameter.ParamInfo.stFloatParam };
-            Ok(ParameterRecord::Float {
+            Ok(Parameter::Float {
                 value: value.fCurValue,
-                minimum: value.fMin,
-                maximum: value.fMax,
+                min: value.fMin,
+                max: value.fMax,
             })
         }
         bindings::ParamType_Enum => {
@@ -962,7 +873,7 @@ pub(crate) fn parameter_from_native(
                     },
                 ));
             }
-            Ok(ParameterRecord::Enumeration {
+            Ok(Parameter::Enumeration {
                 value: value.nCurValue,
                 supported: value.nSupportValue[..supported_count].to_vec(),
             })
@@ -979,9 +890,9 @@ pub(crate) fn parameter_from_native(
                     actual: usize::try_from(value.nMaxLength).unwrap_or(usize::MAX),
                 }));
             }
-            Ok(ParameterRecord::String {
-                value: bounded_c_bytes(&value.chCurValue),
-                maximum_length: value.nMaxLength,
+            Ok(Parameter::String {
+                value: SdkText::from_sdk_bytes(bounded_c_bytes(&value.chCurValue)),
+                max_length: value.nMaxLength,
             })
         }
         other => Err(DriverError::Contract(
@@ -993,16 +904,14 @@ pub(crate) fn parameter_from_native(
     }
 }
 
-pub(crate) fn parameter_to_native(
-    value: &ParameterValueRecord,
-) -> DriverResult<bindings::MV3D_LP_PARAM> {
+pub(crate) fn parameter_to_native(value: &ParameterValue) -> DriverResult<bindings::MV3D_LP_PARAM> {
     let mut parameter = zeroed_parameter();
     match value {
-        ParameterValueRecord::Bool(value) => {
+        ParameterValue::Bool(value) => {
             parameter.enParamType = bindings::ParamType_Bool;
             parameter.ParamInfo.bBoolParam = i32::from(*value);
         }
-        ParameterValueRecord::Integer(value) => {
+        ParameterValue::Integer(value) => {
             parameter.enParamType = bindings::ParamType_Int;
             parameter.ParamInfo.stIntParam = bindings::MV3D_LP_INTPARAM {
                 nCurValue: *value,
@@ -1011,7 +920,7 @@ pub(crate) fn parameter_to_native(
                 nInc: 0,
             };
         }
-        ParameterValueRecord::Float(value) => {
+        ParameterValue::Float(value) => {
             parameter.enParamType = bindings::ParamType_Float;
             parameter.ParamInfo.stFloatParam = bindings::MV3D_LP_FLOATPARAM {
                 fCurValue: *value,
@@ -1019,7 +928,7 @@ pub(crate) fn parameter_to_native(
                 fMin: 0.0,
             };
         }
-        ParameterValueRecord::Enumeration(value) => {
+        ParameterValue::Enumeration(value) => {
             parameter.enParamType = bindings::ParamType_Enum;
             parameter.ParamInfo.stEnumParam = bindings::MV3D_LP_ENUMPARAM {
                 nCurValue: *value,
@@ -1027,27 +936,22 @@ pub(crate) fn parameter_to_native(
                 nSupportValue: [0; bindings::MV3D_LP_MAX_ENUM_COUNT],
             };
         }
-        ParameterValueRecord::String(value) => {
-            if value.len() >= bindings::MV3D_LP_MAX_STRING_LENGTH {
+        ParameterValue::String(value) => {
+            let bytes = value.as_bytes();
+            if bytes.len() >= bindings::MV3D_LP_MAX_STRING_LENGTH {
                 return Err(invalid_input(
                     "parameter value",
                     InputViolation::TooLong {
                         max: bindings::MV3D_LP_MAX_STRING_LENGTH - 1,
-                        actual: value.len(),
+                        actual: bytes.len(),
                     },
-                ));
-            }
-            if value.contains(&0) {
-                return Err(invalid_input(
-                    "parameter value",
-                    InputViolation::InteriorNul,
                 ));
             }
             let mut string = bindings::MV3D_LP_STRINGPARAM {
                 chCurValue: [0; bindings::MV3D_LP_MAX_STRING_LENGTH],
                 nMaxLength: 0,
             };
-            for (destination, source) in string.chCurValue.iter_mut().zip(value) {
+            for (destination, source) in string.chCurValue.iter_mut().zip(bytes) {
                 *destination = *source as i8;
             }
             parameter.enParamType = bindings::ParamType_String;
@@ -1081,14 +985,15 @@ mod tests {
     use std::ptr;
 
     use super::{
-        image_from_native, image_input_to_native, parameter_from_native, parameter_to_native,
-        zeroed_image, zeroed_parameter,
+        LengthRule, image_from_native, image_input_to_native, parameter_from_native,
+        parameter_to_native, zeroed_image, zeroed_parameter,
     };
     use crate::bindings;
     use crate::driver::DriverError;
     use crate::error::{ContractViolation, InputViolation};
-    use crate::frame::{ImageInput, ImageTypeRecord};
-    use crate::parameter::{ParameterRecord, ParameterValueRecord};
+    use crate::frame::{ImageCalibration, ImageRef, ImageType};
+    use crate::parameter::{Parameter, ParameterValue};
+    use crate::text::SdkText;
 
     // 验证 SDK 图像的指针/长度边界，并确认 callback 返回前完成深拷贝。
     #[test]
@@ -1107,7 +1012,7 @@ mod tests {
         image.pExposureTimeStamp = exposure.as_mut_ptr();
 
         // SAFETY: all descriptor pointers refer to the live arrays above for their declared sizes.
-        let frame = unsafe { image_from_native(&image) }.unwrap();
+        let frame = unsafe { image_from_native(&image, LengthRule::Padded) }.unwrap();
         data.fill(9);
         intensity.fill(9);
         exposure.fill(9);
@@ -1118,7 +1023,7 @@ mod tests {
         image.pData = ptr::null_mut();
         assert!(matches!(
             // SAFETY: validation rejects the null pointer before reading any payload.
-            unsafe { image_from_native(&image) },
+            unsafe { image_from_native(&image, LengthRule::Padded) },
             Err(DriverError::Contract(
                 ContractViolation::NullPointerWithLength {
                     field: "data",
@@ -1134,8 +1039,8 @@ mod tests {
         let data = [0; 4];
         let intensity = [0; 4];
         let timestamps = [0; 2];
-        let input = ImageInput {
-            image_type: ImageTypeRecord::from_raw(bindings::ImageType_Mono8),
+        let input = ImageRef {
+            image_type: ImageType::from_raw(bindings::ImageType_Mono8),
             width: 2,
             height: 2,
             data: &data,
@@ -1144,12 +1049,7 @@ mod tests {
             frame_number: 0,
             device_timestamp: 0,
             valid: true,
-            x_scale: 0.0,
-            y_scale: 0.0,
-            z_scale: 0.0,
-            x_offset: 0,
-            y_offset: 0,
-            z_offset: 0,
+            calibration: ImageCalibration::default(),
         };
         assert!(image_input_to_native(input).is_ok());
 
@@ -1160,27 +1060,27 @@ mod tests {
         let short_timestamps = [0; 1];
         let long_timestamps = [0; 3];
         for invalid in [
-            ImageInput {
+            ImageRef {
                 data: &short_data,
                 ..input
             },
-            ImageInput {
+            ImageRef {
                 data: &long_data,
                 ..input
             },
-            ImageInput {
+            ImageRef {
                 intensity_data: Some(&short_intensity),
                 ..input
             },
-            ImageInput {
+            ImageRef {
                 intensity_data: Some(&long_intensity),
                 ..input
             },
-            ImageInput {
+            ImageRef {
                 exposure_timestamps: Some(&short_timestamps),
                 ..input
             },
-            ImageInput {
+            ImageRef {
                 exposure_timestamps: Some(&long_timestamps),
                 ..input
             },
@@ -1207,7 +1107,7 @@ mod tests {
         };
         assert_eq!(
             parameter_from_native(&parameter).unwrap(),
-            ParameterRecord::Enumeration {
+            Parameter::Enumeration {
                 value: 7,
                 supported: vec![11, 13]
             }
@@ -1222,16 +1122,16 @@ mod tests {
             ))
         ));
 
-        let boolean = parameter_to_native(&ParameterValueRecord::Bool(true)).unwrap();
+        let boolean = parameter_to_native(&ParameterValue::Bool(true)).unwrap();
         assert_eq!(boolean.enParamType, bindings::ParamType_Bool);
         // SAFETY: the discriminator above identifies bBoolParam as the active member.
         assert_eq!(unsafe { boolean.ParamInfo.bBoolParam }, 1);
 
         assert!(matches!(
-            parameter_to_native(&ParameterValueRecord::String(b"a\0b".to_vec())),
-            Err(DriverError::InvalidInput {
-                field: "parameter value",
+            SdkText::new(b"a\0b"),
+            Err(crate::error::Error::InvalidInput {
                 violation: InputViolation::InteriorNul,
+                ..
             })
         ));
     }

@@ -215,10 +215,6 @@ pub enum InputViolation {
         max: usize,
         actual: usize,
     },
-    TimeoutTooLong {
-        maximum_millis: u32,
-        actual_millis: u128,
-    },
     ImageCount {
         minimum: usize,
         maximum: usize,
@@ -240,13 +236,6 @@ impl fmt::Display for InputViolation {
             Self::TooLong { max, actual } => write!(
                 formatter,
                 "the value has {actual} bytes; at most {max} are allowed"
-            ),
-            Self::TimeoutTooLong {
-                maximum_millis,
-                actual_millis,
-            } => write!(
-                formatter,
-                "the timeout is {actual_millis} milliseconds; at most {maximum_millis} milliseconds are allowed"
             ),
             Self::ImageCount {
                 minimum,
