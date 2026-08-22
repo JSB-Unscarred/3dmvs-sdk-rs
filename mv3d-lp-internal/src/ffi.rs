@@ -2,24 +2,14 @@
 
 use std::ffi::CStr;
 use std::mem::{MaybeUninit, size_of};
-#[cfg(all(
-    feature = "display-windows",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
-))]
+#[cfg(all(native_sdk, feature = "display-windows"))]
 use std::num::NonZeroIsize;
 use std::ptr;
 
 use crate::bindings;
 use crate::callback::{CallbackCookie, exception_trampoline, image_trampoline};
 use crate::device::{DeviceInfo, IpConfigRaw, parse_optional_ipv4};
-#[cfg(all(
-    feature = "display-windows",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
-))]
+#[cfg(all(native_sdk, feature = "display-windows"))]
 use crate::display::DisplayRange;
 use crate::driver::{DriverError, DriverResult, Handle, status_result};
 use crate::error::{ContractViolation, InputViolation};
@@ -33,12 +23,7 @@ const MAX_MULTI_IMAGE_COUNT: usize = 8;
 /// Concrete native call boundary; lifecycle and ownership stay in the safe wrapper.
 pub(crate) struct NativeDriver;
 
-#[cfg(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
-))]
+#[cfg(native_sdk)]
 impl NativeDriver {
     pub(crate) fn version(&self) -> DriverResult<Vec<u8>> {
         // SAFETY: The linked LPSDK contract exposes this function without arguments.
@@ -287,6 +272,8 @@ impl NativeDriver {
         // SAFETY: input borrows a validated payload for the duration of this serialized call;
         // the vendor marks it [IN], so the SDK must not write through its legacy mutable pointer.
         status_result(unsafe { bindings::MV3D_LP_MapDepthToPointCloud(&mut input, &mut output) })?;
+        // SAFETY: the SDK reported success, so the output descriptor is initialized and its
+        // buffers stay valid until the next image-processing call on this serialized session.
         unsafe { processed_image_from_native(&output, ImageType::POINT_CLOUD) }
     }
 
@@ -297,9 +284,13 @@ impl NativeDriver {
         let mut inputs = prepare_multi_inputs(inputs)?;
         let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
         let mut output = zeroed_image();
+        // SAFETY: `inputs` holds `count` validated descriptors borrowing live [IN] payloads for
+        // this serialized call; `output` is an initialized descriptor the SDK writes into.
         status_result(unsafe {
             bindings::MV3D_LP_MapDepthToPointCloudRound(inputs.as_mut_ptr(), count, &mut output)
         })?;
+        // SAFETY: the SDK reported success, so the output descriptor is initialized and its
+        // buffers stay valid until the next image-processing call on this serialized session.
         unsafe { processed_image_from_native(&output, ImageType::POINT_CLOUD) }
     }
 
@@ -311,7 +302,11 @@ impl NativeDriver {
         let mut input = image_input_to_native(input)?;
         let mut output = zeroed_image();
         output.enImageType = target.raw();
+        // SAFETY: `input` borrows a validated [IN] payload for this serialized call; `output`
+        // carries only the requested target type and is written by the SDK.
         status_result(unsafe { bindings::MV3D_LP_ImageConvert(&mut input, &mut output) })?;
+        // SAFETY: the SDK reported success, so the output descriptor is initialized and its
+        // buffers stay valid until the next image-processing call on this serialized session.
         unsafe { processed_image_from_native(&output, target) }
     }
 
@@ -319,9 +314,13 @@ impl NativeDriver {
         let mut inputs = prepare_multi_inputs(inputs)?;
         let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
         let mut output = zeroed_image();
+        // SAFETY: `inputs` holds `count` validated descriptors borrowing live [IN] payloads for
+        // this serialized call; `output` is an initialized descriptor the SDK writes into.
         status_result(unsafe {
             bindings::MV3D_LP_DepthMosaic(inputs.as_mut_ptr(), count, &mut output)
         })?;
+        // SAFETY: the SDK reported success, so the output descriptor is initialized and its
+        // buffers stay valid until the next image-processing call on this serialized session.
         unsafe { processed_image_from_native(&output, ImageType::DEPTH) }
     }
 
@@ -332,6 +331,8 @@ impl NativeDriver {
         file_name: &CStr,
     ) -> DriverResult<()> {
         let mut input = image_input_to_native(input)?;
+        // SAFETY: `input` borrows a validated [IN] payload and `file_name` is a NUL-terminated
+        // C string; both stay live for this synchronous call.
         status_result(unsafe {
             bindings::MV3D_LP_SaveImage(&mut input, format as i32, file_name.as_ptr())
         })
@@ -365,12 +366,7 @@ impl NativeDriver {
     }
 }
 
-#[cfg(not(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
-)))]
+#[cfg(not(native_sdk))]
 // Default builds type-check the safe API without referencing the vendor import library.
 macro_rules! unavailable_methods {
     ($(fn $name:ident($($argument:ident: $argument_type:ty),*) -> $output:ty;)+) => {
@@ -385,12 +381,7 @@ macro_rules! unavailable_methods {
     };
 }
 
-#[cfg(not(all(
-    feature = "native",
-    target_os = "windows",
-    target_arch = "x86_64",
-    target_env = "msvc"
-)))]
+#[cfg(not(native_sdk))]
 unavailable_methods! {
     fn finalize() -> ();
     fn device_number() -> u32;
@@ -419,15 +410,7 @@ unavailable_methods! {
     fn save_image(input: ImageRef<'_>, format: ImageFileFormat, file_name: &CStr) -> ();
 }
 
-#[cfg(any(
-    test,
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
+#[cfg(any(test, native_sdk))]
 fn image_input_to_native(input: ImageRef<'_>) -> DriverResult<bindings::MV3D_LP_IMAGE_DATA> {
     let data_len = u32::try_from(input.data.len())
         .map_err(|_| input_too_long("image data", u32::MAX as usize, input.data.len()))?;
@@ -479,46 +462,28 @@ fn image_input_to_native(input: ImageRef<'_>) -> DriverResult<bindings::MV3D_LP_
     Ok(native)
 }
 
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "display-windows",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
+#[cfg(all(native_sdk, feature = "display-windows"))]
 /// Calls the raw display entry point with an initialized descriptor and borrowed window handle.
 ///
 /// # Safety
 ///
 /// `image` must point to an initialized descriptor whose borrowed payloads remain readable for
-/// the call, and `window` must be a live Win32 `HWND` accepted by the vendor runtime. Test callers
-/// may use dummy values only when the no-native symbol stub is linked.
-pub(crate) unsafe fn native_display_image_call(
+/// the call, and `window` must be a live Win32 `HWND` accepted by the vendor runtime.
+unsafe fn native_display_image_call(
     image: *mut bindings::MV3D_LP_IMAGE_DATA,
     window: *mut std::ffi::c_void,
     display_type: bindings::Mv3dLpDisplayType,
     minimum: i32,
     maximum: i32,
 ) -> DriverResult<()> {
-    // SAFETY: Production callers provide the validated live image and HWND used by
-    // NativeDriver. The no-native unit test supplies initialized raw storage and a local symbol
-    // stub with the identical C signature.
+    // SAFETY: The only caller is NativeDriver::display_image, which validated the descriptor and
+    // borrowed the HWND for this synchronous call.
     status_result(unsafe {
         bindings::MV3D_LP_DisplayImage(image, window, display_type, minimum, maximum)
     })
 }
 
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
+#[cfg(native_sdk)]
 fn prepare_multi_inputs(
     inputs: &[ImageRef<'_>],
 ) -> DriverResult<Vec<bindings::MV3D_LP_IMAGE_DATA>> {
@@ -528,15 +493,7 @@ fn prepare_multi_inputs(
     inputs.iter().copied().map(image_input_to_native).collect()
 }
 
-#[cfg(any(
-    test,
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
+#[cfg(native_sdk)]
 unsafe fn processed_image_from_native(
     output: &bindings::MV3D_LP_IMAGE_DATA,
     expected: ImageType,
@@ -549,15 +506,7 @@ unsafe fn processed_image_from_native(
     unsafe { image_from_native(output, LengthRule::Exact) }
 }
 
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
+#[cfg(native_sdk)]
 fn zeroed_device_info() -> bindings::MV3D_LP_DEVICE_INFO {
     // SAFETY: The C structure consists only of integer scalars and byte arrays; all-zero is a
     // valid initialization pattern and is required by the SDK output contract.
@@ -802,15 +751,7 @@ pub(crate) fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {
     unsafe { MaybeUninit::zeroed().assume_init() }
 }
 
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
+#[cfg(native_sdk)]
 /// Copies one fixed native device descriptor directly into its owned Rust record.
 fn device_info_from_native(native: bindings::MV3D_LP_DEVICE_INFO) -> DeviceInfo {
     DeviceInfo {
@@ -962,20 +903,12 @@ pub(crate) fn parameter_to_native(value: &ParameterValue) -> DriverResult<bindin
 }
 
 /// Copies one fixed C buffer through its first NUL byte.
-fn bounded_c_bytes<const N: usize>(source: &[i8; N]) -> Vec<u8> {
+pub(crate) fn bounded_c_bytes<const N: usize>(source: &[i8; N]) -> Vec<u8> {
     let length = source.iter().position(|byte| *byte == 0).unwrap_or(N);
     source[..length].iter().map(|byte| *byte as u8).collect()
 }
 
-#[cfg(any(
-    all(test, not(miri), not(feature = "native")),
-    all(
-        feature = "native",
-        target_os = "windows",
-        target_arch = "x86_64",
-        target_env = "msvc"
-    )
-))]
+#[cfg(native_sdk)]
 fn as_c_char_array<const N: usize>(source: &[u8; N]) -> [i8; N] {
     std::array::from_fn(|index| source[index] as i8)
 }

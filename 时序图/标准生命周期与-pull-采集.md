@@ -9,7 +9,7 @@ sequenceDiagram
     participant Native as 厂商 LPSDK
 
     App->>Public: Sdk::version()
-    Public->>Core: Runtime::version_bytes()
+    Public->>Core: Runtime::version()
     Core->>Native: MV3D_LP_GetVersion()
     Native-->>Core: 原始版本字节
     Core->>Core: 复制为拥有字节，不解析段数或兼容区间

@@ -2,7 +2,7 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(improper_ctypes, improper_ctypes_definitions)]
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+#[cfg(sdk_target)]
 mod abi;
 mod bindings;
 mod bits;

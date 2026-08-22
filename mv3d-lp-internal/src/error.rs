@@ -1,6 +1,8 @@
 use std::error::Error as StdError;
 use std::fmt;
 
+use crate::bindings;
+
 /// Identifies the SDK operation associated with an error.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
@@ -85,26 +87,46 @@ impl fmt::Display for Operation {
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct StatusCode(u32);
 
-impl StatusCode {
-    pub const OK: Self = Self(0x0000_0000);
-    pub const INVALID_HANDLE: Self = Self(0x8006_0000);
-    pub const UNSUPPORTED: Self = Self(0x8006_0001);
-    pub const BUFFER_OVERFLOW: Self = Self(0x8006_0002);
-    pub const INVALID_CALL_ORDER: Self = Self(0x8006_0003);
-    pub const INVALID_PARAMETER: Self = Self(0x8006_0004);
-    pub const RESOURCE_ERROR: Self = Self(0x8006_0005);
-    pub const NO_DATA: Self = Self(0x8006_0006);
-    pub const PRECONDITION_FAILED: Self = Self(0x8006_0007);
-    pub const VERSION_MISMATCH: Self = Self(0x8006_0008);
-    pub const INSUFFICIENT_BUFFER: Self = Self(0x8006_0009);
-    pub const ABNORMAL_IMAGE: Self = Self(0x8006_000A);
-    pub const LOAD_LIBRARY_FAILED: Self = Self(0x8006_000B);
-    pub const ALGORITHM_ERROR: Self = Self(0x8006_000C);
-    pub const DEVICE_OFFLINE: Self = Self(0x8006_000D);
-    pub const ACCESS_DENIED: Self = Self(0x8006_000E);
-    pub const OUT_OF_RANGE: Self = Self(0x8006_000F);
-    pub const UNKNOWN: Self = Self(0x8006_00FF);
+macro_rules! status_codes {
+    ($($constant:ident = $raw:expr => $name:literal),+ $(,)?) => {
+        impl StatusCode {
+            $(pub const $constant: Self = Self($raw as u32);)+
 
+            /// Returns the vendor header name; statuses from a newer runtime return `None`.
+            #[must_use]
+            pub const fn name(self) -> Option<&'static str> {
+                $(if self.0 == Self::$constant.0 {
+                    return Some($name);
+                })+
+                None
+            }
+        }
+    };
+}
+
+// 位模式与名字都以 bindings 为唯一来源，厂商头文件升级时只改 bindings。
+status_codes! {
+    OK = 0 => "MV3D_LP_OK",
+    INVALID_HANDLE = bindings::MV3D_LP_E_HANDLE => "MV3D_LP_E_HANDLE",
+    UNSUPPORTED = bindings::MV3D_LP_E_SUPPORT => "MV3D_LP_E_SUPPORT",
+    BUFFER_OVERFLOW = bindings::MV3D_LP_E_BUFOVER => "MV3D_LP_E_BUFOVER",
+    INVALID_CALL_ORDER = bindings::MV3D_LP_E_CALLORDER => "MV3D_LP_E_CALLORDER",
+    INVALID_PARAMETER = bindings::MV3D_LP_E_PARAMETER => "MV3D_LP_E_PARAMETER",
+    RESOURCE_ERROR = bindings::MV3D_LP_E_RESOURCE => "MV3D_LP_E_RESOURCE",
+    NO_DATA = bindings::MV3D_LP_E_NODATA => "MV3D_LP_E_NODATA",
+    PRECONDITION_FAILED = bindings::MV3D_LP_E_PRECONDITION => "MV3D_LP_E_PRECONDITION",
+    VERSION_MISMATCH = bindings::MV3D_LP_E_VERSION => "MV3D_LP_E_VERSION",
+    INSUFFICIENT_BUFFER = bindings::MV3D_LP_E_NOENOUGH_BUF => "MV3D_LP_E_NOENOUGH_BUF",
+    ABNORMAL_IMAGE = bindings::MV3D_LP_E_ABNORMAL_IMAGE => "MV3D_LP_E_ABNORMAL_IMAGE",
+    LOAD_LIBRARY_FAILED = bindings::MV3D_LP_E_LOAD_LIBRARY => "MV3D_LP_E_LOAD_LIBRARY",
+    ALGORITHM_ERROR = bindings::MV3D_LP_E_ALGORITHM => "MV3D_LP_E_ALGORITHM",
+    DEVICE_OFFLINE = bindings::MV3D_LP_E_DEVICE_OFFLINE => "MV3D_LP_E_DEVICE_OFFLINE",
+    ACCESS_DENIED = bindings::MV3D_LP_E_ACCESS_DENIED => "MV3D_LP_E_ACCESS_DENIED",
+    OUT_OF_RANGE = bindings::MV3D_LP_E_OUTOFRANGE => "MV3D_LP_E_OUTOFRANGE",
+    UNKNOWN = bindings::MV3D_LP_E_UNKNOW => "MV3D_LP_E_UNKNOW",
+}
+
+impl StatusCode {
     #[must_use]
     pub const fn from_raw(raw: i32) -> Self {
         Self(raw as u32)
@@ -128,31 +150,6 @@ impl StatusCode {
     #[must_use]
     pub const fn is_ok(self) -> bool {
         self.0 == Self::OK.0
-    }
-
-    #[must_use]
-    pub const fn name(self) -> Option<&'static str> {
-        match self.0 {
-            0x0000_0000 => Some("MV3D_LP_OK"),
-            0x8006_0000 => Some("MV3D_LP_E_HANDLE"),
-            0x8006_0001 => Some("MV3D_LP_E_SUPPORT"),
-            0x8006_0002 => Some("MV3D_LP_E_BUFOVER"),
-            0x8006_0003 => Some("MV3D_LP_E_CALLORDER"),
-            0x8006_0004 => Some("MV3D_LP_E_PARAMETER"),
-            0x8006_0005 => Some("MV3D_LP_E_RESOURCE"),
-            0x8006_0006 => Some("MV3D_LP_E_NODATA"),
-            0x8006_0007 => Some("MV3D_LP_E_PRECONDITION"),
-            0x8006_0008 => Some("MV3D_LP_E_VERSION"),
-            0x8006_0009 => Some("MV3D_LP_E_NOENOUGH_BUF"),
-            0x8006_000A => Some("MV3D_LP_E_ABNORMAL_IMAGE"),
-            0x8006_000B => Some("MV3D_LP_E_LOAD_LIBRARY"),
-            0x8006_000C => Some("MV3D_LP_E_ALGORITHM"),
-            0x8006_000D => Some("MV3D_LP_E_DEVICE_OFFLINE"),
-            0x8006_000E => Some("MV3D_LP_E_ACCESS_DENIED"),
-            0x8006_000F => Some("MV3D_LP_E_OUTOFRANGE"),
-            0x8006_00FF => Some("MV3D_LP_E_UNKNOW"),
-            _ => None,
-        }
     }
 }
 

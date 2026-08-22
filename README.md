@@ -113,12 +113,12 @@ MVS 使用 Camera-owned callback slot，并在注销或 Destroy 边界释放。
 | `MV3D_LP_SoftTrigger` | `Device::soft_trigger()` | 直接转发，由 SDK 判断调用顺序 |
 | `MV3D_LP_GetImage` | `Device::get_image(timeout_ms)`、`Device::get_image_blocking()` | pull 采集的毫秒超时与无限等待；internal FFI 校验后复制为 `Image` |
 | `MV3D_LP_RegisterImageDataCallBack` | `Device::register_image_callback(F)`、`Device::disable_image_delivery()` | `F: Fn(Image) + Send + Sync + 'static`；首次成功后绑定 callback 至 Close，之后可替换 cookie |
-| `MV3D_LP_ClearDataBuffer` | `Device::clear_buffer()` | 直接转发；允许状态待厂商确认 |
-| `MV3D_LP_GetParam` | `Device::get_parameter()` | 接收 `&str` Node Name，返回 `Parameter` |
-| `MV3D_LP_SetParam` | `Device::set_parameter()` | 接收 `&str` Node Name 与 `ParameterValue` |
-| `MV3D_LP_Execute` | `Device::execute()` | 接收 `&str` Command Node Name |
-| `MV3D_LP_FileAccessRead` | `Device::download_file()` | 下载设备文件；文件名仅在本次 native 调用期间传入 |
-| `MV3D_LP_FileAccessWrite` | `Device::upload_file()` | 上传主机文件；文件名仅在本次 native 调用期间传入 |
+| `MV3D_LP_ClearDataBuffer` | `Device::clear_buffer()` | 直接转发；允许状态待厂商确认，方法注释同步该保留项 |
+| `MV3D_LP_GetParam` | `Device::get_parameter()` | Node Name 接收 `impl AsRef<[u8]>`（`&str` 与 `&[u8]` 皆可），返回 `Parameter` |
+| `MV3D_LP_SetParam` | `Device::set_parameter()` | Node Name 接收 `impl AsRef<[u8]>`，值使用 `ParameterValue` |
+| `MV3D_LP_Execute` | `Device::execute()` | Command Node Name 接收 `impl AsRef<[u8]>` |
+| `MV3D_LP_FileAccessRead` | `Device::download_file()` | 下载设备文件；文件名接收 `impl AsRef<[u8]>`，仅在本次 native 调用期间传入 |
+| `MV3D_LP_FileAccessWrite` | `Device::upload_file()` | 上传主机文件；文件名接收 `impl AsRef<[u8]>`，仅在本次 native 调用期间传入 |
 | `MV3D_LP_GetFileAccessProgress` | `Device::file_transfer_progress()` | 返回 `i64` 原始进度快照，不解释完成状态 |
 | `MV3D_LP_GetDeviceIP` | 未直接封装 | 废弃接口；功能替代为从 `Sdk::devices()` 返回的 `DeviceInfo` 读取 IP |
 | `MV3D_LP_GetDeviceSN` | 未直接封装 | 废弃接口；功能替代为从 `Sdk::devices()` 返回的 `DeviceInfo` 读取序列号 |
@@ -131,7 +131,7 @@ MVS 使用 Camera-owned callback slot，并在注销或 Destroy 边界释放。
 | `MV3D_LP_MapDepthToPointCloudRound` | `Sdk::depth_to_round_point_cloud()` | 头文件规定最多 8 张；其他数量语义由 SDK 判断 |
 | `MV3D_LP_ImageConvert` | `Sdk::convert()` | 图像 descriptor 与布局校验集中在 internal FFI |
 | `MV3D_LP_DepthMosaic` | `Sdk::mosaic_depth()` | 头文件规定最多 8 张；其他数量语义由 SDK 判断 |
-| `MV3D_LP_SaveImage` | `Sdk::save()` | 使用 `ImageFileFormat` 限定格式 |
+| `MV3D_LP_SaveImage` | `Sdk::save()` | 使用 `ImageFileFormat` 限定格式；文件名接收 `impl AsRef<[u8]>` 且拒绝空串 |
 | `MV3D_LP_DisplayImage` | `Sdk::display()` | 仅 `display-windows` feature 提供 |
 
 ## SDK 结构体对应表
@@ -158,6 +158,8 @@ SDK 的 reserved 字段、原始指针、回调函数指针和设备句柄只存
 ## 安全边界
 
 - 公共 crate 使用 `#![forbid(unsafe_code)]`；FFI、指针校验、C union 读取和 callback trampoline 位于 `mv3d-lp-internal`。
+- 状态码、图像类型、文件类型、IP 配置模式的位模式以 `bindings` 为唯一来源，`error.rs` 与 `bit_newtype!` 只保留名字映射；厂商头文件升级时只需改 `bindings.rs`。
+- 目标与 feature 组合由 `mv3d-lp-internal/build.rs` 输出的 `sdk_target`、`native_sdk` 两个 cfg 别名表达，源码中不再重复四条件谓词。
 - 原生图像输入与输出的判别值、指针、长度、布局和算术校验集中在 internal FFI，再复制到 Rust 所有值；已知格式要求主数据、可选亮度数据和曝光时间戳与宽高对应。采集输出允许 padding，输入与图像处理输出要求精确匹配。
 - 所有权、线程契约、清理顺序、callback、FileAccess、错误传播与终止边界统一见[生命周期与时序](生命周期与时序图.md)。
 
@@ -179,8 +181,16 @@ cargo doc --workspace --no-deps --locked
 
 ```powershell
 cargo check --workspace --features native --locked
+cargo clippy --workspace --all-targets --features native --locked -- -D warnings
 cargo test --workspace --features native --no-run --locked
 cargo test --workspace --features display-windows --locked
+```
+
+无 SDK 的机器可以只对 internal crate 直接打开 cfg 别名，单独类型检查 native 分支（不链接厂商库）：
+
+```powershell
+$env:RUSTFLAGS = "--cfg native_sdk"
+cargo clippy -p mv3d-lp-internal --all-targets --locked -- -D warnings
 ```
 
 ## 许可证

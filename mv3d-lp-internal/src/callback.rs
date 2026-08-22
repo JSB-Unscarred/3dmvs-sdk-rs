@@ -15,8 +15,8 @@ use crate::text::SdkText;
 bit_newtype! {
     /// A device exception type reported by the SDK, preserving unknown values.
     pub struct DeviceExceptionType;
-    UNDEFINED = 0xFFFF_FFFF => "undefined",
-    DISCONNECTED = 0x0000_0001 => "disconnected",
+    UNDEFINED = bindings::DevExceptionType_Undefined as u32 => "undefined",
+    DISCONNECTED = bindings::DevExceptionType_Disconnect as u32 => "disconnected",
 }
 
 /// An owned device exception delivered by the safe callback facade.
@@ -210,19 +210,11 @@ fn dispatch_exception(cookie: CallbackCookie, exception: *mut bindings::MV3D_LP_
     }
 }
 
+/// Copies the fixed-width description out of the vendor descriptor before the callback returns.
 fn exception_from_native(exception: &bindings::MV3D_LP_EXCEPTION_INFO) -> DeviceException {
-    let length = exception
-        .chExceptionDesc
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(exception.chExceptionDesc.len());
-    let description = exception.chExceptionDesc[..length]
-        .iter()
-        .map(|byte| *byte as u8)
-        .collect();
     DeviceException::new(
         DeviceExceptionType::from_raw(exception.enExceptionType),
-        SdkText::from_sdk_bytes(description),
+        SdkText::from_sdk_bytes(crate::ffi::bounded_c_bytes(&exception.chExceptionDesc)),
     )
 }
 

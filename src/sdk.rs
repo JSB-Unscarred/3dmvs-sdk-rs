@@ -32,10 +32,14 @@ impl Sdk {
         self.inner.device_count()
     }
 
+    /// Enumerates the devices visible to this session as owned snapshots.
+    ///
+    /// 先取一次数量再取列表；两段之间设备可能增减，返回条数可少于最新计数。
     pub fn devices(&self) -> Result<Vec<DeviceInfo>> {
         self.inner.devices()
     }
 
+    /// Writes the IP configuration mode, and for a static mode the address triple, by serial number.
     pub fn set_ip_config(
         &self,
         serial_number: &SerialNumber,
@@ -45,10 +49,12 @@ impl Sdk {
             .set_ip_config(serial_number.as_bytes(), &configuration)
     }
 
+    /// Opens one device by IPv4 address. A `Device` is produced only after a non-null handle.
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device> {
         self.inner.open_by_ip(address).map(Device::from_internal)
     }
 
+    /// Opens one device by serial number. A `Device` is produced only after a non-null handle.
     pub fn open_by_serial(&self, serial_number: &SerialNumber) -> Result<Device> {
         self.inner
             .open_by_serial(serial_number.as_bytes())
@@ -75,14 +81,14 @@ impl Sdk {
         self.inner.mosaic_depth(inputs)
     }
 
-    /// Saves an image using the vendor encoder.
+    /// Saves an image using the vendor encoder. The name accepts `&str` or raw bytes.
     pub fn save(
         &self,
         input: ImageRef<'_>,
         format: ImageFileFormat,
-        file_name: &[u8],
+        file_name: impl AsRef<[u8]>,
     ) -> Result<()> {
-        self.inner.save_image(input, format, file_name)
+        self.inner.save_image(input, format, file_name.as_ref())
     }
 
     /// Finalizes the one-shot session and consumes this token.

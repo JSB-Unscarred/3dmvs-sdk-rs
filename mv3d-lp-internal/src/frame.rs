@@ -1,18 +1,19 @@
 use std::fmt;
 
+use crate::bindings;
 use crate::bits::bit_newtype;
 
 bit_newtype! {
     /// An image format reported by the SDK, preserving unknown 32-bit values.
     pub struct ImageType;
-    UNDEFINED = 0xFFFF_FFFF => "undefined",
-    MONO8 = 0x0108_0001 => "Mono8",
-    DEPTH = 0x0110_00B8 => "depth",
-    PROFILE = 0x0230_00B9 => "profile",
-    POINT_CLOUD = 0x0260_00C0 => "point cloud",
-    RGB24_PACKED = 0x0218_0014 => "RGB24 packed",
-    JPEG = 0x8018_0001 => "JPEG",
-    PROFILE_ABC32 = 0x8260_3001 => "profile ABC32",
+    UNDEFINED = bindings::ImageType_Undefined as u32 => "undefined",
+    MONO8 = bindings::ImageType_Mono8 as u32 => "Mono8",
+    DEPTH = bindings::ImageType_Depth as u32 => "depth",
+    PROFILE = bindings::ImageType_Profile as u32 => "profile",
+    POINT_CLOUD = bindings::ImageType_PointCloud as u32 => "point cloud",
+    RGB24_PACKED = bindings::ImageType_RGB24_Packed as u32 => "RGB24 packed",
+    JPEG = bindings::ImageType_Jpeg as u32 => "JPEG",
+    PROFILE_ABC32 = bindings::ImageType_Profile_ABC32 as u32 => "profile ABC32",
 }
 
 /// Calibration metadata used when converting depth, profile, and point-cloud images.
@@ -147,15 +148,15 @@ impl Image {
 #[repr(i32)]
 #[non_exhaustive]
 pub enum ImageFileFormat {
-    Ply = 1,
-    Csv = 2,
-    Obj = 3,
-    Bmp = 4,
-    Jpeg = 5,
-    Tiff = 6,
-    TiffU16 = 7,
-    TiffF32 = 8,
-    PlyBinary = 9,
-    PlyTexture = 10,
-    Hibag = 11,
+    Ply = bindings::FileType_PLY,
+    Csv = bindings::FileType_CSV,
+    Obj = bindings::FileType_OBJ,
+    Bmp = bindings::FileType_BMP,
+    Jpeg = bindings::FileType_JPG,
+    Tiff = bindings::FileType_TIFF,
+    TiffU16 = bindings::FileType_TIFF_U16,
+    TiffF32 = bindings::FileType_TIFF_F32,
+    PlyBinary = bindings::FileType_PLY_BINARY,
+    PlyTexture = bindings::FileType_PLY_TEXTURE,
+    Hibag = bindings::FileType_HIBAG,
 }

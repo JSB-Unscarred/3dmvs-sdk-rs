@@ -1,3 +1,4 @@
+use std::ffi::CString;
 use std::sync::Arc;
 
 use crate::callback::{CallbackRegistration, ExceptionCallback, ImageCallback};
@@ -46,46 +47,45 @@ impl Device {
     }
 
     /// Starts pull acquisition from idle, or callback acquisition after image registration.
+    ///
+    /// 次态先于 native 调用算出；调用失败时状态原样保留。
     pub fn start(&mut self) -> Result<(), Error> {
-        match self.acquisition {
-            AcquisitionState::Idle => {
-                self.runtime.call(Operation::StartMeasure, |driver| {
-                    driver.start(self.handle())
-                })?;
-                self.acquisition = AcquisitionState::Pulling;
-                Ok(())
+        let next = match self.acquisition {
+            AcquisitionState::Idle => AcquisitionState::Pulling,
+            AcquisitionState::CallbackStopped => AcquisitionState::CallbackRunning,
+            _ => {
+                return Err(Error::InvalidState {
+                    operation: Operation::StartMeasure,
+                    expected: "idle or callback registered and stopped",
+                    actual: self.acquisition.name(),
+                });
             }
-            AcquisitionState::CallbackStopped => {
-                self.runtime.call(Operation::StartMeasure, |driver| {
-                    driver.start(self.handle())
-                })?;
-                self.acquisition = AcquisitionState::CallbackRunning;
-                Ok(())
-            }
-            _ => Err(Error::InvalidState {
-                operation: Operation::StartMeasure,
-                expected: "idle or callback registered and stopped",
-                actual: self.acquisition.name(),
-            }),
-        }
+        };
+        self.runtime.call(Operation::StartMeasure, |driver| {
+            driver.start(self.handle())
+        })?;
+        self.acquisition = next;
+        Ok(())
     }
 
     /// Stops active acquisition; callback registration remains valid through Close.
+    ///
+    /// 次态先于 native 调用算出；调用失败时状态原样保留。
     pub fn stop(&mut self) -> Result<(), Error> {
-        if !self.acquisition.needs_stop() {
-            return Err(Error::InvalidState {
-                operation: Operation::StopMeasure,
-                expected: "pull or callback acquisition running",
-                actual: self.acquisition.name(),
-            });
-        }
-        self.runtime
-            .call(Operation::StopMeasure, |driver| driver.stop(self.handle()))?;
-        self.acquisition = match std::mem::replace(&mut self.acquisition, AcquisitionState::Idle) {
+        let next = match self.acquisition {
             AcquisitionState::Pulling => AcquisitionState::Idle,
             AcquisitionState::CallbackRunning => AcquisitionState::CallbackStopped,
-            _ => unreachable!("only a running acquisition reaches native Stop"),
+            _ => {
+                return Err(Error::InvalidState {
+                    operation: Operation::StopMeasure,
+                    expected: "pull or callback acquisition running",
+                    actual: self.acquisition.name(),
+                });
+            }
         };
+        self.runtime
+            .call(Operation::StopMeasure, |driver| driver.stop(self.handle()))?;
+        self.acquisition = next;
         Ok(())
     }
 
@@ -130,28 +130,32 @@ impl Device {
         drop(self.image_registration.take());
     }
 
+    /// Discards buffered frames. 允许调用的状态待厂商确认，因此不加本地状态校验。
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
         self.runtime.call(Operation::ClearDataBuffer, |driver| {
             driver.clear_buffer(self.handle())
         })
     }
 
+    /// Reads one parameter. Node Name 只在本次 native 调用期间以 C 字符串传入。
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<Parameter, Error> {
-        let key = c_string("parameter key", key, None)?;
+        let key = c_string("parameter key", key)?;
         self.runtime.call(Operation::GetParam, |driver| {
             driver.get_parameter(self.handle(), &key)
         })
     }
 
+    /// Writes one parameter. Node Name 只在本次 native 调用期间以 C 字符串传入。
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValue) -> Result<(), Error> {
-        let key = c_string("parameter key", key, None)?;
+        let key = c_string("parameter key", key)?;
         self.runtime.call(Operation::SetParam, |driver| {
             driver.set_parameter(self.handle(), &key, value)
         })
     }
 
+    /// Executes one command. Command Node Name 只在本次 native 调用期间以 C 字符串传入。
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
-        let key = c_string("command key", key, None)?;
+        let key = c_string("command key", key)?;
         self.runtime.call(Operation::Execute, |driver| {
             driver.execute(self.handle(), &key)
         })
@@ -163,7 +167,11 @@ impl Device {
         device_file_name: &[u8],
         user_file_name: &[u8],
     ) -> Result<(), Error> {
-        self.file_transfer(Operation::FileAccessRead, user_file_name, device_file_name)
+        let (user, device) = file_names(user_file_name, device_file_name)?;
+        let handle = self.handle();
+        self.runtime.call(Operation::FileAccessRead, |driver| {
+            driver.file_access_read(handle, &user, &device)
+        })
     }
 
     /// Starts an upload. File names are passed for this native call only.
@@ -172,29 +180,14 @@ impl Device {
         user_file_name: &[u8],
         device_file_name: &[u8],
     ) -> Result<(), Error> {
-        self.file_transfer(Operation::FileAccessWrite, user_file_name, device_file_name)
-    }
-
-    fn file_transfer(
-        &mut self,
-        operation: Operation,
-        user_file_name: &[u8],
-        device_file_name: &[u8],
-    ) -> Result<(), Error> {
-        let user_file_name = c_string("local file name", user_file_name, None)?;
-        let device_file_name = c_string("device file name", device_file_name, None)?;
+        let (user, device) = file_names(user_file_name, device_file_name)?;
         let handle = self.handle();
-        self.runtime.call(operation, |driver| match operation {
-            Operation::FileAccessRead => {
-                driver.file_access_read(handle, &user_file_name, &device_file_name)
-            }
-            Operation::FileAccessWrite => {
-                driver.file_access_write(handle, &user_file_name, &device_file_name)
-            }
-            _ => unreachable!("file_transfer accepts only file access operations"),
+        self.runtime.call(Operation::FileAccessWrite, |driver| {
+            driver.file_access_write(handle, &user, &device)
         })
     }
 
+    /// Copies one progress snapshot without interpreting completion.
     pub fn file_transfer_progress(&mut self) -> Result<FileProgress, Error> {
         const OPERATION: Operation = Operation::GetFileAccessProgress;
         self.runtime.call(OPERATION, |driver| {
@@ -240,6 +233,7 @@ impl Device {
 }
 
 /// Locally prevents acquisition modes from sharing one native handle.
+#[derive(Clone, Copy)]
 enum AcquisitionState {
     Idle,
     Pulling,
@@ -248,11 +242,11 @@ enum AcquisitionState {
 }
 
 impl AcquisitionState {
-    fn needs_stop(&self) -> bool {
+    fn needs_stop(self) -> bool {
         matches!(self, Self::Pulling | Self::CallbackRunning)
     }
 
-    fn name(&self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Idle => "idle",
             Self::Pulling => "pull acquisition running",
@@ -260,6 +254,14 @@ impl AcquisitionState {
             Self::CallbackStopped => "callback registered and stopped",
         }
     }
+}
+
+/// 两个 FileAccess 接口共用的字符串前处理；错误保留具体参数名。
+fn file_names(user: &[u8], device: &[u8]) -> Result<(CString, CString), Error> {
+    Ok((
+        c_string("local file name", user)?,
+        c_string("device file name", device)?,
+    ))
 }
 
 fn cleanup_result(stop: Option<Error>, close: Option<Error>) -> Result<(), Error> {
@@ -317,7 +319,7 @@ mod tests {
     fn file_name_input_errors_preserve_the_field() {
         for field in ["local file name", "device file name"] {
             assert!(matches!(
-                c_string(field, b"a\0b", None),
+                c_string(field, b"a\0b"),
                 Err(Error::InvalidInput {
                     field: actual,
                     violation: InputViolation::InteriorNul,

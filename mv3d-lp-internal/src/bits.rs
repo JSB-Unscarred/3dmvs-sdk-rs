@@ -34,10 +34,10 @@ macro_rules! bit_newtype {
 
             #[must_use]
             pub const fn name(self) -> Option<&'static str> {
-                match self.0 {
-                    $($value => Some($label),)+
-                    _ => None,
-                }
+                $(if self.0 == Self::$const.0 {
+                    return Some($label);
+                })+
+                None
             }
         }
 

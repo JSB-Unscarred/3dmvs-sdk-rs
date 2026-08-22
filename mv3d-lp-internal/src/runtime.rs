@@ -4,9 +4,9 @@ use std::net::Ipv4Addr;
 #[cfg(feature = "display-windows")]
 use std::num::NonZeroIsize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
-use crate::cstr::c_string;
+use crate::cstr::{bounded_c_string, non_empty_c_string};
 use crate::device::{DeviceInfo, IpConfigRaw, IpConfiguration};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRange;
@@ -33,8 +33,23 @@ impl RuntimeCore {
         operation: Operation,
         call: impl FnOnce(&NativeDriver) -> DriverResult<T>,
     ) -> Result<T, Error> {
-        let _image_processing = image_processing_guard(&self.image_processing, operation);
         call(&self.driver).map_err(|error| map_driver_error(operation, error))
+    }
+
+    /// Calls one image-processing operation while holding the session's serialization lock.
+    ///
+    /// 图像处理输出只在下一次处理调用前有效；六个 ImgProc 接口显式选用这条入口，锁的归属
+    /// 因此留在调用点，无需另一张 Operation 侧表。
+    pub(crate) fn call_image_processing<T>(
+        &self,
+        operation: Operation,
+        call: impl FnOnce(&NativeDriver) -> DriverResult<T>,
+    ) -> Result<T, Error> {
+        let _guard = self
+            .image_processing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.call(operation, call)
     }
 
     /// Blocks Finalize after one device reports a failed native Close.
@@ -57,14 +72,9 @@ impl Runtime {
         Self::version_bytes().map(crate::text::SdkText::from_sdk_bytes)
     }
 
-    /// Reads the raw SDK version independently of the initialized session.
-    pub fn version_bytes() -> Result<Vec<u8>, Error> {
-        #[cfg(all(
-            feature = "native",
-            target_os = "windows",
-            target_arch = "x86_64",
-            target_env = "msvc"
-        ))]
+    /// Reads the raw SDK version bytes; `SdkText::into_bytes` covers the same need publicly.
+    fn version_bytes() -> Result<Vec<u8>, Error> {
+        #[cfg(native_sdk)]
         {
             let driver = crate::ffi::NativeDriver;
             driver
@@ -72,23 +82,13 @@ impl Runtime {
                 .map_err(|error| map_driver_error(Operation::GetVersion, error))
         }
 
-        #[cfg(not(all(
-            feature = "native",
-            target_os = "windows",
-            target_arch = "x86_64",
-            target_env = "msvc"
-        )))]
+        #[cfg(not(native_sdk))]
         Err(Error::UnsupportedPlatform)
     }
 
     /// Initializes the native SDK using the process's sole attempt.
     pub fn initialize() -> Result<Self, Error> {
-        #[cfg(all(
-            feature = "native",
-            target_os = "windows",
-            target_arch = "x86_64",
-            target_env = "msvc"
-        ))]
+        #[cfg(native_sdk)]
         {
             claim_initialization(&INITIALIZE_CLAIMED)?;
             let driver = NativeDriver;
@@ -104,21 +104,21 @@ impl Runtime {
             })
         }
 
-        #[cfg(not(all(
-            feature = "native",
-            target_os = "windows",
-            target_arch = "x86_64",
-            target_env = "msvc"
-        )))]
+        #[cfg(not(native_sdk))]
         {
             Err(Error::UnsupportedPlatform)
         }
     }
 
+    /// Reads one device-count snapshot.
     pub fn device_count(&self) -> Result<u32, Error> {
         self.call(Operation::GetDeviceNumber, |driver| driver.device_number())
     }
 
+    /// Enumerates devices as owned snapshots.
+    ///
+    /// count 为 0 时不进入 native GetDeviceList；capacity 由同一次 count 决定，SDK 填入的条数
+    /// 可少于 capacity，多出的槽位不会被读取。
     pub fn devices(&self) -> Result<Vec<DeviceInfo>, Error> {
         let count = self.device_count()?;
         if count == 0 {
@@ -131,18 +131,24 @@ impl Runtime {
         })
     }
 
+    /// Writes one IP configuration.
+    ///
+    /// 序列号先经 `bounded_c_string` 限长并拒绝 interior NUL，再交给固定宽度的 native 字段。
     pub fn set_ip_config(
         &self,
         serial_number: &[u8],
         configuration: &IpConfiguration,
     ) -> Result<(), Error> {
-        let serial = c_string("serial number", serial_number, Some(SerialNumber::MAX_LEN))?;
+        let serial = bounded_c_string("serial number", serial_number, SerialNumber::MAX_LEN)?;
         let raw = IpConfigRaw::from(configuration);
         self.call(Operation::SetIpConfig, |driver| {
             driver.set_ip_config(&serial, &raw)
         })
     }
 
+    /// Opens one device by IPv4 address.
+    ///
+    /// handle 只有在 status 成功且指针非空时才存在，`Device` 因此是它唯一的 owner。
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device, Error> {
         let address =
             std::ffi::CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
@@ -152,58 +158,73 @@ impl Runtime {
         Ok(Device::new(Arc::clone(&self.core), handle))
     }
 
+    /// Opens one device by serial number.
+    ///
+    /// handle 只有在 status 成功且指针非空时才存在，`Device` 因此是它唯一的 owner。
     pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device, Error> {
-        let serial = c_string("serial number", serial_number, Some(SerialNumber::MAX_LEN))?;
+        let serial = bounded_c_string("serial number", serial_number, SerialNumber::MAX_LEN)?;
         let handle = self.call(Operation::OpenDeviceBySn, |driver| {
             driver.open_by_serial(&serial)
         })?;
         Ok(Device::new(Arc::clone(&self.core), handle))
     }
 
+    /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
     pub fn map_depth_to_point_cloud(&self, input: ImageRef<'_>) -> Result<Image, Error> {
-        self.call(Operation::MapDepthToPointCloud, |driver| {
-            driver.map_depth_to_point_cloud(input)
-        })
+        self.core
+            .call_image_processing(Operation::MapDepthToPointCloud, |driver| {
+                driver.map_depth_to_point_cloud(input)
+            })
     }
 
+    /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
     pub fn map_depth_to_point_cloud_round(&self, inputs: &[ImageRef<'_>]) -> Result<Image, Error> {
-        self.call(Operation::MapDepthToPointCloudRound, |driver| {
-            driver.map_depth_to_point_cloud_round(inputs)
-        })
+        self.core
+            .call_image_processing(Operation::MapDepthToPointCloudRound, |driver| {
+                driver.map_depth_to_point_cloud_round(inputs)
+            })
     }
 
+    /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
     pub fn convert_image(&self, input: ImageRef<'_>, target: ImageType) -> Result<Image, Error> {
-        self.call(Operation::ImageConvert, |driver| {
-            driver.convert_image(input, target)
-        })
+        self.core
+            .call_image_processing(Operation::ImageConvert, |driver| {
+                driver.convert_image(input, target)
+            })
     }
 
+    /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
     pub fn mosaic_depth(&self, inputs: &[ImageRef<'_>]) -> Result<Image, Error> {
-        self.call(Operation::DepthMosaic, |driver| driver.mosaic_depth(inputs))
+        self.core
+            .call_image_processing(Operation::DepthMosaic, |driver| driver.mosaic_depth(inputs))
     }
 
+    /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
     pub fn save_image(
         &self,
         input: ImageRef<'_>,
         format: ImageFileFormat,
         file_name: &[u8],
     ) -> Result<(), Error> {
-        let file_name = c_string("file name", file_name, Some(u32::MAX as usize))?;
-        self.call(Operation::SaveImage, |driver| {
-            driver.save_image(input, format, &file_name)
-        })
+        let file_name = non_empty_c_string("file name", file_name)?;
+        self.core
+            .call_image_processing(Operation::SaveImage, |driver| {
+                driver.save_image(input, format, &file_name)
+            })
     }
 
     #[cfg(feature = "display-windows")]
+    /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
     pub fn display_image(
         &self,
         input: ImageRef<'_>,
         window: NonZeroIsize,
         range: DisplayRange,
     ) -> Result<(), Error> {
-        self.call(Operation::DisplayImage, |driver| {
-            driver.display_image(input, window, range)
-        })
+        self.core
+            .call_image_processing(Operation::DisplayImage, |driver| {
+                driver.display_image(input, window, range)
+            })
     }
 
     /// Finalizes the one-shot native session.
@@ -240,23 +261,6 @@ fn claim_initialization(claimed: &AtomicBool) -> Result<(), Error> {
     }
 }
 
-fn image_processing_guard(lock: &Mutex<()>, operation: Operation) -> Option<MutexGuard<'_, ()>> {
-    operation_uses_image_processing_lock(operation)
-        .then(|| lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
-}
-
-fn operation_uses_image_processing_lock(operation: Operation) -> bool {
-    matches!(
-        operation,
-        Operation::MapDepthToPointCloud
-            | Operation::MapDepthToPointCloudRound
-            | Operation::ImageConvert
-            | Operation::DepthMosaic
-            | Operation::SaveImage
-            | Operation::DisplayImage
-    )
-}
-
 fn map_driver_error(operation: Operation, error: DriverError) -> Error {
     match error {
         DriverError::Status(status) => {
@@ -285,9 +289,8 @@ fn ensure_finalization_allowed(blocked: &AtomicBool) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Mutex, TryLockError};
 
-    use super::{claim_initialization, ensure_finalization_allowed, image_processing_guard};
+    use super::{claim_initialization, ensure_finalization_allowed};
     use crate::error::{Error, Operation};
 
     // 验证 Initialize 机会一旦消费就不再重试。
@@ -320,28 +323,5 @@ mod tests {
                 })
             ));
         }
-    }
-
-    // 验证六个 process-wide 图像接口共用串行锁，设备接口不受影响。
-    #[test]
-    fn image_processing_operations_share_one_lock() {
-        let lock = Mutex::new(());
-        for operation in [
-            Operation::MapDepthToPointCloud,
-            Operation::MapDepthToPointCloudRound,
-            Operation::ImageConvert,
-            Operation::DepthMosaic,
-            Operation::SaveImage,
-            Operation::DisplayImage,
-        ] {
-            let guard = image_processing_guard(&lock, operation);
-            assert!(guard.is_some());
-            assert!(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)));
-            drop(guard);
-            assert!(lock.try_lock().is_ok());
-        }
-
-        assert!(image_processing_guard(&lock, Operation::GetImage).is_none());
-        assert!(lock.try_lock().is_ok());
     }
 }
