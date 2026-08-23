@@ -24,7 +24,7 @@ impl Sdk {
     }
 }
 
-fn invalid_window(violation: InputViolation) -> Error {
+const fn invalid_window(violation: InputViolation) -> Error {
     Error::InvalidInput {
         field: "window",
         violation,

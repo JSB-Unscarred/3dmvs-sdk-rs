@@ -31,6 +31,6 @@ pub fn bounded_c_string(field: &'static str, bytes: &[u8], max: usize) -> Result
     non_empty_c_string(field, bytes)
 }
 
-fn invalid(field: &'static str, violation: InputViolation) -> Error {
+const fn invalid(field: &'static str, violation: InputViolation) -> Error {
     Error::InvalidInput { field, violation }
 }

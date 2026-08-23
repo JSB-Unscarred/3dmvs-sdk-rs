@@ -51,7 +51,7 @@ impl NativeDriver {
     pub(crate) fn device_number() -> DriverResult<u32> {
         let mut count = 0;
         // SAFETY: count is a valid writable u32 for the duration of the call.
-        status_result(unsafe { bindings::MV3D_LP_GetDeviceNumber(&mut count) })?;
+        status_result(unsafe { bindings::MV3D_LP_GetDeviceNumber(&raw mut count) })?;
         Ok(count)
     }
 
@@ -68,7 +68,7 @@ impl NativeDriver {
         // SAFETY: raw owns capacity initialized MV3D_LP_DEVICE_INFO values, and reported is a
         // valid writable scalar. Both remain exclusively borrowed for this synchronous call.
         let status = unsafe {
-            bindings::MV3D_LP_GetDeviceList(raw.as_mut_ptr(), native_capacity, &mut reported)
+            bindings::MV3D_LP_GetDeviceList(raw.as_mut_ptr(), native_capacity, &raw mut reported)
         };
         status_result(status)?;
 
@@ -93,13 +93,13 @@ impl NativeDriver {
         };
         // SAFETY: serial is NUL-terminated and borrowed for this call; native is fully
         // initialized, writable, and all reserved bytes are zero.
-        status_result(unsafe { bindings::MV3D_LP_SetIpConfig(serial.as_ptr(), &mut native) })
+        status_result(unsafe { bindings::MV3D_LP_SetIpConfig(serial.as_ptr(), &raw mut native) })
     }
 
     pub(crate) fn open_by_ip(ip: &CStr) -> DriverResult<Handle> {
         let mut raw = ptr::null_mut();
         // SAFETY: raw is a valid writable handle slot and ip is NUL-terminated for the call.
-        let status = unsafe { bindings::MV3D_LP_OpenDeviceByIP(&mut raw, ip.as_ptr()) };
+        let status = unsafe { bindings::MV3D_LP_OpenDeviceByIP(&raw mut raw, ip.as_ptr()) };
         status_result(status)?;
         Handle::from_ptr(raw).ok_or(DriverError::Contract(ContractViolation::NullPointer {
             field: "device handle",
@@ -109,7 +109,7 @@ impl NativeDriver {
     pub(crate) fn open_by_serial(serial: &CStr) -> DriverResult<Handle> {
         let mut raw = ptr::null_mut();
         // SAFETY: raw is a valid writable handle slot and serial is NUL-terminated for the call.
-        let status = unsafe { bindings::MV3D_LP_OpenDeviceBySN(&mut raw, serial.as_ptr()) };
+        let status = unsafe { bindings::MV3D_LP_OpenDeviceBySN(&raw mut raw, serial.as_ptr()) };
         status_result(status)?;
         Handle::from_ptr(raw).ok_or(DriverError::Contract(ContractViolation::NullPointer {
             field: "device handle",
@@ -121,7 +121,7 @@ impl NativeDriver {
         // SAFETY: handle originated from a successful SDK open call and its Device owner calls
         // CloseDevice at most once. Returning consumes the handle even when status reports an
         // error; the SDK has also quiesced callbacks and released asynchronous input borrows.
-        status_result(unsafe { bindings::MV3D_LP_CloseDevice(&mut raw) })
+        status_result(unsafe { bindings::MV3D_LP_CloseDevice(&raw mut raw) })
     }
 
     pub(crate) fn start(handle: Handle) -> DriverResult<()> {
@@ -151,7 +151,8 @@ impl NativeDriver {
         // SAFETY: image is a fully zeroed writable SDK output, Device owns the live handle, and
         // Device's unique ownership prevents another safe call from using this handle until the
         // descriptor and payload copies below finish.
-        let status = unsafe { bindings::MV3D_LP_GetImage(handle.as_ptr(), &mut image, timeout_ms) };
+        let status =
+            unsafe { bindings::MV3D_LP_GetImage(handle.as_ptr(), &raw mut image, timeout_ms) };
         status_result(status)?;
         // SAFETY: On success the audited SDK contract guarantees that every non-null output
         // pointer remains readable for its reported extent until the immediate copy completes.
@@ -193,7 +194,7 @@ impl NativeDriver {
         // SAFETY: parameter is a fully zeroed writable output and key is NUL-terminated for the
         // call. The tagged union is read only after a successful status and discriminator check.
         status_result(unsafe {
-            bindings::MV3D_LP_GetParam(handle.as_ptr(), key.as_ptr(), &mut parameter)
+            bindings::MV3D_LP_GetParam(handle.as_ptr(), key.as_ptr(), &raw mut parameter)
         })?;
         parameter_from_native(&parameter)
     }
@@ -207,7 +208,7 @@ impl NativeDriver {
         // SAFETY: key is NUL-terminated, parameter's active union member matches its
         // discriminator, and all inactive/reserved storage started zeroed.
         status_result(unsafe {
-            bindings::MV3D_LP_SetParam(handle.as_ptr(), key.as_ptr(), &mut parameter)
+            bindings::MV3D_LP_SetParam(handle.as_ptr(), key.as_ptr(), &raw mut parameter)
         })
     }
 
@@ -228,7 +229,7 @@ impl NativeDriver {
         };
         // SAFETY: Device owns the handle, the `[IN]` descriptor is initialized for this call, and
         // both strings are NUL-terminated for the duration of the call.
-        status_result(unsafe { bindings::MV3D_LP_FileAccessRead(handle.as_ptr(), &mut access) })
+        status_result(unsafe { bindings::MV3D_LP_FileAccessRead(handle.as_ptr(), &raw mut access) })
     }
 
     pub(crate) fn file_access_write(
@@ -242,7 +243,9 @@ impl NativeDriver {
             nReserved: [0; 32],
         };
         // SAFETY: the same initialized descriptor and live handle guarantees as FileAccessRead apply.
-        status_result(unsafe { bindings::MV3D_LP_FileAccessWrite(handle.as_ptr(), &mut access) })
+        status_result(unsafe {
+            bindings::MV3D_LP_FileAccessWrite(handle.as_ptr(), &raw mut access)
+        })
     }
 
     pub(crate) fn file_access_progress(handle: Handle) -> DriverResult<FileProgress> {
@@ -253,7 +256,7 @@ impl NativeDriver {
         };
         // SAFETY: Device owns the live handle and progress is a fully initialized writable output.
         status_result(unsafe {
-            bindings::MV3D_LP_GetFileAccessProgress(handle.as_ptr(), &mut progress)
+            bindings::MV3D_LP_GetFileAccessProgress(handle.as_ptr(), &raw mut progress)
         })?;
         Ok(FileProgress {
             completed: progress.nCompleted,
@@ -266,7 +269,9 @@ impl NativeDriver {
         let mut output = zeroed_image();
         // SAFETY: input borrows a validated payload for the duration of this serialized call;
         // the vendor marks it [IN], so the SDK must not write through its legacy mutable pointer.
-        status_result(unsafe { bindings::MV3D_LP_MapDepthToPointCloud(&mut input, &mut output) })?;
+        status_result(unsafe {
+            bindings::MV3D_LP_MapDepthToPointCloud(&raw mut input, &raw mut output)
+        })?;
         // SAFETY: the SDK reported success, so the output descriptor is initialized and its
         // buffers stay valid until the next image-processing call on this serialized session.
         unsafe { processed_image_from_native(&output, ImageType::POINT_CLOUD) }
@@ -279,7 +284,7 @@ impl NativeDriver {
         // SAFETY: `inputs` holds `count` validated descriptors borrowing live [IN] payloads for
         // this serialized call; `output` is an initialized descriptor the SDK writes into.
         status_result(unsafe {
-            bindings::MV3D_LP_MapDepthToPointCloudRound(inputs.as_mut_ptr(), count, &mut output)
+            bindings::MV3D_LP_MapDepthToPointCloudRound(inputs.as_mut_ptr(), count, &raw mut output)
         })?;
         // SAFETY: the SDK reported success, so the output descriptor is initialized and its
         // buffers stay valid until the next image-processing call on this serialized session.
@@ -292,7 +297,7 @@ impl NativeDriver {
         output.enImageType = target.raw();
         // SAFETY: `input` borrows a validated [IN] payload for this serialized call; `output`
         // carries only the requested target type and is written by the SDK.
-        status_result(unsafe { bindings::MV3D_LP_ImageConvert(&mut input, &mut output) })?;
+        status_result(unsafe { bindings::MV3D_LP_ImageConvert(&raw mut input, &raw mut output) })?;
         // SAFETY: the SDK reported success, so the output descriptor is initialized and its
         // buffers stay valid until the next image-processing call on this serialized session.
         unsafe { processed_image_from_native(&output, target) }
@@ -305,7 +310,7 @@ impl NativeDriver {
         // SAFETY: `inputs` holds `count` validated descriptors borrowing live [IN] payloads for
         // this serialized call; `output` is an initialized descriptor the SDK writes into.
         status_result(unsafe {
-            bindings::MV3D_LP_DepthMosaic(inputs.as_mut_ptr(), count, &mut output)
+            bindings::MV3D_LP_DepthMosaic(inputs.as_mut_ptr(), count, &raw mut output)
         })?;
         // SAFETY: the SDK reported success, so the output descriptor is initialized and its
         // buffers stay valid until the next image-processing call on this serialized session.
@@ -321,7 +326,7 @@ impl NativeDriver {
         // SAFETY: `input` borrows a validated [IN] payload and `file_name` is a NUL-terminated
         // C string; both stay live for this synchronous call.
         status_result(unsafe {
-            bindings::MV3D_LP_SaveImage(&mut input, format as i32, file_name.as_ptr())
+            bindings::MV3D_LP_SaveImage(&raw mut input, format as i32, file_name.as_ptr())
         })
     }
 
@@ -342,7 +347,7 @@ impl NativeDriver {
         // from a borrowed Win32 raw-window-handle. Both remain live for this synchronous call.
         unsafe {
             native_display_image_call(
-                &mut input,
+                &raw mut input,
                 window.get() as *mut std::ffi::c_void,
                 display_type,
                 minimum,
@@ -444,12 +449,12 @@ fn image_input_to_native(input: ImageRef<'_>) -> DriverResult<bindings::MV3D_LP_
         }
     }
     validate_image_layout(&native, LengthRule::Exact).map_err(|error| match error {
-        DriverError::Contract(ContractViolation::InvalidValue { field })
-        | DriverError::Contract(ContractViolation::LengthMismatch { field, .. })
-        | DriverError::Contract(ContractViolation::LengthOverflow { field })
-        | DriverError::Contract(ContractViolation::NullPointerWithLength { field, .. }) => {
-            invalid_image_layout(field)
-        }
+        DriverError::Contract(
+            ContractViolation::InvalidValue { field }
+            | ContractViolation::LengthMismatch { field, .. }
+            | ContractViolation::LengthOverflow { field }
+            | ContractViolation::NullPointerWithLength { field, .. },
+        ) => invalid_image_layout(field),
         other => other,
     })?;
     Ok(native)
@@ -500,13 +505,13 @@ unsafe fn processed_image_from_native(
 }
 
 #[cfg(native_sdk)]
-fn zeroed_device_info() -> bindings::MV3D_LP_DEVICE_INFO {
+const fn zeroed_device_info() -> bindings::MV3D_LP_DEVICE_INFO {
     // SAFETY: The C structure consists only of integer scalars and byte arrays; all-zero is a
     // valid initialization pattern and is required by the SDK output contract.
     unsafe { MaybeUninit::zeroed().assume_init() }
 }
 
-pub fn zeroed_image() -> bindings::MV3D_LP_IMAGE_DATA {
+pub const fn zeroed_image() -> bindings::MV3D_LP_IMAGE_DATA {
     // SAFETY: The C structure consists of integer/float scalars, raw pointers, and a byte array;
     // all-zero is a valid initialization pattern and is required for this SDK output structure.
     unsafe { MaybeUninit::zeroed().assume_init() }
@@ -514,7 +519,7 @@ pub fn zeroed_image() -> bindings::MV3D_LP_IMAGE_DATA {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LengthRule {
-    /// GetImage / callback: known formats may include padding.
+    /// `GetImage` / callback: known formats may include padding.
     Padded,
     /// User input and processed SDK output: known formats must match packed size.
     Exact,
@@ -528,7 +533,7 @@ struct ValidatedImageLayout {
     exposure_bytes: usize,
 }
 
-fn length_ok(actual: usize, expected: usize, rule: LengthRule) -> bool {
+const fn length_ok(actual: usize, expected: usize, rule: LengthRule) -> bool {
     match rule {
         LengthRule::Padded => actual >= expected,
         LengthRule::Exact => actual == expected,
@@ -673,14 +678,14 @@ pub unsafe fn callback_image_from_native(
     unsafe { image_from_native(image, LengthRule::Padded) }
 }
 
-fn known_bytes_per_pixel(image_type: bindings::Mv3dLpImageType) -> Option<usize> {
+const fn known_bytes_per_pixel(image_type: bindings::Mv3dLpImageType) -> Option<usize> {
     match image_type {
         bindings::ImageType_Mono8 => Some(1),
         bindings::ImageType_Depth => Some(2),
         bindings::ImageType_Profile => Some(6),
         bindings::ImageType_PointCloud | bindings::ImageType_Profile_ABC32 => Some(12),
         bindings::ImageType_RGB24_Packed => Some(3),
-        bindings::ImageType_Jpeg | bindings::ImageType_Undefined => None,
+        // Jpeg 与 Undefined 同未知类型一样没有固定 bytes-per-pixel。
         _ => None,
     }
 }
@@ -689,11 +694,11 @@ fn usize_from_u32(value: u32, field: &'static str) -> DriverResult<usize> {
     usize::try_from(value).map_err(|_| sdk_length_overflow(field))
 }
 
-fn invalid_input(field: &'static str, violation: InputViolation) -> DriverError {
+const fn invalid_input(field: &'static str, violation: InputViolation) -> DriverError {
     DriverError::InvalidInput { field, violation }
 }
 
-fn invalid_image_count(actual: usize) -> DriverError {
+const fn invalid_image_count(actual: usize) -> DriverError {
     invalid_input(
         "images",
         InputViolation::ImageCount {
@@ -704,11 +709,11 @@ fn invalid_image_count(actual: usize) -> DriverError {
     )
 }
 
-fn invalid_image_layout(field: &'static str) -> DriverError {
+const fn invalid_image_layout(field: &'static str) -> DriverError {
     invalid_input("image", InputViolation::InvalidImageLayout { field })
 }
 
-fn input_too_long(field: &'static str, maximum: usize, actual: usize) -> DriverError {
+const fn input_too_long(field: &'static str, maximum: usize, actual: usize) -> DriverError {
     invalid_input(
         field,
         InputViolation::TooLong {
@@ -718,15 +723,15 @@ fn input_too_long(field: &'static str, maximum: usize, actual: usize) -> DriverE
     )
 }
 
-fn invalid_sdk_image_value(field: &'static str) -> DriverError {
+const fn invalid_sdk_image_value(field: &'static str) -> DriverError {
     DriverError::Contract(ContractViolation::InvalidValue { field })
 }
 
-fn sdk_null_pointer_with_length(field: &'static str, length: usize) -> DriverError {
+const fn sdk_null_pointer_with_length(field: &'static str, length: usize) -> DriverError {
     DriverError::Contract(ContractViolation::NullPointerWithLength { field, length })
 }
 
-fn sdk_length_mismatch(field: &'static str, expected: usize, actual: usize) -> DriverError {
+const fn sdk_length_mismatch(field: &'static str, expected: usize, actual: usize) -> DriverError {
     DriverError::Contract(ContractViolation::LengthMismatch {
         field,
         expected,
@@ -734,11 +739,11 @@ fn sdk_length_mismatch(field: &'static str, expected: usize, actual: usize) -> D
     })
 }
 
-fn sdk_length_overflow(field: &'static str) -> DriverError {
+const fn sdk_length_overflow(field: &'static str) -> DriverError {
     DriverError::Contract(ContractViolation::LengthOverflow { field })
 }
 
-pub fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {
+pub const fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {
     // SAFETY: The C tagged union and its containing integer/byte fields admit an all-zero bit
     // pattern. Zeroing the entire object also satisfies the SDK reserved-byte contract.
     unsafe { MaybeUninit::zeroed().assume_init() }

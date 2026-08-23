@@ -1,12 +1,16 @@
 //! Compile-time layout checks for structures used by the safe wrapper.
 //!
-//! Sizes and offsets are copied from the audited Windows x86_64 MSVC headers. Constants and
+//! Sizes and offsets are copied from the audited Windows `x86_64` MSVC headers. Constants and
 //! function declarations are defined once in `bindings`; duplicating them here would not compare
 //! against the vendor headers.
 
 use core::mem::{align_of, offset_of, size_of};
 
-use crate::bindings::*;
+use crate::bindings::{
+    MV3D_LP_DEVICE_INFO, MV3D_LP_ENUMPARAM, MV3D_LP_EXCEPTION_INFO, MV3D_LP_FILE_ACCESS,
+    MV3D_LP_FILE_ACCESS_PROGRESS, MV3D_LP_FLOATPARAM, MV3D_LP_IMAGE_DATA, MV3D_LP_INTPARAM,
+    MV3D_LP_IP_CONFIG, MV3D_LP_PARAM, MV3D_LP_PARAM_INFO, MV3D_LP_STRINGPARAM,
+};
 
 macro_rules! assert_layout {
     ($ty:ty, $size:expr, $align:expr) => {

@@ -39,7 +39,7 @@ impl DeviceException {
 pub struct CallbackCookie(NonZeroUsize);
 
 impl CallbackCookie {
-    pub(crate) fn as_user_pointer(self) -> *mut c_void {
+    pub(crate) const fn as_user_pointer(self) -> *mut c_void {
         ptr::without_provenance_mut(self.0.get())
     }
 
@@ -64,7 +64,7 @@ enum CallbackKind {
 }
 
 impl CallbackSink {
-    fn kind(&self) -> CallbackKind {
+    const fn kind(&self) -> CallbackKind {
         match self {
             Self::Image(_) => CallbackKind::Image,
             Self::Exception(_) => CallbackKind::Exception,
@@ -94,7 +94,7 @@ impl CallbackRegistry {
     fn lock(&self) -> MutexGuard<'_, RegistryState> {
         self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Inserts a sink under a never-reused cookie so a late callback cannot hit a newer sink.
@@ -108,6 +108,7 @@ impl CallbackRegistry {
             .checked_add(1)
             .expect("callback cookie space exhausted");
         let previous = state.entries.insert(cookie, sink);
+        drop(state);
         debug_assert!(previous.is_none(), "callback cookies are never reused");
         cookie
     }
@@ -147,7 +148,7 @@ impl CallbackRegistration {
         }
     }
 
-    pub(crate) fn cookie(&self) -> CallbackCookie {
+    pub(crate) const fn cookie(&self) -> CallbackCookie {
         self.cookie
     }
 }
@@ -245,13 +246,13 @@ mod tests {
         image.nDataLen = u32::try_from(data.len()).unwrap();
 
         // SAFETY: the descriptor and its payload stay alive for this synchronous callback.
-        unsafe { image_trampoline(&mut image, cookie.as_user_pointer()) };
+        unsafe { image_trampoline(&raw mut image, cookie.as_user_pointer()) };
         data.fill(9);
         assert_eq!(received.lock().unwrap()[0].data, [1, 2]);
 
         drop(registration);
         // SAFETY: the descriptor remains valid; the retired cookie is ignored before conversion.
-        unsafe { image_trampoline(&mut image, cookie.as_user_pointer()) };
+        unsafe { image_trampoline(&raw mut image, cookie.as_user_pointer()) };
         assert_eq!(received.lock().unwrap().len(), 1);
     }
 }

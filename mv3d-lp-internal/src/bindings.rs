@@ -1,6 +1,6 @@
 //! Audited raw bindings for the public 3DMVS LPSDK C headers.
 //!
-//! This module targets Windows x86_64 with the MSVC ABI only. The declarations
+//! This module targets Windows `x86_64` with the MSVC ABI only. The declarations
 //! correspond to the three public headers shipped with LPSDK 1.3.3.3. Symbols
 //! exported by the DLL but absent from those headers are intentionally omitted.
 

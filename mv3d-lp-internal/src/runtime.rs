@@ -25,19 +25,21 @@ pub struct RuntimeCore {
     finalize_blocked: AtomicBool,
 }
 
-impl RuntimeCore {
-    /// Calls one native operation through this session.
-    pub(crate) fn call<T>(
-        &self,
-        operation: Operation,
-        call: impl FnOnce() -> DriverResult<T>,
-    ) -> Result<T, Error> {
-        call().map_err(|error| map_driver_error(operation, error))
-    }
+/// Runs one native call and maps its driver error onto the crate's `Error`.
+///
+/// 不挂在 `RuntimeCore` 上：session 存活由调用方持有的 `Arc<RuntimeCore>` 保证，
+/// 这里只做错误映射，无需再借用 session。
+pub fn call_native<T>(
+    operation: Operation,
+    call: impl FnOnce() -> DriverResult<T>,
+) -> Result<T, Error> {
+    call().map_err(|error| map_driver_error(operation, error))
+}
 
+impl RuntimeCore {
     /// Calls one image-processing operation while holding the session's serialization lock.
     ///
-    /// 图像处理输出只在下一次处理调用前有效；六个 ImgProc 接口显式选用这条入口，锁的归属
+    /// 图像处理输出只在下一次处理调用前有效；六个 `ImgProc` 接口显式选用这条入口，锁的归属
     /// 因此留在调用点，无需另一张 Operation 侧表。
     pub(crate) fn call_image_processing<T>(
         &self,
@@ -47,8 +49,8 @@ impl RuntimeCore {
         let _guard = self
             .image_processing
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.call(operation, call)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        call_native(operation, call)
     }
 
     /// Blocks Finalize after one device reports a failed native Close.
@@ -105,7 +107,7 @@ impl Runtime {
 
     /// Reads one device-count snapshot.
     pub fn device_count(&self) -> Result<u32, Error> {
-        self.call(Operation::GetDeviceNumber, NativeDriver::device_number)
+        call_native(Operation::GetDeviceNumber, NativeDriver::device_number)
     }
 
     /// Enumerates devices as owned snapshots.
@@ -119,7 +121,7 @@ impl Runtime {
         }
 
         let capacity = usize::try_from(count).expect("u32 fits usize on supported targets");
-        self.call(Operation::GetDeviceList, || {
+        call_native(Operation::GetDeviceList, || {
             NativeDriver::device_list(capacity)
         })
     }
@@ -134,7 +136,7 @@ impl Runtime {
     ) -> Result<(), Error> {
         let serial = bounded_c_string("serial number", serial_number, SerialNumber::MAX_LEN)?;
         let raw = IpConfigRaw::from(configuration);
-        self.call(Operation::SetIpConfig, || {
+        call_native(Operation::SetIpConfig, || {
             NativeDriver::set_ip_config(&serial, &raw)
         })
     }
@@ -145,7 +147,7 @@ impl Runtime {
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device, Error> {
         let address =
             std::ffi::CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
-        let handle = self.call(Operation::OpenDeviceByIp, || {
+        let handle = call_native(Operation::OpenDeviceByIp, || {
             NativeDriver::open_by_ip(&address)
         })?;
         Ok(Device::new(Arc::clone(&self.core), handle))
@@ -156,7 +158,7 @@ impl Runtime {
     /// handle 只有在 status 成功且指针非空时才存在，`Device` 因此是它唯一的 owner。
     pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device, Error> {
         let serial = bounded_c_string("serial number", serial_number, SerialNumber::MAX_LEN)?;
-        let handle = self.call(Operation::OpenDeviceBySn, || {
+        let handle = call_native(Operation::OpenDeviceBySn, || {
             NativeDriver::open_by_serial(&serial)
         })?;
         Ok(Device::new(Arc::clone(&self.core), handle))
@@ -230,14 +232,6 @@ impl Runtime {
         ensure_finalization_allowed(&core.finalize_blocked)?;
         NativeDriver::finalize().map_err(|error| map_driver_error(Operation::Finalize, error))
     }
-
-    fn call<T>(
-        &self,
-        operation: Operation,
-        call: impl FnOnce() -> DriverResult<T>,
-    ) -> Result<T, Error> {
-        self.core.call(operation, call)
-    }
 }
 
 fn claim_initialization(claimed: &AtomicBool) -> Result<(), Error> {
@@ -252,7 +246,7 @@ fn claim_initialization(claimed: &AtomicBool) -> Result<(), Error> {
     }
 }
 
-fn map_driver_error(operation: Operation, error: DriverError) -> Error {
+const fn map_driver_error(operation: Operation, error: DriverError) -> Error {
     match error {
         DriverError::Status(status) => {
             Error::Sdk(SdkError::new(operation, StatusCode::from_raw(status)))

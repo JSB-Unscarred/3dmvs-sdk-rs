@@ -9,7 +9,7 @@ use crate::ffi::NativeDriver;
 use crate::file_transfer::FileProgress;
 use crate::frame::Image;
 use crate::parameter::{Parameter, ParameterValue};
-use crate::runtime::RuntimeCore;
+use crate::runtime::{RuntimeCore, call_native};
 
 /// Opened device owning a lease on the initialized native session.
 pub struct Device {
@@ -21,7 +21,7 @@ pub struct Device {
 }
 
 impl Device {
-    pub(crate) fn new(runtime: Arc<RuntimeCore>, handle: Handle) -> Self {
+    pub(crate) const fn new(runtime: Arc<RuntimeCore>, handle: Handle) -> Self {
         Self {
             runtime,
             handle: Some(handle),
@@ -35,7 +35,7 @@ impl Device {
     pub fn register_exception_callback(&mut self, sink: ExceptionCallback) -> Result<(), Error> {
         const OPERATION: Operation = Operation::RegisterExceptionCallback;
         let registration = CallbackRegistration::exception(sink);
-        self.runtime.call(OPERATION, || {
+        call_native(OPERATION, || {
             NativeDriver::register_exception_callback(self.handle(), registration.cookie())
         })?;
         drop(self.exception_registration.replace(registration));
@@ -62,7 +62,7 @@ impl Device {
                 });
             }
         };
-        self.runtime.call(Operation::StartMeasure, || {
+        call_native(Operation::StartMeasure, || {
             NativeDriver::start(self.handle())
         })?;
         self.acquisition = next;
@@ -84,22 +84,21 @@ impl Device {
                 });
             }
         };
-        self.runtime
-            .call(Operation::StopMeasure, || NativeDriver::stop(self.handle()))?;
+        call_native(Operation::StopMeasure, || NativeDriver::stop(self.handle()))?;
         self.acquisition = next;
         Ok(())
     }
 
     /// Forwards one software trigger to the SDK.
     pub fn soft_trigger(&mut self) -> Result<(), Error> {
-        self.runtime.call(Operation::SoftTrigger, || {
+        call_native(Operation::SoftTrigger, || {
             NativeDriver::soft_trigger(self.handle())
         })
     }
 
     /// Returns one pull frame; `u32::MAX` selects the SDK's infinite wait.
     pub fn get_image(&mut self, timeout_ms: u32) -> Result<Image, Error> {
-        self.runtime.call(Operation::GetImage, || {
+        call_native(Operation::GetImage, || {
             NativeDriver::get_image(self.handle(), timeout_ms)
         })
     }
@@ -116,7 +115,7 @@ impl Device {
         }
 
         let registration = CallbackRegistration::image(sink);
-        self.runtime.call(OPERATION, || {
+        call_native(OPERATION, || {
             NativeDriver::register_image_callback(self.handle(), registration.cookie())
         })?;
         drop(self.image_registration.replace(registration));
@@ -133,7 +132,7 @@ impl Device {
 
     /// Discards buffered frames. 允许调用的状态待厂商确认，因此不加本地状态校验。
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
-        self.runtime.call(Operation::ClearDataBuffer, || {
+        call_native(Operation::ClearDataBuffer, || {
             NativeDriver::clear_buffer(self.handle())
         })
     }
@@ -141,7 +140,7 @@ impl Device {
     /// Reads one parameter. Node Name 只在本次 native 调用期间以 C 字符串传入。
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<Parameter, Error> {
         let key = c_string("parameter key", key)?;
-        self.runtime.call(Operation::GetParam, || {
+        call_native(Operation::GetParam, || {
             NativeDriver::get_parameter(self.handle(), &key)
         })
     }
@@ -149,7 +148,7 @@ impl Device {
     /// Writes one parameter. Node Name 只在本次 native 调用期间以 C 字符串传入。
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValue) -> Result<(), Error> {
         let key = c_string("parameter key", key)?;
-        self.runtime.call(Operation::SetParam, || {
+        call_native(Operation::SetParam, || {
             NativeDriver::set_parameter(self.handle(), &key, value)
         })
     }
@@ -157,7 +156,7 @@ impl Device {
     /// Executes one command. Command Node Name 只在本次 native 调用期间以 C 字符串传入。
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
         let key = c_string("command key", key)?;
-        self.runtime.call(Operation::Execute, || {
+        call_native(Operation::Execute, || {
             NativeDriver::execute(self.handle(), &key)
         })
     }
@@ -170,7 +169,7 @@ impl Device {
     ) -> Result<(), Error> {
         let (user, device) = file_names(user_file_name, device_file_name)?;
         let handle = self.handle();
-        self.runtime.call(Operation::FileAccessRead, || {
+        call_native(Operation::FileAccessRead, || {
             NativeDriver::file_access_read(handle, &user, &device)
         })
     }
@@ -183,7 +182,7 @@ impl Device {
     ) -> Result<(), Error> {
         let (user, device) = file_names(user_file_name, device_file_name)?;
         let handle = self.handle();
-        self.runtime.call(Operation::FileAccessWrite, || {
+        call_native(Operation::FileAccessWrite, || {
             NativeDriver::file_access_write(handle, &user, &device)
         })
     }
@@ -191,7 +190,7 @@ impl Device {
     /// Copies one progress snapshot without interpreting completion.
     pub fn file_transfer_progress(&mut self) -> Result<FileProgress, Error> {
         const OPERATION: Operation = Operation::GetFileAccessProgress;
-        self.runtime.call(OPERATION, || {
+        call_native(OPERATION, || {
             NativeDriver::file_access_progress(self.handle())
         })
     }
@@ -207,16 +206,11 @@ impl Device {
         };
 
         let stop = if self.acquisition.needs_stop() {
-            self.runtime
-                .call(Operation::StopMeasure, || NativeDriver::stop(handle))
-                .err()
+            call_native(Operation::StopMeasure, || NativeDriver::stop(handle)).err()
         } else {
             None
         };
-        let close = self
-            .runtime
-            .call(Operation::CloseDevice, || NativeDriver::close(handle))
-            .err();
+        let close = call_native(Operation::CloseDevice, || NativeDriver::close(handle)).err();
 
         if close.is_some() {
             self.runtime.block_finalize();
@@ -228,7 +222,7 @@ impl Device {
         cleanup_result(stop, close)
     }
 
-    fn handle(&self) -> Handle {
+    const fn handle(&self) -> Handle {
         self.handle.expect("a live device always has a handle")
     }
 }
@@ -243,11 +237,11 @@ enum AcquisitionState {
 }
 
 impl AcquisitionState {
-    fn needs_stop(self) -> bool {
+    const fn needs_stop(self) -> bool {
         matches!(self, Self::Pulling | Self::CallbackRunning)
     }
 
-    fn name(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
             Self::Idle => "idle",
             Self::Pulling => "pull acquisition running",
@@ -257,7 +251,7 @@ impl AcquisitionState {
     }
 }
 
-/// 两个 FileAccess 接口共用的字符串前处理；错误保留具体参数名。
+/// 两个 `FileAccess` 接口共用的字符串前处理；错误保留具体参数名。
 fn file_names(user: &[u8], device: &[u8]) -> Result<(CString, CString), Error> {
     Ok((
         c_string("local file name", user)?,

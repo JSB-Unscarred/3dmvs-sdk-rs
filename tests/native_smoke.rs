@@ -8,7 +8,7 @@ const SERIAL_ENV: &str = "MV3D_LP_TEST_SERIAL";
 
 // 验证真实硬件的最短 public API 数据流；手工提供序列号后单独运行。
 #[test]
-#[ignore]
+#[ignore = "需要连接真实设备并通过 MV3D_LP_TEST_SERIAL 提供序列号"]
 fn native_pull_smoke() {
     let serial = env::var(SERIAL_ENV)
         .expect("MV3D_LP_TEST_SERIAL must contain the target device serial number");

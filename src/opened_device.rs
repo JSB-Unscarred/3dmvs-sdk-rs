@@ -12,7 +12,7 @@ pub struct Device {
 }
 
 impl Device {
-    pub(crate) fn from_internal(inner: mv3d_lp_internal::Device) -> Self {
+    pub(crate) const fn from_internal(inner: mv3d_lp_internal::Device) -> Self {
         Self { inner }
     }
 
@@ -87,8 +87,8 @@ impl Device {
     }
 
     /// Writes one parameter by its SDK Node Name, accepting `&str` or raw bytes.
-    pub fn set_parameter(&mut self, key: impl AsRef<[u8]>, value: ParameterValue) -> Result<()> {
-        self.inner.set_parameter(key.as_ref(), &value)
+    pub fn set_parameter(&mut self, key: impl AsRef<[u8]>, value: &ParameterValue) -> Result<()> {
+        self.inner.set_parameter(key.as_ref(), value)
     }
 
     /// Executes one command by its SDK Command Node Name, accepting `&str` or raw bytes.

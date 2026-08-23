@@ -356,8 +356,8 @@ pub enum Error {
         violation: ContractViolation,
     },
     DeviceCleanup {
-        stop: Box<Error>,
-        close: Box<Error>,
+        stop: Box<Self>,
+        close: Box<Self>,
     },
 }
 

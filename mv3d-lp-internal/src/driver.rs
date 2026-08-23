@@ -4,7 +4,7 @@ use std::ptr::NonNull;
 
 use crate::error::{ContractViolation, InputViolation};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriverError {
     Status(i32),
     InvalidInput {
@@ -32,12 +32,12 @@ impl Handle {
         NonNull::new(pointer).map(Self)
     }
 
-    pub(crate) fn as_ptr(self) -> *mut std::ffi::c_void {
+    pub(crate) const fn as_ptr(self) -> *mut std::ffi::c_void {
         self.0.as_ptr()
     }
 }
 
-pub fn status_result(status: i32) -> DriverResult<()> {
+pub const fn status_result(status: i32) -> DriverResult<()> {
     if status == 0 {
         Ok(())
     } else {
