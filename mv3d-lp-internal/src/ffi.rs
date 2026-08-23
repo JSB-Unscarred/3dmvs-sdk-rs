@@ -78,7 +78,7 @@ impl NativeDriver {
         let records = raw
             .into_iter()
             .take(returned)
-            .map(device_info_from_native)
+            .map(|native| device_info_from_native(&native))
             .collect();
         Ok(records)
     }
@@ -751,7 +751,7 @@ pub const fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {
 
 #[cfg(native_sdk)]
 /// Copies one fixed native device descriptor directly into its owned Rust record.
-fn device_info_from_native(native: bindings::MV3D_LP_DEVICE_INFO) -> DeviceInfo {
+fn device_info_from_native(native: &bindings::MV3D_LP_DEVICE_INFO) -> DeviceInfo {
     DeviceInfo {
         manufacturer_name: SdkText::from_sdk_bytes(bounded_c_bytes(&native.chManufacturerName)),
         model_name: SdkText::from_sdk_bytes(bounded_c_bytes(&native.chModelName)),

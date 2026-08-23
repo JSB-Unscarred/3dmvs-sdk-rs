@@ -69,11 +69,20 @@ static INITIALIZE_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 impl Runtime {
     /// Reads the SDK version independently of the initialized session.
+    ///
+    /// # Errors
+    ///
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn version() -> Result<crate::text::SdkText, Error> {
         Self::version_bytes().map(crate::text::SdkText::from_sdk_bytes)
     }
 
     /// Reads the raw SDK version bytes; `SdkText::into_bytes` covers the same need publicly.
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "函数体按 native_sdk 分叉，SDK target 上调用非 const 的 native 接口"
+    )]
     fn version_bytes() -> Result<Vec<u8>, Error> {
         #[cfg(native_sdk)]
         {
@@ -85,6 +94,15 @@ impl Runtime {
     }
 
     /// Initializes the native SDK using the process's sole attempt.
+    ///
+    /// # Errors
+    ///
+    /// 本进程已经初始化过（含此前初始化失败或已 shutdown）时返回 [`Error::InvalidState`]。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "函数体按 native_sdk 分叉，SDK target 上调用非 const 的 native 接口"
+    )]
     pub fn initialize() -> Result<Self, Error> {
         #[cfg(native_sdk)]
         {
@@ -106,6 +124,10 @@ impl Runtime {
     }
 
     /// Reads one device-count snapshot.
+    ///
+    /// # Errors
+    ///
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn device_count(&self) -> Result<u32, Error> {
         call_native(Operation::GetDeviceNumber, NativeDriver::device_number)
     }
@@ -114,6 +136,15 @@ impl Runtime {
     ///
     /// count 为 0 时不进入 native GetDeviceList；capacity 由同一次 count 决定，SDK 填入的条数
     /// 可少于 capacity，多出的槽位不会被读取。
+    ///
+    /// # Panics
+    ///
+    /// 设备数量无法用 `usize` 表示时 panic；支持的 target 上 `u32` 必定可容纳。
+    ///
+    /// # Errors
+    ///
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn devices(&self) -> Result<Vec<DeviceInfo>, Error> {
         let count = self.device_count()?;
         if count == 0 {
@@ -129,6 +160,11 @@ impl Runtime {
     /// Writes one IP configuration.
     ///
     /// 序列号先经 `bounded_c_string` 限长并拒绝 interior NUL，再交给固定宽度的 native 字段。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn set_ip_config(
         &self,
         serial_number: &[u8],
@@ -144,6 +180,15 @@ impl Runtime {
     /// Opens one device by IPv4 address.
     ///
     /// handle 只有在 status 成功且指针非空时才存在，`Device` 因此是它唯一的 owner。
+    ///
+    /// # Panics
+    ///
+    /// 地址格式化结果含 NUL 时 panic；IPv4 的十进制表示不会出现 NUL。
+    ///
+    /// # Errors
+    ///
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device, Error> {
         let address =
             std::ffi::CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
@@ -156,6 +201,12 @@ impl Runtime {
     /// Opens one device by serial number.
     ///
     /// handle 只有在 status 成功且指针非空时才存在，`Device` 因此是它唯一的 owner。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device, Error> {
         let serial = bounded_c_string("serial number", serial_number, SerialNumber::MAX_LEN)?;
         let handle = call_native(Operation::OpenDeviceBySn, || {
@@ -165,6 +216,12 @@ impl Runtime {
     }
 
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn map_depth_to_point_cloud(&self, input: ImageRef<'_>) -> Result<Image, Error> {
         self.core
             .call_image_processing(Operation::MapDepthToPointCloud, || {
@@ -173,6 +230,12 @@ impl Runtime {
     }
 
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn map_depth_to_point_cloud_round(&self, inputs: &[ImageRef<'_>]) -> Result<Image, Error> {
         self.core
             .call_image_processing(Operation::MapDepthToPointCloudRound, || {
@@ -181,6 +244,12 @@ impl Runtime {
     }
 
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn convert_image(&self, input: ImageRef<'_>, target: ImageType) -> Result<Image, Error> {
         self.core
             .call_image_processing(Operation::ImageConvert, || {
@@ -189,6 +258,12 @@ impl Runtime {
     }
 
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn mosaic_depth(&self, inputs: &[ImageRef<'_>]) -> Result<Image, Error> {
         self.core.call_image_processing(Operation::DepthMosaic, || {
             NativeDriver::mosaic_depth(inputs)
@@ -196,6 +271,12 @@ impl Runtime {
     }
 
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn save_image(
         &self,
         input: ImageRef<'_>,
@@ -210,6 +291,11 @@ impl Runtime {
 
     #[cfg(feature = "display-windows")]
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn display_image(
         &self,
         input: ImageRef<'_>,
@@ -223,6 +309,11 @@ impl Runtime {
     }
 
     /// Finalizes the one-shot native session.
+    ///
+    /// # Errors
+    ///
+    /// 仍有其他 session owner 未 drop，或此前有设备 Close 失败时返回 [`Error::InvalidState`]。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn shutdown(self) -> Result<(), Error> {
         let core = Arc::try_unwrap(self.core).map_err(|_| Error::InvalidState {
             operation: Operation::Finalize,

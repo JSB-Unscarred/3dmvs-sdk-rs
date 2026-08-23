@@ -15,30 +15,40 @@ macro_rules! sdk_bytes_newtype {
         pub struct $name(Vec<u8>);
 
         impl $name {
+            /// 借出原始字节；SDK 文本不保证是 UTF-8。
             #[must_use]
             pub fn as_bytes(&self) -> &[u8] {
                 &self.0
             }
 
+            /// 字节长度。
             #[must_use]
             pub const fn len(&self) -> usize {
                 self.0.len()
             }
 
+            /// 是否为空。
             #[must_use]
             pub const fn is_empty(&self) -> bool {
                 self.0.is_empty()
             }
 
+            /// 按 UTF-8 解析。
+            ///
+            /// # Errors
+            ///
+            /// 字节不是合法 UTF-8 时返回 [`Utf8Error`]。
             pub fn to_str(&self) -> Result<&str, Utf8Error> {
                 std::str::from_utf8(&self.0)
             }
 
+            /// 按 UTF-8 解析，非法序列替换为 U+FFFD。
             #[must_use]
             pub fn to_string_lossy(&self) -> Cow<'_, str> {
                 String::from_utf8_lossy(&self.0)
             }
 
+            /// 取走底层字节。
             #[must_use]
             pub fn into_bytes(self) -> Vec<u8> {
                 self.0
@@ -81,6 +91,10 @@ sdk_bytes_newtype! {
 
 impl SdkText {
     /// Accepts any byte source; interior NUL is rejected so the value stays usable as `[IN]` text.
+    ///
+    /// # Errors
+    ///
+    /// 字节含有 NUL 时返回 [`Error::InvalidInput`]，因为它无法作为 C 字符串传入。
     pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self, Error> {
         let bytes = bytes.as_ref();
         if bytes.contains(&0) {
@@ -100,9 +114,14 @@ impl SdkText {
 }
 
 impl SerialNumber {
+    /// SDK 序列号字段的固定容量，单位字节。
     pub const MAX_LEN: usize = 16;
 
     /// Accepts any byte source; the SDK's fixed 16-byte field bounds the length.
+    ///
+    /// # Errors
+    ///
+    /// 字节为空、含有 NUL，或超过 [`Self::MAX_LEN`] 时返回 [`Error::InvalidInput`]。
     pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self, Error> {
         let bytes = bytes.as_ref();
         bounded_c_string("serial number", bytes, Self::MAX_LEN)?;

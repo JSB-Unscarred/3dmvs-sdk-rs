@@ -1,3 +1,10 @@
+//! 海康威视 3D 激光轮廓仪 LPSDK 的私有 FFI 边界。
+//!
+//! 这里承担全部 native 调用、指针与长度校验以及数据拷贝；对外 API 由 `mv3d-lp`
+//! re-export。native 调用只在 `native_sdk` 成立时编译，其他 target 返回
+//! [`Error::UnsupportedPlatform`]。
+
+#![deny(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(improper_ctypes, improper_ctypes_definitions)]

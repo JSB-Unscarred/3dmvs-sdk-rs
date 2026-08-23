@@ -19,11 +19,17 @@ bit_newtype! {
 /// Calibration metadata used when converting depth, profile, and point-cloud images.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ImageCalibration {
+    /// X 方向缩放系数，单位 mm/LSB。
     pub x_scale: f32,
+    /// Y 方向缩放系数，单位 mm/LSB。
     pub y_scale: f32,
+    /// Z 方向缩放系数，单位 mm/LSB。
     pub z_scale: f32,
+    /// X 方向偏移，单位 mm。
     pub x_offset: i32,
+    /// Y 方向偏移，单位 mm。
     pub y_offset: i32,
+    /// Z 方向偏移，单位 mm。
     pub z_offset: i32,
 }
 
@@ -34,15 +40,25 @@ pub struct ImageCalibration {
 /// Unknown image types pass their complete non-empty payload to the SDK.
 #[derive(Clone, Copy)]
 pub struct ImageRef<'a> {
+    /// 图像格式。
     pub image_type: ImageType,
+    /// 图像宽度，单位像素。
     pub width: u32,
+    /// 图像高度，单位像素；轮廓图为行数。
     pub height: u32,
+    /// 主数据载荷；已知格式为紧凑排列，未知格式原样传给 SDK。
     pub data: &'a [u8],
+    /// 可选的亮度数据，每像素一字节。
     pub intensity_data: Option<&'a [u8]>,
+    /// 可选的曝光时间戳，每行一项。
     pub exposure_timestamps: Option<&'a [i64]>,
+    /// 设备侧帧号。
     pub frame_number: u32,
+    /// 设备侧时间戳。
     pub device_timestamp: i64,
+    /// SDK 是否判定该帧有效。
     pub valid: bool,
+    /// 深度、轮廓与点云转换所需的标定参数。
     pub calibration: ImageCalibration,
 }
 
@@ -71,15 +87,25 @@ impl fmt::Debug for ImageRef<'_> {
 #[derive(Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Image {
+    /// 图像格式。
     pub image_type: ImageType,
+    /// 图像宽度，单位像素。
     pub width: u32,
+    /// 图像高度，单位像素；轮廓图为行数。
     pub height: u32,
+    /// 主数据载荷；已知格式为紧凑排列，未知格式原样传给 SDK。
     pub data: Vec<u8>,
+    /// 可选的亮度数据，每像素一字节。
     pub intensity_data: Option<Vec<u8>>,
+    /// 可选的曝光时间戳，每行一项。
     pub exposure_timestamps: Option<Vec<i64>>,
+    /// 设备侧帧号。
     pub frame_number: u32,
+    /// 设备侧时间戳。
     pub device_timestamp: i64,
+    /// SDK 是否判定该帧有效。
     pub valid: bool,
+    /// 深度、轮廓与点云转换所需的标定参数。
     pub calibration: ImageCalibration,
 }
 
@@ -148,15 +174,26 @@ impl Image {
 #[repr(i32)]
 #[non_exhaustive]
 pub enum ImageFileFormat {
+    /// PLY 点云，ASCII。
     Ply = bindings::FileType_PLY,
+    /// CSV 文本。
     Csv = bindings::FileType_CSV,
+    /// OBJ 网格。
     Obj = bindings::FileType_OBJ,
+    /// BMP 位图。
     Bmp = bindings::FileType_BMP,
+    /// JPEG 图像。
     Jpeg = bindings::FileType_JPG,
+    /// TIFF 图像。
     Tiff = bindings::FileType_TIFF,
+    /// TIFF，16 位无符号。
     TiffU16 = bindings::FileType_TIFF_U16,
+    /// TIFF，32 位浮点。
     TiffF32 = bindings::FileType_TIFF_F32,
+    /// PLY 点云，二进制。
     PlyBinary = bindings::FileType_PLY_BINARY,
+    /// PLY 点云，带纹理。
     PlyTexture = bindings::FileType_PLY_TEXTURE,
+    /// 厂商私有 HIBAG 容器。
     Hibag = bindings::FileType_HIBAG,
 }

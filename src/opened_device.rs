@@ -17,6 +17,11 @@ impl Device {
     }
 
     /// Registers an exception callback. A later call replaces the previous one after native success.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`](crate::Error::InvalidState)。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> Result<()>
     where
         F: Fn(DeviceException) + Send + Sync + 'static,
@@ -30,16 +35,31 @@ impl Device {
     }
 
     /// Starts pull acquisition from idle, or callback acquisition after image registration.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`](crate::Error::InvalidState)。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn start(&mut self) -> Result<()> {
         self.inner.start()
     }
 
     /// Stops the active pull or callback acquisition.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`](crate::Error::InvalidState)。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn stop(&mut self) -> Result<()> {
         self.inner.stop()
     }
 
     /// Forwards one software trigger; the SDK validates its trigger mode and call order.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`](crate::Error::InvalidState)。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn soft_trigger(&mut self) -> Result<()> {
         self.inner.soft_trigger()
     }
@@ -48,11 +68,23 @@ impl Device {
     ///
     /// `0` polls without blocking. `u32::MAX` is the SDK's infinite-wait sentinel and is therefore
     /// equivalent to [`Self::get_image_blocking`].
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`](crate::Error::InvalidState)。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`](crate::Error::ContractViolation)。
     pub fn get_image(&mut self, timeout_ms: u32) -> Result<Image> {
         self.inner.get_image(timeout_ms)
     }
 
     /// Waits indefinitely for one pull frame using the SDK's infinite-wait sentinel.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`](crate::Error::InvalidState)。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`](crate::Error::ContractViolation)。
     pub fn get_image_blocking(&mut self) -> Result<Image> {
         self.inner.get_image(u32::MAX)
     }
@@ -62,6 +94,11 @@ impl Device {
     /// Call [`Self::start`] afterwards to begin measurement. A later call replaces the cookie after
     /// native success. `Image` is copied before the callback returns. A panic in `callback` retires
     /// only the current cookie; registering again restores delivery under a new cookie.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`](crate::Error::InvalidState)。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn register_image_callback<F>(&mut self, callback: F) -> Result<()>
     where
         F: Fn(Image) + Send + Sync + 'static,
@@ -77,26 +114,51 @@ impl Device {
     /// Discards the frames already buffered for this device.
     ///
     /// 直接转发；允许调用的状态待厂商确认。
+    ///
+    /// # Errors
+    ///
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn clear_buffer(&mut self) -> Result<()> {
         self.inner.clear_buffer()
     }
 
     /// Reads one parameter by its SDK Node Name, accepting `&str` or raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`](crate::Error::InvalidInput)，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`](crate::Error::ContractViolation)。
     pub fn get_parameter(&mut self, key: impl AsRef<[u8]>) -> Result<Parameter> {
         self.inner.get_parameter(key.as_ref())
     }
 
     /// Writes one parameter by its SDK Node Name, accepting `&str` or raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`](crate::Error::InvalidInput)，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn set_parameter(&mut self, key: impl AsRef<[u8]>, value: &ParameterValue) -> Result<()> {
         self.inner.set_parameter(key.as_ref(), value)
     }
 
     /// Executes one command by its SDK Command Node Name, accepting `&str` or raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`](crate::Error::InvalidInput)，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn execute(&mut self, key: impl AsRef<[u8]>) -> Result<()> {
         self.inner.execute(key.as_ref())
     }
 
     /// Starts copying a file from the device to the host. Names accept `&str` or raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`](crate::Error::InvalidInput)，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn download_file(
         &mut self,
         device_file_name: impl AsRef<[u8]>,
@@ -107,6 +169,11 @@ impl Device {
     }
 
     /// Starts copying a host file into the device. Names accept `&str` or raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`](crate::Error::InvalidInput)，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn upload_file(
         &mut self,
         local_file_name: impl AsRef<[u8]>,
@@ -117,11 +184,22 @@ impl Device {
     }
 
     /// Returns one progress snapshot for the active transfer.
+    ///
+    /// # Errors
+    ///
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`](crate::Error::ContractViolation)。
     pub fn file_transfer_progress(&mut self) -> Result<FileProgress> {
         self.inner.file_transfer_progress()
     }
 
     /// Stops acquisition when needed and closes the owned handle.
+    ///
+    /// # Errors
+    ///
+    /// Stop 与 Close 双双失败时返回 [`Error::DeviceCleanup`](crate::Error::DeviceCleanup)，两个错误都保留；
+    /// 单边失败时原样返回该错误。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn close(self) -> Result<()> {
         self.inner.close()
     }

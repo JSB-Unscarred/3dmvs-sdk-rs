@@ -23,11 +23,14 @@ bit_newtype! {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct DeviceException {
+    /// 异常类型。
     pub kind: DeviceExceptionType,
+    /// SDK 给出的异常描述。
     pub description: SdkText,
 }
 
 impl DeviceException {
+    /// 由类型与描述组装一条异常。
     #[must_use]
     pub const fn new(kind: DeviceExceptionType, description: SdkText) -> Self {
         Self { kind, description }
@@ -48,7 +51,9 @@ impl CallbackCookie {
     }
 }
 
+/// 图像 callback 的接收端；由 SDK 的 callback 线程调用。
 pub type ImageCallback = Arc<dyn Fn(Image) + Send + Sync + 'static>;
+/// 异常 callback 的接收端；由 SDK 的 callback 线程调用。
 pub type ExceptionCallback = Arc<dyn Fn(DeviceException) + Send + Sync + 'static>;
 
 #[derive(Clone)]

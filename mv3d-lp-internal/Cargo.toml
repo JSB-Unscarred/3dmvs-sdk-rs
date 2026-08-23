@@ -15,6 +15,9 @@ description = "Private native FFI boundary for mv3d-lp."
 name = "mv3d_lp_internal"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 native = []

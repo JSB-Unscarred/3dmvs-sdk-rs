@@ -32,6 +32,11 @@ impl Device {
     }
 
     /// Registers an owned exception callback until it is replaced, disabled, or closed.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`]。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn register_exception_callback(&mut self, sink: ExceptionCallback) -> Result<(), Error> {
         const OPERATION: Operation = Operation::RegisterExceptionCallback;
         let registration = CallbackRegistration::exception(sink);
@@ -50,6 +55,11 @@ impl Device {
     /// Starts pull acquisition from idle, or callback acquisition after image registration.
     ///
     /// 次态先于 native 调用算出；调用失败时状态原样保留。
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`]。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn start(&mut self) -> Result<(), Error> {
         let next = match self.acquisition {
             AcquisitionState::Idle => AcquisitionState::Pulling,
@@ -72,6 +82,11 @@ impl Device {
     /// Stops active acquisition; callback registration remains valid through Close.
     ///
     /// 次态先于 native 调用算出；调用失败时状态原样保留。
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`]。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn stop(&mut self) -> Result<(), Error> {
         let next = match self.acquisition {
             AcquisitionState::Pulling => AcquisitionState::Idle,
@@ -90,6 +105,11 @@ impl Device {
     }
 
     /// Forwards one software trigger to the SDK.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`]。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn soft_trigger(&mut self) -> Result<(), Error> {
         call_native(Operation::SoftTrigger, || {
             NativeDriver::soft_trigger(self.handle())
@@ -97,6 +117,12 @@ impl Device {
     }
 
     /// Returns one pull frame; `u32::MAX` selects the SDK's infinite wait.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`]。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn get_image(&mut self, timeout_ms: u32) -> Result<Image, Error> {
         call_native(Operation::GetImage, || {
             NativeDriver::get_image(self.handle(), timeout_ms)
@@ -104,6 +130,11 @@ impl Device {
     }
 
     /// Registers image callback delivery. Native registration binds this handle until Close.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`]。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn register_image_callback(&mut self, sink: ImageCallback) -> Result<(), Error> {
         const OPERATION: Operation = Operation::RegisterImageDataCallback;
         if matches!(self.acquisition, AcquisitionState::Pulling) {
@@ -131,6 +162,10 @@ impl Device {
     }
 
     /// Discards buffered frames. 允许调用的状态待厂商确认，因此不加本地状态校验。
+    ///
+    /// # Errors
+    ///
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
         call_native(Operation::ClearDataBuffer, || {
             NativeDriver::clear_buffer(self.handle())
@@ -138,6 +173,12 @@ impl Device {
     }
 
     /// Reads one parameter. Node Name 只在本次 native 调用期间以 C 字符串传入。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<Parameter, Error> {
         let key = c_string("parameter key", key)?;
         call_native(Operation::GetParam, || {
@@ -146,6 +187,11 @@ impl Device {
     }
 
     /// Writes one parameter. Node Name 只在本次 native 调用期间以 C 字符串传入。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValue) -> Result<(), Error> {
         let key = c_string("parameter key", key)?;
         call_native(Operation::SetParam, || {
@@ -154,6 +200,11 @@ impl Device {
     }
 
     /// Executes one command. Command Node Name 只在本次 native 调用期间以 C 字符串传入。
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
         let key = c_string("command key", key)?;
         call_native(Operation::Execute, || {
@@ -162,6 +213,11 @@ impl Device {
     }
 
     /// Starts a download. File names are passed for this native call only.
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn download_file(
         &mut self,
         device_file_name: &[u8],
@@ -175,6 +231,11 @@ impl Device {
     }
 
     /// Starts an upload. File names are passed for this native call only.
+    ///
+    /// # Errors
+    ///
+    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn upload_file(
         &mut self,
         user_file_name: &[u8],
@@ -188,6 +249,11 @@ impl Device {
     }
 
     /// Copies one progress snapshot without interpreting completion.
+    ///
+    /// # Errors
+    ///
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
     pub fn file_transfer_progress(&mut self) -> Result<FileProgress, Error> {
         const OPERATION: Operation = Operation::GetFileAccessProgress;
         call_native(OPERATION, || {
@@ -196,6 +262,12 @@ impl Device {
     }
 
     /// Stops acquisition when needed and closes the owned handle.
+    ///
+    /// # Errors
+    ///
+    /// Stop 与 Close 双双失败时返回 [`Error::DeviceCleanup`]，两个错误都保留；
+    /// 单边失败时原样返回该错误。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn close(mut self) -> Result<(), Error> {
         self.cleanup()
     }

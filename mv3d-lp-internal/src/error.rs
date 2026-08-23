@@ -7,37 +7,66 @@ use crate::bindings;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum Operation {
+    /// 读取 SDK 版本；不要求先 Initialize。
     GetVersion,
+    /// 初始化进程级 SDK session。
     Initialize,
+    /// 释放进程级 SDK session。
     Finalize,
+    /// 查询在线设备数量。
     GetDeviceNumber,
+    /// 枚举在线设备。
     GetDeviceList,
+    /// 按 IP 打开设备。
     OpenDeviceByIp,
+    /// 按序列号打开设备。
     OpenDeviceBySn,
+    /// 关闭设备。
     CloseDevice,
+    /// 改写设备的 IP 配置。
     SetIpConfig,
+    /// 启动采集。
     StartMeasure,
+    /// 停止采集。
     StopMeasure,
+    /// 发送一次软触发。
     SoftTrigger,
+    /// 清空设备侧数据缓存。
     ClearDataBuffer,
+    /// 以 pull 方式取一帧。
     GetImage,
+    /// 注册图像 callback。
     RegisterImageDataCallback,
+    /// 注册异常 callback。
     RegisterExceptionCallback,
+    /// 读取一个参数。
     GetParam,
+    /// 写入一个参数。
     SetParam,
+    /// 执行一个命令节点。
     Execute,
+    /// 从设备下载文件。
     FileAccessRead,
+    /// 向设备上传文件。
     FileAccessWrite,
+    /// 查询文件传输进度。
     GetFileAccessProgress,
+    /// 把深度图转换为点云。
     MapDepthToPointCloud,
+    /// 把一组深度图转换为点云。
     MapDepthToPointCloudRound,
+    /// 在图像格式之间转换。
     ImageConvert,
+    /// 拼接多张深度图。
     DepthMosaic,
+    /// 把图像存成文件。
     SaveImage,
+    /// 把图像渲染到 Win32 窗口。
     DisplayImage,
 }
 
 impl Operation {
+    /// 返回厂商头文件中的接口名，`Display` 也走这里。
     #[must_use]
     pub const fn sdk_name(self) -> &'static str {
         match self {
@@ -90,7 +119,10 @@ pub struct StatusCode(u32);
 macro_rules! status_codes {
     ($($constant:ident = $raw:expr => $name:literal),+ $(,)?) => {
         impl StatusCode {
-            $(pub const $constant: Self = Self($raw.cast_unsigned());)+
+            $(
+                #[doc = concat!("厂商头文件中的 `", $name, "`。")]
+                pub const $constant: Self = Self($raw.cast_unsigned());
+            )+
 
             /// Returns the vendor header name; statuses from a newer runtime return `None`.
             #[must_use]
@@ -127,26 +159,31 @@ status_codes! {
 }
 
 impl StatusCode {
+    /// 按位保留 SDK 返回的状态；未在头文件中的取值同样可表示。
     #[must_use]
     pub const fn from_raw(raw: i32) -> Self {
         Self(raw.cast_unsigned())
     }
 
+    /// 按位构造，供已经持有无符号位模式的调用方使用。
     #[must_use]
     pub const fn from_bits(bits: u32) -> Self {
         Self(bits)
     }
 
+    /// 还原成 SDK 头文件里的有符号状态码。
     #[must_use]
     pub const fn raw(self) -> i32 {
         self.0.cast_signed()
     }
 
+    /// 取出原始 32 位模式。
     #[must_use]
     pub const fn bits(self) -> u32 {
         self.0
     }
 
+    /// 是否为 `MV3D_LP_OK`。
     #[must_use]
     pub const fn is_ok(self) -> bool {
         self.0 == Self::OK.0
@@ -179,16 +216,19 @@ pub struct SdkError {
 }
 
 impl SdkError {
+    /// 记录一次失败的接口调用及其状态码。
     #[must_use]
     pub const fn new(operation: Operation, status: StatusCode) -> Self {
         Self { operation, status }
     }
 
+    /// 失败的那个 SDK 接口。
     #[must_use]
     pub const fn operation(self) -> Operation {
         self.operation
     }
 
+    /// 该接口返回的状态码。
     #[must_use]
     pub const fn status(self) -> StatusCode {
         self.status
@@ -203,25 +243,40 @@ impl fmt::Display for SdkError {
 
 impl StdError for SdkError {}
 
+/// 调用方传入值不满足 SDK 约束的具体原因。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum InputViolation {
+    /// 值为空。
     Empty,
+    /// 值中含有 NUL 字节，无法作为 C 字符串传入。
     InteriorNul,
+    /// 值超出 SDK 字段容量。
     TooLong {
+        /// 该字段允许的最大字节数。
         max: usize,
+        /// 实际字节数。
         actual: usize,
     },
+    /// 多图接口的输入张数不在允许区间内。
     ImageCount {
+        /// 允许的最少张数。
         minimum: usize,
+        /// 允许的最多张数。
         maximum: usize,
+        /// 实际张数。
         actual: usize,
     },
+    /// 输入图像的宽高、类型与数据长度互相矛盾。
     InvalidImageLayout {
+        /// 不一致的那个字段名。
         field: &'static str,
     },
+    /// 窗口当前拿不到句柄。
     WindowHandleUnavailable,
+    /// 窗口句柄无法表示为 SDK 需要的形式。
     WindowHandleNotSupported,
+    /// 窗口不是 Win32 `HWND`。
     NonWin32Window,
 }
 
@@ -256,39 +311,64 @@ impl fmt::Display for InputViolation {
     }
 }
 
+/// SDK 返回的数据不满足其自身文档约定的具体原因。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ContractViolation {
+    /// SDK 返回了空指针。
     NullPointer {
+        /// 返回空指针的字段名。
         field: &'static str,
     },
+    /// SDK 返回的指针为空，长度却非零。
     NullPointerWithLength {
+        /// 字段名。
         field: &'static str,
+        /// SDK 同时声明的长度。
         length: usize,
     },
+    /// SDK 报告的元素数超过了该字段的固定容量。
     CountExceedsCapacity {
+        /// 字段名。
         field: &'static str,
+        /// SDK 报告的元素数。
         count: usize,
+        /// 该字段的固定容量。
         capacity: usize,
     },
+    /// union 的判别值不在已知取值内，无法确定活跃成员。
     UnknownDiscriminant {
+        /// 字段名。
         field: &'static str,
+        /// 无法解释的判别值。
         raw: u32,
     },
+    /// 由 SDK 字段推算长度时发生溢出。
     LengthOverflow {
+        /// 字段名。
         field: &'static str,
     },
+    /// SDK 返回的长度与其自身声明的期望值不符。
     LengthMismatch {
+        /// 字段名。
         field: &'static str,
+        /// SDK 自身声明的长度。
         expected: usize,
+        /// 实际长度。
         actual: usize,
     },
+    /// SDK 输出超过本 crate 允许拷贝的上限。
     OutputTooLarge {
+        /// 字段名。
         field: &'static str,
+        /// 本 crate 允许拷贝的上限。
         limit: usize,
+        /// SDK 实际输出的大小。
         actual: usize,
     },
+    /// SDK 在该字段返回了本 crate 无法解释的取值。
     InvalidValue {
+        /// 字段名。
         field: &'static str,
     },
 }
@@ -337,26 +417,42 @@ impl fmt::Display for ContractViolation {
     }
 }
 
+/// 本 crate 全部接口共用的错误类型。
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Error {
+    /// 当前 target 未链接厂商 SDK。
     UnsupportedPlatform,
+    /// SDK 接口直接返回了失败状态。
     Sdk(SdkError),
+    /// 调用方传入的值不满足 SDK 约束，未发起 native 调用。
     InvalidInput {
+        /// 出问题的参数名。
         field: &'static str,
+        /// 具体不满足哪条约束。
         violation: InputViolation,
     },
+    /// 当前生命周期状态不允许该操作。
     InvalidState {
+        /// 被拒绝的操作。
         operation: Operation,
+        /// 该操作要求的状态。
         expected: &'static str,
+        /// 当前实际状态。
         actual: &'static str,
     },
+    /// SDK 调用成功，但返回的数据违反其文档约定。
     ContractViolation {
+        /// 返回该数据的操作。
         operation: Operation,
+        /// 具体违反了哪条约定。
         violation: ContractViolation,
     },
+    /// 设备清理时 Stop 与 Close 双双失败，两个错误都保留。
     DeviceCleanup {
+        /// Stop 的失败原因。
         stop: Box<Self>,
+        /// Close 的失败原因。
         close: Box<Self>,
     },
 }

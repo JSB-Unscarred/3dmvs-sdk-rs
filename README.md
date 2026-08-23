@@ -7,7 +7,7 @@
 - 原生目标：`x86_64-pc-windows-msvc`
 - bindings 基线：LPSDK `1.3.3.3`
 - 已安装的官方开发指南为 V1.3.2；接口表以较新的 `1.3.3.3` 头文件为准
-- MSRV：Rust `1.85`
+- MSRV：Rust `1.87`
 - 默认 feature 为空；`native` 启用 SDK，`display-windows` 增加 Win32 图像显示
 - 两个 crate 均设置 `publish = false`，本项目暂不发布至 crates.io
 
@@ -24,7 +24,7 @@ mv3d-lp = { git = "https://github.com/JSB-Unscarred/3dmvs-sdk-rs.git", features 
 C:\Program Files (x86)\3DMVS\Development
 ```
 
-默认构建只提供类型与 API；`Sdk::version()`、`Sdk::initialize()` 等原生入口返回 `Error::UnsupportedPlatform`。
+默认构建只提供类型与 API；`Sdk::version()`、`Sdk::initialize()` 等原生入口返回 `Error::UnsupportedPlatform`。在 `x86_64-pc-windows-msvc` 之外的 target 上启用 `native` 不会导致构建失败，该特性保持惰性并给出一条 `cargo::warning`，因此跨平台 check、clippy 与 doc 都可直接运行。
 
 ## 快速开始
 
@@ -115,7 +115,7 @@ MVS 使用 Camera-owned callback slot，并在注销或 Destroy 边界释放。
 | `MV3D_LP_RegisterImageDataCallBack` | `Device::register_image_callback(F)`、`Device::disable_image_delivery()` | `F: Fn(Image) + Send + Sync + 'static`；首次成功后绑定 callback 至 Close，之后可替换 cookie |
 | `MV3D_LP_ClearDataBuffer` | `Device::clear_buffer()` | 直接转发；允许状态待厂商确认，方法注释同步该保留项 |
 | `MV3D_LP_GetParam` | `Device::get_parameter()` | Node Name 接收 `impl AsRef<[u8]>`（`&str` 与 `&[u8]` 皆可），返回 `Parameter` |
-| `MV3D_LP_SetParam` | `Device::set_parameter()` | Node Name 接收 `impl AsRef<[u8]>`，值使用 `ParameterValue` |
+| `MV3D_LP_SetParam` | `Device::set_parameter()` | Node Name 接收 `impl AsRef<[u8]>`，值使用 `&ParameterValue` |
 | `MV3D_LP_Execute` | `Device::execute()` | Command Node Name 接收 `impl AsRef<[u8]>` |
 | `MV3D_LP_FileAccessRead` | `Device::download_file()` | 下载设备文件；文件名接收 `impl AsRef<[u8]>`，仅在本次 native 调用期间传入 |
 | `MV3D_LP_FileAccessWrite` | `Device::upload_file()` | 上传主机文件；文件名接收 `impl AsRef<[u8]>`，仅在本次 native 调用期间传入 |
@@ -186,11 +186,18 @@ cargo test --workspace --features native --no-run --locked
 cargo test --workspace --features display-windows --locked
 ```
 
-无 SDK 的机器可以只对 internal crate 直接打开 cfg 别名，单独类型检查 native 分支（不链接厂商库）：
+非 Windows 机器上 `--all-features` 可直接运行，`native` 会保持惰性：
 
-```powershell
-$env:RUSTFLAGS = "--cfg native_sdk"
-cargo clippy -p mv3d-lp-internal --all-targets --locked -- -D warnings
+```bash
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+```
+
+要覆盖真正的 native 分支，需针对 SDK target 检查。无 SDK 的机器只要提供一个空的
+`<dir>/Libraries/win64/Mv3dLp.lib` 占位并设置 `MV3DLP_DEV_ENV=<dir>` 即可——clippy 只做
+check 不链接：
+
+```bash
+cargo clippy --workspace --all-targets --all-features --target x86_64-pc-windows-msvc --locked -- -D warnings
 ```
 
 ## 许可证
