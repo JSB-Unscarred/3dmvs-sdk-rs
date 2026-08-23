@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "native"), allow(dead_code))]
+#![cfg_attr(not(native_sdk), allow(dead_code))]
 
 use std::ptr::NonNull;
 

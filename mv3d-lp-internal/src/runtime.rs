@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "native"), allow(dead_code))]
+#![cfg_attr(not(native_sdk), allow(dead_code))]
 
 use std::net::Ipv4Addr;
 #[cfg(feature = "display-windows")]
@@ -19,7 +19,6 @@ use crate::text::SerialNumber;
 
 /// Owned native session shared by all session owners.
 pub(crate) struct RuntimeCore {
-    driver: NativeDriver,
     // 图像处理输出只在下一次处理调用前有效；同一 session 串行到 owned copy 完成。
     image_processing: Mutex<()>,
     // Close 失败后 native handle 状态未知；该单向 latch 禁止随后 Finalize。
@@ -31,9 +30,9 @@ impl RuntimeCore {
     pub(crate) fn call<T>(
         &self,
         operation: Operation,
-        call: impl FnOnce(&NativeDriver) -> DriverResult<T>,
+        call: impl FnOnce() -> DriverResult<T>,
     ) -> Result<T, Error> {
-        call(&self.driver).map_err(|error| map_driver_error(operation, error))
+        call().map_err(|error| map_driver_error(operation, error))
     }
 
     /// Calls one image-processing operation while holding the session's serialization lock.
@@ -43,7 +42,7 @@ impl RuntimeCore {
     pub(crate) fn call_image_processing<T>(
         &self,
         operation: Operation,
-        call: impl FnOnce(&NativeDriver) -> DriverResult<T>,
+        call: impl FnOnce() -> DriverResult<T>,
     ) -> Result<T, Error> {
         let _guard = self
             .image_processing
@@ -76,10 +75,7 @@ impl Runtime {
     fn version_bytes() -> Result<Vec<u8>, Error> {
         #[cfg(native_sdk)]
         {
-            let driver = crate::ffi::NativeDriver;
-            driver
-                .version()
-                .map_err(|error| map_driver_error(Operation::GetVersion, error))
+            NativeDriver::version().map_err(|error| map_driver_error(Operation::GetVersion, error))
         }
 
         #[cfg(not(native_sdk))]
@@ -91,13 +87,10 @@ impl Runtime {
         #[cfg(native_sdk)]
         {
             claim_initialization(&INITIALIZE_CLAIMED)?;
-            let driver = NativeDriver;
-            driver
-                .initialize()
+            NativeDriver::initialize()
                 .map_err(|error| map_driver_error(Operation::Initialize, error))?;
             Ok(Self {
                 core: Arc::new(RuntimeCore {
-                    driver,
                     image_processing: Mutex::new(()),
                     finalize_blocked: AtomicBool::new(false),
                 }),
@@ -112,7 +105,7 @@ impl Runtime {
 
     /// Reads one device-count snapshot.
     pub fn device_count(&self) -> Result<u32, Error> {
-        self.call(Operation::GetDeviceNumber, |driver| driver.device_number())
+        self.call(Operation::GetDeviceNumber, NativeDriver::device_number)
     }
 
     /// Enumerates devices as owned snapshots.
@@ -126,8 +119,8 @@ impl Runtime {
         }
 
         let capacity = usize::try_from(count).expect("u32 fits usize on supported targets");
-        self.call(Operation::GetDeviceList, |driver| {
-            driver.device_list(capacity)
+        self.call(Operation::GetDeviceList, || {
+            NativeDriver::device_list(capacity)
         })
     }
 
@@ -141,8 +134,8 @@ impl Runtime {
     ) -> Result<(), Error> {
         let serial = bounded_c_string("serial number", serial_number, SerialNumber::MAX_LEN)?;
         let raw = IpConfigRaw::from(configuration);
-        self.call(Operation::SetIpConfig, |driver| {
-            driver.set_ip_config(&serial, &raw)
+        self.call(Operation::SetIpConfig, || {
+            NativeDriver::set_ip_config(&serial, &raw)
         })
     }
 
@@ -152,8 +145,8 @@ impl Runtime {
     pub fn open_by_ip(&self, address: Ipv4Addr) -> Result<Device, Error> {
         let address =
             std::ffi::CString::new(address.to_string()).expect("an IPv4 address contains no NUL");
-        let handle = self.call(Operation::OpenDeviceByIp, |driver| {
-            driver.open_by_ip(&address)
+        let handle = self.call(Operation::OpenDeviceByIp, || {
+            NativeDriver::open_by_ip(&address)
         })?;
         Ok(Device::new(Arc::clone(&self.core), handle))
     }
@@ -163,8 +156,8 @@ impl Runtime {
     /// handle 只有在 status 成功且指针非空时才存在，`Device` 因此是它唯一的 owner。
     pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device, Error> {
         let serial = bounded_c_string("serial number", serial_number, SerialNumber::MAX_LEN)?;
-        let handle = self.call(Operation::OpenDeviceBySn, |driver| {
-            driver.open_by_serial(&serial)
+        let handle = self.call(Operation::OpenDeviceBySn, || {
+            NativeDriver::open_by_serial(&serial)
         })?;
         Ok(Device::new(Arc::clone(&self.core), handle))
     }
@@ -172,31 +165,32 @@ impl Runtime {
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
     pub fn map_depth_to_point_cloud(&self, input: ImageRef<'_>) -> Result<Image, Error> {
         self.core
-            .call_image_processing(Operation::MapDepthToPointCloud, |driver| {
-                driver.map_depth_to_point_cloud(input)
+            .call_image_processing(Operation::MapDepthToPointCloud, || {
+                NativeDriver::map_depth_to_point_cloud(input)
             })
     }
 
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
     pub fn map_depth_to_point_cloud_round(&self, inputs: &[ImageRef<'_>]) -> Result<Image, Error> {
         self.core
-            .call_image_processing(Operation::MapDepthToPointCloudRound, |driver| {
-                driver.map_depth_to_point_cloud_round(inputs)
+            .call_image_processing(Operation::MapDepthToPointCloudRound, || {
+                NativeDriver::map_depth_to_point_cloud_round(inputs)
             })
     }
 
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
     pub fn convert_image(&self, input: ImageRef<'_>, target: ImageType) -> Result<Image, Error> {
         self.core
-            .call_image_processing(Operation::ImageConvert, |driver| {
-                driver.convert_image(input, target)
+            .call_image_processing(Operation::ImageConvert, || {
+                NativeDriver::convert_image(input, target)
             })
     }
 
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
     pub fn mosaic_depth(&self, inputs: &[ImageRef<'_>]) -> Result<Image, Error> {
-        self.core
-            .call_image_processing(Operation::DepthMosaic, |driver| driver.mosaic_depth(inputs))
+        self.core.call_image_processing(Operation::DepthMosaic, || {
+            NativeDriver::mosaic_depth(inputs)
+        })
     }
 
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
@@ -207,10 +201,9 @@ impl Runtime {
         file_name: &[u8],
     ) -> Result<(), Error> {
         let file_name = non_empty_c_string("file name", file_name)?;
-        self.core
-            .call_image_processing(Operation::SaveImage, |driver| {
-                driver.save_image(input, format, &file_name)
-            })
+        self.core.call_image_processing(Operation::SaveImage, || {
+            NativeDriver::save_image(input, format, &file_name)
+        })
     }
 
     #[cfg(feature = "display-windows")]
@@ -222,8 +215,8 @@ impl Runtime {
         range: DisplayRange,
     ) -> Result<(), Error> {
         self.core
-            .call_image_processing(Operation::DisplayImage, |driver| {
-                driver.display_image(input, window, range)
+            .call_image_processing(Operation::DisplayImage, || {
+                NativeDriver::display_image(input, window, range)
             })
     }
 
@@ -235,15 +228,13 @@ impl Runtime {
             actual: "session owners remain",
         })?;
         ensure_finalization_allowed(&core.finalize_blocked)?;
-        core.driver
-            .finalize()
-            .map_err(|error| map_driver_error(Operation::Finalize, error))
+        NativeDriver::finalize().map_err(|error| map_driver_error(Operation::Finalize, error))
     }
 
     fn call<T>(
         &self,
         operation: Operation,
-        call: impl FnOnce(&NativeDriver) -> DriverResult<T>,
+        call: impl FnOnce() -> DriverResult<T>,
     ) -> Result<T, Error> {
         self.core.call(operation, call)
     }

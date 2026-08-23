@@ -5,6 +5,7 @@ use crate::callback::{CallbackRegistration, ExceptionCallback, ImageCallback};
 use crate::cstr::c_string;
 use crate::driver::Handle;
 use crate::error::{Error, Operation};
+use crate::ffi::NativeDriver;
 use crate::file_transfer::FileProgress;
 use crate::frame::Image;
 use crate::parameter::{Parameter, ParameterValue};
@@ -34,8 +35,8 @@ impl Device {
     pub fn register_exception_callback(&mut self, sink: ExceptionCallback) -> Result<(), Error> {
         const OPERATION: Operation = Operation::RegisterExceptionCallback;
         let registration = CallbackRegistration::exception(sink);
-        self.runtime.call(OPERATION, |driver| {
-            driver.register_exception_callback(self.handle(), registration.cookie())
+        self.runtime.call(OPERATION, || {
+            NativeDriver::register_exception_callback(self.handle(), registration.cookie())
         })?;
         drop(self.exception_registration.replace(registration));
         Ok(())
@@ -61,8 +62,8 @@ impl Device {
                 });
             }
         };
-        self.runtime.call(Operation::StartMeasure, |driver| {
-            driver.start(self.handle())
+        self.runtime.call(Operation::StartMeasure, || {
+            NativeDriver::start(self.handle())
         })?;
         self.acquisition = next;
         Ok(())
@@ -84,22 +85,22 @@ impl Device {
             }
         };
         self.runtime
-            .call(Operation::StopMeasure, |driver| driver.stop(self.handle()))?;
+            .call(Operation::StopMeasure, || NativeDriver::stop(self.handle()))?;
         self.acquisition = next;
         Ok(())
     }
 
     /// Forwards one software trigger to the SDK.
     pub fn soft_trigger(&mut self) -> Result<(), Error> {
-        self.runtime.call(Operation::SoftTrigger, |driver| {
-            driver.soft_trigger(self.handle())
+        self.runtime.call(Operation::SoftTrigger, || {
+            NativeDriver::soft_trigger(self.handle())
         })
     }
 
     /// Returns one pull frame; `u32::MAX` selects the SDK's infinite wait.
     pub fn get_image(&mut self, timeout_ms: u32) -> Result<Image, Error> {
-        self.runtime.call(Operation::GetImage, |driver| {
-            driver.get_image(self.handle(), timeout_ms)
+        self.runtime.call(Operation::GetImage, || {
+            NativeDriver::get_image(self.handle(), timeout_ms)
         })
     }
 
@@ -115,8 +116,8 @@ impl Device {
         }
 
         let registration = CallbackRegistration::image(sink);
-        self.runtime.call(OPERATION, |driver| {
-            driver.register_image_callback(self.handle(), registration.cookie())
+        self.runtime.call(OPERATION, || {
+            NativeDriver::register_image_callback(self.handle(), registration.cookie())
         })?;
         drop(self.image_registration.replace(registration));
         if matches!(self.acquisition, AcquisitionState::Idle) {
@@ -132,32 +133,32 @@ impl Device {
 
     /// Discards buffered frames. 允许调用的状态待厂商确认，因此不加本地状态校验。
     pub fn clear_buffer(&mut self) -> Result<(), Error> {
-        self.runtime.call(Operation::ClearDataBuffer, |driver| {
-            driver.clear_buffer(self.handle())
+        self.runtime.call(Operation::ClearDataBuffer, || {
+            NativeDriver::clear_buffer(self.handle())
         })
     }
 
     /// Reads one parameter. Node Name 只在本次 native 调用期间以 C 字符串传入。
     pub fn get_parameter(&mut self, key: &[u8]) -> Result<Parameter, Error> {
         let key = c_string("parameter key", key)?;
-        self.runtime.call(Operation::GetParam, |driver| {
-            driver.get_parameter(self.handle(), &key)
+        self.runtime.call(Operation::GetParam, || {
+            NativeDriver::get_parameter(self.handle(), &key)
         })
     }
 
     /// Writes one parameter. Node Name 只在本次 native 调用期间以 C 字符串传入。
     pub fn set_parameter(&mut self, key: &[u8], value: &ParameterValue) -> Result<(), Error> {
         let key = c_string("parameter key", key)?;
-        self.runtime.call(Operation::SetParam, |driver| {
-            driver.set_parameter(self.handle(), &key, value)
+        self.runtime.call(Operation::SetParam, || {
+            NativeDriver::set_parameter(self.handle(), &key, value)
         })
     }
 
     /// Executes one command. Command Node Name 只在本次 native 调用期间以 C 字符串传入。
     pub fn execute(&mut self, key: &[u8]) -> Result<(), Error> {
         let key = c_string("command key", key)?;
-        self.runtime.call(Operation::Execute, |driver| {
-            driver.execute(self.handle(), &key)
+        self.runtime.call(Operation::Execute, || {
+            NativeDriver::execute(self.handle(), &key)
         })
     }
 
@@ -169,8 +170,8 @@ impl Device {
     ) -> Result<(), Error> {
         let (user, device) = file_names(user_file_name, device_file_name)?;
         let handle = self.handle();
-        self.runtime.call(Operation::FileAccessRead, |driver| {
-            driver.file_access_read(handle, &user, &device)
+        self.runtime.call(Operation::FileAccessRead, || {
+            NativeDriver::file_access_read(handle, &user, &device)
         })
     }
 
@@ -182,16 +183,16 @@ impl Device {
     ) -> Result<(), Error> {
         let (user, device) = file_names(user_file_name, device_file_name)?;
         let handle = self.handle();
-        self.runtime.call(Operation::FileAccessWrite, |driver| {
-            driver.file_access_write(handle, &user, &device)
+        self.runtime.call(Operation::FileAccessWrite, || {
+            NativeDriver::file_access_write(handle, &user, &device)
         })
     }
 
     /// Copies one progress snapshot without interpreting completion.
     pub fn file_transfer_progress(&mut self) -> Result<FileProgress, Error> {
         const OPERATION: Operation = Operation::GetFileAccessProgress;
-        self.runtime.call(OPERATION, |driver| {
-            driver.file_access_progress(self.handle())
+        self.runtime.call(OPERATION, || {
+            NativeDriver::file_access_progress(self.handle())
         })
     }
 
@@ -207,14 +208,14 @@ impl Device {
 
         let stop = if self.acquisition.needs_stop() {
             self.runtime
-                .call(Operation::StopMeasure, |driver| driver.stop(handle))
+                .call(Operation::StopMeasure, || NativeDriver::stop(handle))
                 .err()
         } else {
             None
         };
         let close = self
             .runtime
-            .call(Operation::CloseDevice, |driver| driver.close(handle))
+            .call(Operation::CloseDevice, || NativeDriver::close(handle))
             .err();
 
         if close.is_some() {
