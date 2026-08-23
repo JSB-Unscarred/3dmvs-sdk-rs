@@ -6,14 +6,14 @@ use crate::bits::bit_newtype;
 bit_newtype! {
     /// An image format reported by the SDK, preserving unknown 32-bit values.
     pub struct ImageType;
-    UNDEFINED = bindings::ImageType_Undefined as u32 => "undefined",
-    MONO8 = bindings::ImageType_Mono8 as u32 => "Mono8",
-    DEPTH = bindings::ImageType_Depth as u32 => "depth",
-    PROFILE = bindings::ImageType_Profile as u32 => "profile",
-    POINT_CLOUD = bindings::ImageType_PointCloud as u32 => "point cloud",
-    RGB24_PACKED = bindings::ImageType_RGB24_Packed as u32 => "RGB24 packed",
-    JPEG = bindings::ImageType_Jpeg as u32 => "JPEG",
-    PROFILE_ABC32 = bindings::ImageType_Profile_ABC32 as u32 => "profile ABC32",
+    UNDEFINED = bindings::ImageType_Undefined.cast_unsigned() => "undefined",
+    MONO8 = bindings::ImageType_Mono8.cast_unsigned() => "Mono8",
+    DEPTH = bindings::ImageType_Depth.cast_unsigned() => "depth",
+    PROFILE = bindings::ImageType_Profile.cast_unsigned() => "profile",
+    POINT_CLOUD = bindings::ImageType_PointCloud.cast_unsigned() => "point cloud",
+    RGB24_PACKED = bindings::ImageType_RGB24_Packed.cast_unsigned() => "RGB24 packed",
+    JPEG = bindings::ImageType_Jpeg.cast_unsigned() => "JPEG",
+    PROFILE_ABC32 = bindings::ImageType_Profile_ABC32.cast_unsigned() => "profile ABC32",
 }
 
 /// Calibration metadata used when converting depth, profile, and point-cloud images.

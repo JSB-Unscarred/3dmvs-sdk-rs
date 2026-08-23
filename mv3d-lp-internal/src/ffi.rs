@@ -830,7 +830,7 @@ pub fn parameter_from_native(parameter: &bindings::MV3D_LP_PARAM) -> DriverResul
         other => Err(DriverError::Contract(
             ContractViolation::UnknownDiscriminant {
                 field: "parameter type",
-                raw: other as u32,
+                raw: other.cast_unsigned(),
             },
         )),
     }
@@ -884,7 +884,7 @@ pub fn parameter_to_native(value: &ParameterValue) -> DriverResult<bindings::MV3
                 nMaxLength: 0,
             };
             for (destination, source) in string.chCurValue.iter_mut().zip(bytes) {
-                *destination = *source as i8;
+                *destination = source.cast_signed();
             }
             parameter.enParamType = bindings::ParamType_String;
             parameter.ParamInfo.stStringParam = string;
@@ -896,12 +896,15 @@ pub fn parameter_to_native(value: &ParameterValue) -> DriverResult<bindings::MV3
 /// Copies one fixed C buffer through its first NUL byte.
 pub fn bounded_c_bytes<const N: usize>(source: &[i8; N]) -> Vec<u8> {
     let length = source.iter().position(|byte| *byte == 0).unwrap_or(N);
-    source[..length].iter().map(|byte| *byte as u8).collect()
+    source[..length]
+        .iter()
+        .map(|byte| byte.cast_unsigned())
+        .collect()
 }
 
 #[cfg(native_sdk)]
 fn as_c_char_array<const N: usize>(source: &[u8; N]) -> [i8; N] {
-    std::array::from_fn(|index| source[index] as i8)
+    std::array::from_fn(|index| source[index].cast_signed())
 }
 
 #[cfg(test)]
@@ -930,9 +933,9 @@ mod tests {
         image.nWidth = 2;
         image.nHeight = 1;
         image.pData = data.as_mut_ptr();
-        image.nDataLen = data.len() as u32;
+        image.nDataLen = u32::try_from(data.len()).unwrap();
         image.pIntensityData = intensity.as_mut_ptr();
-        image.nIntensityDataLen = intensity.len() as u32;
+        image.nIntensityDataLen = u32::try_from(intensity.len()).unwrap();
         image.pExposureTimeStamp = exposure.as_mut_ptr();
 
         // SAFETY: all descriptor pointers refer to the live arrays above for their declared sizes.
@@ -1038,7 +1041,7 @@ mod tests {
         );
 
         parameter.ParamInfo.stEnumParam.nSupportedNum =
-            (bindings::MV3D_LP_MAX_ENUM_COUNT + 1) as u32;
+            u32::try_from(bindings::MV3D_LP_MAX_ENUM_COUNT + 1).unwrap();
         assert!(matches!(
             parameter_from_native(&parameter),
             Err(DriverError::Contract(

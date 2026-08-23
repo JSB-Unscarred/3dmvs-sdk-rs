@@ -14,7 +14,7 @@ macro_rules! bit_newtype {
 
             #[must_use]
             pub const fn from_raw(raw: i32) -> Self {
-                Self(raw as u32)
+                Self(raw.cast_unsigned())
             }
 
             #[must_use]
@@ -24,7 +24,7 @@ macro_rules! bit_newtype {
 
             #[must_use]
             pub const fn raw(self) -> i32 {
-                self.0 as i32
+                self.0.cast_signed()
             }
 
             #[must_use]

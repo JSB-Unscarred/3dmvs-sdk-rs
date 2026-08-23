@@ -15,8 +15,8 @@ use crate::text::SdkText;
 bit_newtype! {
     /// A device exception type reported by the SDK, preserving unknown values.
     pub struct DeviceExceptionType;
-    UNDEFINED = bindings::DevExceptionType_Undefined as u32 => "undefined",
-    DISCONNECTED = bindings::DevExceptionType_Disconnect as u32 => "disconnected",
+    UNDEFINED = bindings::DevExceptionType_Undefined.cast_unsigned() => "undefined",
+    DISCONNECTED = bindings::DevExceptionType_Disconnect.cast_unsigned() => "disconnected",
 }
 
 /// An owned device exception delivered by the safe callback facade.
@@ -242,7 +242,7 @@ mod tests {
         image.nWidth = 2;
         image.nHeight = 1;
         image.pData = data.as_mut_ptr();
-        image.nDataLen = data.len() as u32;
+        image.nDataLen = u32::try_from(data.len()).unwrap();
 
         // SAFETY: the descriptor and its payload stay alive for this synchronous callback.
         unsafe { image_trampoline(&mut image, cookie.as_user_pointer()) };

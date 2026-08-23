@@ -90,7 +90,7 @@ pub struct StatusCode(u32);
 macro_rules! status_codes {
     ($($constant:ident = $raw:expr => $name:literal),+ $(,)?) => {
         impl StatusCode {
-            $(pub const $constant: Self = Self($raw as u32);)+
+            $(pub const $constant: Self = Self($raw.cast_unsigned());)+
 
             /// Returns the vendor header name; statuses from a newer runtime return `None`.
             #[must_use]
@@ -106,7 +106,7 @@ macro_rules! status_codes {
 
 // 位模式与名字都以 bindings 为唯一来源，厂商头文件升级时只改 bindings。
 status_codes! {
-    OK = 0 => "MV3D_LP_OK",
+    OK = 0_i32 => "MV3D_LP_OK",
     INVALID_HANDLE = bindings::MV3D_LP_E_HANDLE => "MV3D_LP_E_HANDLE",
     UNSUPPORTED = bindings::MV3D_LP_E_SUPPORT => "MV3D_LP_E_SUPPORT",
     BUFFER_OVERFLOW = bindings::MV3D_LP_E_BUFOVER => "MV3D_LP_E_BUFOVER",
@@ -129,7 +129,7 @@ status_codes! {
 impl StatusCode {
     #[must_use]
     pub const fn from_raw(raw: i32) -> Self {
-        Self(raw as u32)
+        Self(raw.cast_unsigned())
     }
 
     #[must_use]
@@ -139,7 +139,7 @@ impl StatusCode {
 
     #[must_use]
     pub const fn raw(self) -> i32 {
-        self.0 as i32
+        self.0.cast_signed()
     }
 
     #[must_use]
@@ -418,7 +418,7 @@ mod tests {
     // 验证已知与未知 status 都保留厂商位模式和调用上下文。
     #[test]
     fn status_preserves_bits_and_operation() {
-        let known = StatusCode::from_raw(0x8006_000D_u32 as i32);
+        let known = StatusCode::from_raw(0x8006_000D_u32.cast_signed());
         assert_eq!(known, StatusCode::DEVICE_OFFLINE);
         assert_eq!(known.bits(), 0x8006_000D);
 
