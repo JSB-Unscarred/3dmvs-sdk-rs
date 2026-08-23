@@ -129,6 +129,17 @@ impl Device {
         })
     }
 
+    /// Blocks for one pull frame; the SDK's infinite-wait sentinel stays encoded here only.
+    ///
+    /// # Errors
+    ///
+    /// 当前采集状态不允许该操作时返回 [`Error::InvalidState`]。
+    /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
+    /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
+    pub fn get_image_blocking(&mut self) -> Result<Image, Error> {
+        self.get_image(u32::MAX)
+    }
+
     /// Registers image callback delivery. Native registration binds this handle until Close.
     ///
     /// # Errors
@@ -287,9 +298,7 @@ impl Device {
         if close.is_some() {
             self.runtime.block_finalize();
         }
-        self.acquisition = AcquisitionState::Idle;
-        drop(self.image_registration.take());
-        drop(self.exception_registration.take());
+        // cleanup 后 Device 必然析构，registration 字段随 drop 在 Close 之后退休 cookie。
 
         cleanup_result(stop, close)
     }

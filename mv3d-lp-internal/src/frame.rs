@@ -16,6 +16,21 @@ bit_newtype! {
     PROFILE_ABC32 = bindings::ImageType_Profile_ABC32.cast_unsigned() => "profile ABC32",
 }
 
+impl ImageType {
+    /// 已知非压缩格式的紧凑 bytes-per-pixel；与格式常量同处一表，新增格式只改这里。
+    pub(crate) const fn known_bytes_per_pixel(self) -> Option<usize> {
+        match self {
+            Self::MONO8 => Some(1),
+            Self::DEPTH => Some(2),
+            Self::RGB24_PACKED => Some(3),
+            Self::PROFILE => Some(6),
+            Self::POINT_CLOUD | Self::PROFILE_ABC32 => Some(12),
+            // Jpeg 与 Undefined 同未知类型一样没有固定 bytes-per-pixel。
+            _ => None,
+        }
+    }
+}
+
 /// Calibration metadata used when converting depth, profile, and point-cloud images.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ImageCalibration {

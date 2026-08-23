@@ -62,15 +62,13 @@ impl Sdk {
     ///
     /// # Errors
     ///
-    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`](crate::Error::InvalidInput)，此时不会发起 native 调用。
     /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn set_ip_config(
         &self,
         serial_number: &SerialNumber,
         configuration: IpConfiguration,
     ) -> Result<()> {
-        self.inner
-            .set_ip_config(serial_number.as_bytes(), &configuration)
+        self.inner.set_ip_config(serial_number, &configuration)
     }
 
     /// Opens one device by IPv4 address. A `Device` is produced only after a non-null handle.
@@ -87,12 +85,11 @@ impl Sdk {
     ///
     /// # Errors
     ///
-    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`](crate::Error::InvalidInput)，此时不会发起 native 调用。
     /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`](crate::Error::ContractViolation)。
     pub fn open_by_serial(&self, serial_number: &SerialNumber) -> Result<Device> {
         self.inner
-            .open_by_serial(serial_number.as_bytes())
+            .open_by_serial(serial_number)
             .map(Device::from_internal)
     }
 
@@ -164,5 +161,24 @@ impl Sdk {
     /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     pub fn shutdown(self) -> Result<()> {
         self.inner.shutdown()
+    }
+
+    #[cfg(all(windows, feature = "display-windows"))]
+    /// Draws an SDK image into a borrowed Win32 window.
+    ///
+    /// # Errors
+    ///
+    /// 窗口拿不到 Win32 `HWND`，或参数不满足 SDK 约束时返回 [`Error::InvalidInput`](crate::Error::InvalidInput)，此时不会发起 native 调用。
+    /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
+    pub fn display<W>(
+        &self,
+        image: ImageRef<'_>,
+        window: &W,
+        range: crate::DisplayRange,
+    ) -> Result<()>
+    where
+        W: crate::HasWindowHandle + ?Sized,
+    {
+        self.inner.display_image(image, window, range)
     }
 }

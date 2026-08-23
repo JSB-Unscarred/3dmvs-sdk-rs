@@ -2,13 +2,14 @@
 
 use std::ffi::CStr;
 use std::mem::{MaybeUninit, size_of};
+use std::net::Ipv4Addr;
 #[cfg(feature = "display-windows")]
 use std::num::NonZeroIsize;
 use std::ptr;
 
 use crate::bindings;
 use crate::callback::{CallbackCookie, exception_trampoline, image_trampoline};
-use crate::device::{DeviceInfo, IpConfigRaw, parse_optional_ipv4};
+use crate::device::{DeviceInfo, IpConfiguration, parse_optional_ipv4};
 #[cfg(feature = "display-windows")]
 use crate::display::DisplayRange;
 use crate::driver::{DriverError, DriverResult, Handle, status_result};
@@ -83,37 +84,21 @@ impl NativeDriver {
         Ok(records)
     }
 
-    pub(crate) fn set_ip_config(serial: &CStr, config: &IpConfigRaw) -> DriverResult<()> {
-        let mut native = bindings::MV3D_LP_IP_CONFIG {
-            enIPCfgMode: config.mode,
-            chDestIp: as_c_char_array(&config.address),
-            chDestNetMask: as_c_char_array(&config.subnet_mask),
-            chDestGateWay: as_c_char_array(&config.gateway),
-            nReserved: [0; 16],
-        };
+    pub(crate) fn set_ip_config(serial: &CStr, config: &IpConfiguration) -> DriverResult<()> {
+        let mut native = ip_config_to_native(config);
         // SAFETY: serial is NUL-terminated and borrowed for this call; native is fully
         // initialized, writable, and all reserved bytes are zero.
         status_result(unsafe { bindings::MV3D_LP_SetIpConfig(serial.as_ptr(), &raw mut native) })
     }
 
     pub(crate) fn open_by_ip(ip: &CStr) -> DriverResult<Handle> {
-        let mut raw = ptr::null_mut();
-        // SAFETY: raw is a valid writable handle slot and ip is NUL-terminated for the call.
-        let status = unsafe { bindings::MV3D_LP_OpenDeviceByIP(&raw mut raw, ip.as_ptr()) };
-        status_result(status)?;
-        Handle::from_ptr(raw).ok_or(DriverError::Contract(ContractViolation::NullPointer {
-            field: "device handle",
-        }))
+        // SAFETY: slot is a valid writable handle slot and ip is NUL-terminated for the call.
+        opened_handle(|slot| unsafe { bindings::MV3D_LP_OpenDeviceByIP(slot, ip.as_ptr()) })
     }
 
     pub(crate) fn open_by_serial(serial: &CStr) -> DriverResult<Handle> {
-        let mut raw = ptr::null_mut();
-        // SAFETY: raw is a valid writable handle slot and serial is NUL-terminated for the call.
-        let status = unsafe { bindings::MV3D_LP_OpenDeviceBySN(&raw mut raw, serial.as_ptr()) };
-        status_result(status)?;
-        Handle::from_ptr(raw).ok_or(DriverError::Contract(ContractViolation::NullPointer {
-            field: "device handle",
-        }))
+        // SAFETY: slot is a valid writable handle slot and serial is NUL-terminated for the call.
+        opened_handle(|slot| unsafe { bindings::MV3D_LP_OpenDeviceBySN(slot, serial.as_ptr()) })
     }
 
     pub(crate) fn close(handle: Handle) -> DriverResult<()> {
@@ -222,11 +207,7 @@ impl NativeDriver {
         user_file_name: &CStr,
         device_file_name: &CStr,
     ) -> DriverResult<()> {
-        let mut access = bindings::MV3D_LP_FILE_ACCESS {
-            pUserFileName: user_file_name.as_ptr(),
-            pDevFileName: device_file_name.as_ptr(),
-            nReserved: [0; 32],
-        };
+        let mut access = file_access(user_file_name, device_file_name);
         // SAFETY: Device owns the handle, the `[IN]` descriptor is initialized for this call, and
         // both strings are NUL-terminated for the duration of the call.
         status_result(unsafe { bindings::MV3D_LP_FileAccessRead(handle.as_ptr(), &raw mut access) })
@@ -237,11 +218,7 @@ impl NativeDriver {
         user_file_name: &CStr,
         device_file_name: &CStr,
     ) -> DriverResult<()> {
-        let mut access = bindings::MV3D_LP_FILE_ACCESS {
-            pUserFileName: user_file_name.as_ptr(),
-            pDevFileName: device_file_name.as_ptr(),
-            nReserved: [0; 32],
-        };
+        let mut access = file_access(user_file_name, device_file_name);
         // SAFETY: the same initialized descriptor and live handle guarantees as FileAccessRead apply.
         status_result(unsafe {
             bindings::MV3D_LP_FileAccessWrite(handle.as_ptr(), &raw mut access)
@@ -278,8 +255,7 @@ impl NativeDriver {
     }
 
     pub(crate) fn map_depth_to_point_cloud_round(inputs: &[ImageRef<'_>]) -> DriverResult<Image> {
-        let mut inputs = prepare_multi_inputs(inputs)?;
-        let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
+        let (mut inputs, count) = prepare_multi_inputs(inputs)?;
         let mut output = zeroed_image();
         // SAFETY: `inputs` holds `count` validated descriptors borrowing live [IN] payloads for
         // this serialized call; `output` is an initialized descriptor the SDK writes into.
@@ -304,8 +280,7 @@ impl NativeDriver {
     }
 
     pub(crate) fn mosaic_depth(inputs: &[ImageRef<'_>]) -> DriverResult<Image> {
-        let mut inputs = prepare_multi_inputs(inputs)?;
-        let count = u32::try_from(inputs.len()).map_err(|_| invalid_image_count(inputs.len()))?;
+        let (mut inputs, count) = prepare_multi_inputs(inputs)?;
         let mut output = zeroed_image();
         // SAFETY: `inputs` holds `count` validated descriptors borrowing live [IN] payloads for
         // this serialized call; `output` is an initialized descriptor the SDK writes into.
@@ -345,24 +320,26 @@ impl NativeDriver {
         };
         // SAFETY: `input` was validated above and borrows live vendor-[IN] payloads; `window` came
         // from a borrowed Win32 raw-window-handle. Both remain live for this synchronous call.
-        unsafe {
-            native_display_image_call(
+        status_result(unsafe {
+            bindings::MV3D_LP_DisplayImage(
                 &raw mut input,
                 window.get() as *mut std::ffi::c_void,
                 display_type,
                 minimum,
                 maximum,
             )
-        }
+        })
     }
 }
 
 #[cfg(not(native_sdk))]
 // Default builds type-check the safe API without referencing the vendor import library.
+// 逐条目 attribute 让 feature-gated 入口与其真实实现共用同一份桩列表。
 macro_rules! unavailable_methods {
-    ($(fn $name:ident($($argument:ident: $argument_type:ty),*) -> $output:ty;)+) => {
+    ($($(#[$attribute:meta])* fn $name:ident($($argument:ident: $argument_type:ty),*) -> $output:ty;)+) => {
         impl NativeDriver {
             $(
+                $(#[$attribute])*
                 pub(crate) fn $name($($argument: $argument_type),*) -> DriverResult<$output> {
                     let _ = ($($argument),*);
                     unreachable!("native calls are reachable only under `native_sdk`")
@@ -377,7 +354,7 @@ unavailable_methods! {
     fn finalize() -> ();
     fn device_number() -> u32;
     fn device_list(capacity: usize) -> Vec<DeviceInfo>;
-    fn set_ip_config(serial: &CStr, config: &IpConfigRaw) -> ();
+    fn set_ip_config(serial: &CStr, config: &IpConfiguration) -> ();
     fn open_by_ip(ip: &CStr) -> Handle;
     fn open_by_serial(serial: &CStr) -> Handle;
     fn close(handle: Handle) -> ();
@@ -399,12 +376,7 @@ unavailable_methods! {
     fn convert_image(input: ImageRef<'_>, target: ImageType) -> Image;
     fn mosaic_depth(inputs: &[ImageRef<'_>]) -> Image;
     fn save_image(input: ImageRef<'_>, format: ImageFileFormat, file_name: &CStr) -> ();
-}
-
-// runtime.rs 在 display-windows 下无条件引用 display_image，真实实现却挂在
-// all(native_sdk, display-windows) 上，非 SDK target 需要单独的桩。
-#[cfg(all(not(native_sdk), feature = "display-windows"))]
-unavailable_methods! {
+    #[cfg(feature = "display-windows")]
     fn display_image(input: ImageRef<'_>, window: NonZeroIsize, range: DisplayRange) -> ();
 }
 
@@ -460,35 +432,78 @@ fn image_input_to_native(input: ImageRef<'_>) -> DriverResult<bindings::MV3D_LP_
     Ok(native)
 }
 
-#[cfg(all(native_sdk, feature = "display-windows"))]
-/// Calls the raw display entry point with an initialized descriptor and borrowed window handle.
-///
-/// # Safety
-///
-/// `image` must point to an initialized descriptor whose borrowed payloads remain readable for
-/// the call, and `window` must be a live Win32 `HWND` accepted by the vendor runtime.
-unsafe fn native_display_image_call(
-    image: *mut bindings::MV3D_LP_IMAGE_DATA,
-    window: *mut std::ffi::c_void,
-    display_type: bindings::Mv3dLpDisplayType,
-    minimum: i32,
-    maximum: i32,
-) -> DriverResult<()> {
-    // SAFETY: The only caller is NativeDriver::display_image, which validated the descriptor and
-    // borrowed the HWND for this synchronous call.
-    status_result(unsafe {
-        bindings::MV3D_LP_DisplayImage(image, window, display_type, minimum, maximum)
-    })
+/// Materializes an opened handle: only a success status with a non-null pointer yields one.
+#[cfg(native_sdk)]
+fn opened_handle(
+    open: impl FnOnce(*mut bindings::HANDLE) -> bindings::MV3D_LP_STATUS,
+) -> DriverResult<Handle> {
+    let mut raw = ptr::null_mut();
+    status_result(open(&raw mut raw))?;
+    Handle::from_ptr(raw).ok_or(DriverError::Contract(ContractViolation::NullPointer {
+        field: "device handle",
+    }))
 }
 
+/// Builds the `[IN]` descriptor shared by FileAccessRead/Write; both strings stay borrowed.
+#[cfg(native_sdk)]
+const fn file_access(
+    user_file_name: &CStr,
+    device_file_name: &CStr,
+) -> bindings::MV3D_LP_FILE_ACCESS {
+    bindings::MV3D_LP_FILE_ACCESS {
+        pUserFileName: user_file_name.as_ptr(),
+        pDevFileName: device_file_name.as_ptr(),
+        nReserved: [0; 32],
+    }
+}
+
+/// 模式判别值只经由 `IpConfigurationMode` 一条映射，地址字段仅 Static 需要填写。
+#[cfg(any(test, native_sdk))]
+fn ip_config_to_native(configuration: &IpConfiguration) -> bindings::MV3D_LP_IP_CONFIG {
+    let mut native = bindings::MV3D_LP_IP_CONFIG {
+        enIPCfgMode: configuration.mode().raw(),
+        chDestIp: [0; 16],
+        chDestNetMask: [0; 16],
+        chDestGateWay: [0; 16],
+        nReserved: [0; 16],
+    };
+    if let IpConfiguration::Static {
+        ip,
+        subnet_mask,
+        gateway,
+    } = configuration
+    {
+        write_ipv4(&mut native.chDestIp, *ip);
+        write_ipv4(&mut native.chDestNetMask, *subnet_mask);
+        write_ipv4(&mut native.chDestGateWay, *gateway);
+    }
+    native
+}
+
+// IPv4 点分十进制最长 15 字节，固定 16 字节字段必定容纳文本加结尾 NUL。
+#[cfg(any(test, native_sdk))]
+fn write_ipv4(destination: &mut [core::ffi::c_char; 16], address: Ipv4Addr) {
+    let text = address.to_string();
+    for (destination, source) in destination.iter_mut().zip(text.as_bytes()) {
+        *destination = source.cast_signed();
+    }
+}
+
+/// 校验张数并同步产出 native 计数；超过 8 张与超过 `u32` 都按同一个输入错误处理。
 #[cfg(native_sdk)]
 fn prepare_multi_inputs(
     inputs: &[ImageRef<'_>],
-) -> DriverResult<Vec<bindings::MV3D_LP_IMAGE_DATA>> {
-    if inputs.len() > MAX_MULTI_IMAGE_COUNT {
-        return Err(invalid_image_count(inputs.len()));
-    }
-    inputs.iter().copied().map(image_input_to_native).collect()
+) -> DriverResult<(Vec<bindings::MV3D_LP_IMAGE_DATA>, u32)> {
+    let count = match u32::try_from(inputs.len()) {
+        Ok(count) if inputs.len() <= MAX_MULTI_IMAGE_COUNT => count,
+        _ => return Err(invalid_image_count(inputs.len())),
+    };
+    let natives = inputs
+        .iter()
+        .copied()
+        .map(image_input_to_native)
+        .collect::<DriverResult<Vec<_>>>()?;
+    Ok((natives, count))
 }
 
 #[cfg(native_sdk)]
@@ -565,7 +580,7 @@ fn validate_image_layout(
         return Err(invalid_sdk_image_value("data length"));
     }
 
-    if let Some(bytes_per_pixel) = known_bytes_per_pixel(image.enImageType) {
+    if let Some(bytes_per_pixel) = ImageType::from_raw(image.enImageType).known_bytes_per_pixel() {
         let expected = pixels
             .checked_mul(bytes_per_pixel)
             .ok_or_else(|| sdk_length_overflow("data"))?;
@@ -634,7 +649,7 @@ unsafe fn image_from_native(
         destination.extend_from_slice(source);
     }
 
-    if let (Some(destination), Some(count)) = (&mut exposure_timestamps, layout.exposure_count) {
+    if let Some(destination) = &mut exposure_timestamps {
         // SAFETY: validation bounded `height * sizeof(i64)` readable bytes.
         let bytes = unsafe {
             std::slice::from_raw_parts(
@@ -642,12 +657,12 @@ unsafe fn image_from_native(
                 layout.exposure_bytes,
             )
         };
-        for chunk in bytes.chunks_exact(size_of::<i64>()).take(count) {
+        destination.extend(bytes.chunks_exact(size_of::<i64>()).map(|chunk| {
             let encoded: [u8; size_of::<i64>()] = chunk
                 .try_into()
                 .expect("chunks_exact yields one native i64 at a time");
-            destination.push(i64::from_ne_bytes(encoded));
-        }
+            i64::from_ne_bytes(encoded)
+        }));
     }
 
     Ok(Image {
@@ -678,18 +693,6 @@ pub unsafe fn callback_image_from_native(
     unsafe { image_from_native(image, LengthRule::Padded) }
 }
 
-const fn known_bytes_per_pixel(image_type: bindings::Mv3dLpImageType) -> Option<usize> {
-    match image_type {
-        bindings::ImageType_Mono8 => Some(1),
-        bindings::ImageType_Depth => Some(2),
-        bindings::ImageType_Profile => Some(6),
-        bindings::ImageType_PointCloud | bindings::ImageType_Profile_ABC32 => Some(12),
-        bindings::ImageType_RGB24_Packed => Some(3),
-        // Jpeg 与 Undefined 同未知类型一样没有固定 bytes-per-pixel。
-        _ => None,
-    }
-}
-
 fn usize_from_u32(value: u32, field: &'static str) -> DriverResult<usize> {
     usize::try_from(value).map_err(|_| sdk_length_overflow(field))
 }
@@ -702,7 +705,6 @@ const fn invalid_image_count(actual: usize) -> DriverError {
     invalid_input(
         "images",
         InputViolation::ImageCount {
-            minimum: 0,
             maximum: MAX_MULTI_IMAGE_COUNT,
             actual,
         },
@@ -907,25 +909,45 @@ pub fn bounded_c_bytes<const N: usize>(source: &[i8; N]) -> Vec<u8> {
         .collect()
 }
 
-#[cfg(native_sdk)]
-fn as_c_char_array<const N: usize>(source: &[u8; N]) -> [i8; N] {
-    std::array::from_fn(|index| source[index].cast_signed())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
     use std::ptr;
 
     use super::{
-        LengthRule, image_from_native, image_input_to_native, parameter_from_native,
-        parameter_to_native, zeroed_image, zeroed_parameter,
+        LengthRule, bounded_c_bytes, image_from_native, image_input_to_native, ip_config_to_native,
+        parameter_from_native, parameter_to_native, zeroed_image, zeroed_parameter,
     };
     use crate::bindings;
+    use crate::device::IpConfiguration;
     use crate::driver::DriverError;
     use crate::error::{ContractViolation, InputViolation};
     use crate::frame::{ImageCalibration, ImageRef, ImageType};
     use crate::parameter::{Parameter, ParameterValue};
     use crate::text::SdkText;
+
+    // 验证三种配置写入的 mode 与厂商头文件一致，且只有 Static 填写地址字段。
+    #[test]
+    fn ip_config_mode_matches_the_vendor_values() {
+        let address = Ipv4Addr::new(192, 168, 1, 2);
+        assert_eq!(
+            ip_config_to_native(&IpConfiguration::Dhcp).enIPCfgMode,
+            bindings::IpCfgMode_DHCP
+        );
+        assert_eq!(
+            ip_config_to_native(&IpConfiguration::LinkLocal).enIPCfgMode,
+            bindings::IpCfgMode_LLA
+        );
+        assert_eq!(
+            bounded_c_bytes(&ip_config_to_native(&IpConfiguration::Dhcp).chDestIp),
+            b""
+        );
+
+        let configured =
+            ip_config_to_native(&IpConfiguration::static_address(address, address, address));
+        assert_eq!(configured.enIPCfgMode, bindings::IpCfgMode_Static);
+        assert_eq!(bounded_c_bytes(&configured.chDestIp), b"192.168.1.2");
+    }
 
     // 验证 SDK 图像的指针/长度边界，并确认 callback 返回前完成深拷贝。
     #[test]

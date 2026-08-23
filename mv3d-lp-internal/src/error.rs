@@ -2,6 +2,7 @@ use std::error::Error as StdError;
 use std::fmt;
 
 use crate::bindings;
+use crate::bits::bit_newtype;
 
 /// Identifies the SDK operation associated with an error.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -108,103 +109,38 @@ impl fmt::Display for Operation {
     }
 }
 
-/// A status returned by the SDK, stored as its exact 32-bit bit pattern.
-///
-/// This is deliberately a newtype rather than a Rust enum so that statuses
-/// introduced by a newer runtime remain representable.
-#[repr(transparent)]
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub struct StatusCode(u32);
-
-macro_rules! status_codes {
-    ($($constant:ident = $raw:expr => $name:literal),+ $(,)?) => {
-        impl StatusCode {
-            $(
-                #[doc = concat!("厂商头文件中的 `", $name, "`。")]
-                pub const $constant: Self = Self($raw.cast_unsigned());
-            )+
-
-            /// Returns the vendor header name; statuses from a newer runtime return `None`.
-            #[must_use]
-            pub const fn name(self) -> Option<&'static str> {
-                $(if self.0 == Self::$constant.0 {
-                    return Some($name);
-                })+
-                None
-            }
-        }
-    };
-}
-
 // 位模式与名字都以 bindings 为唯一来源，厂商头文件升级时只改 bindings。
-status_codes! {
-    OK = 0_i32 => "MV3D_LP_OK",
-    INVALID_HANDLE = bindings::MV3D_LP_E_HANDLE => "MV3D_LP_E_HANDLE",
-    UNSUPPORTED = bindings::MV3D_LP_E_SUPPORT => "MV3D_LP_E_SUPPORT",
-    BUFFER_OVERFLOW = bindings::MV3D_LP_E_BUFOVER => "MV3D_LP_E_BUFOVER",
-    INVALID_CALL_ORDER = bindings::MV3D_LP_E_CALLORDER => "MV3D_LP_E_CALLORDER",
-    INVALID_PARAMETER = bindings::MV3D_LP_E_PARAMETER => "MV3D_LP_E_PARAMETER",
-    RESOURCE_ERROR = bindings::MV3D_LP_E_RESOURCE => "MV3D_LP_E_RESOURCE",
-    NO_DATA = bindings::MV3D_LP_E_NODATA => "MV3D_LP_E_NODATA",
-    PRECONDITION_FAILED = bindings::MV3D_LP_E_PRECONDITION => "MV3D_LP_E_PRECONDITION",
-    VERSION_MISMATCH = bindings::MV3D_LP_E_VERSION => "MV3D_LP_E_VERSION",
-    INSUFFICIENT_BUFFER = bindings::MV3D_LP_E_NOENOUGH_BUF => "MV3D_LP_E_NOENOUGH_BUF",
-    ABNORMAL_IMAGE = bindings::MV3D_LP_E_ABNORMAL_IMAGE => "MV3D_LP_E_ABNORMAL_IMAGE",
-    LOAD_LIBRARY_FAILED = bindings::MV3D_LP_E_LOAD_LIBRARY => "MV3D_LP_E_LOAD_LIBRARY",
-    ALGORITHM_ERROR = bindings::MV3D_LP_E_ALGORITHM => "MV3D_LP_E_ALGORITHM",
-    DEVICE_OFFLINE = bindings::MV3D_LP_E_DEVICE_OFFLINE => "MV3D_LP_E_DEVICE_OFFLINE",
-    ACCESS_DENIED = bindings::MV3D_LP_E_ACCESS_DENIED => "MV3D_LP_E_ACCESS_DENIED",
-    OUT_OF_RANGE = bindings::MV3D_LP_E_OUTOFRANGE => "MV3D_LP_E_OUTOFRANGE",
-    UNKNOWN = bindings::MV3D_LP_E_UNKNOW => "MV3D_LP_E_UNKNOW",
+bit_newtype! {
+    /// A status returned by the SDK, stored as its exact 32-bit bit pattern.
+    ///
+    /// This is deliberately a newtype rather than a Rust enum so that statuses
+    /// introduced by a newer runtime remain representable.
+    pub struct StatusCode(hex display);
+    OK = bindings::MV3D_LP_OK.cast_unsigned() => "MV3D_LP_OK",
+    INVALID_HANDLE = bindings::MV3D_LP_E_HANDLE.cast_unsigned() => "MV3D_LP_E_HANDLE",
+    UNSUPPORTED = bindings::MV3D_LP_E_SUPPORT.cast_unsigned() => "MV3D_LP_E_SUPPORT",
+    BUFFER_OVERFLOW = bindings::MV3D_LP_E_BUFOVER.cast_unsigned() => "MV3D_LP_E_BUFOVER",
+    INVALID_CALL_ORDER = bindings::MV3D_LP_E_CALLORDER.cast_unsigned() => "MV3D_LP_E_CALLORDER",
+    INVALID_PARAMETER = bindings::MV3D_LP_E_PARAMETER.cast_unsigned() => "MV3D_LP_E_PARAMETER",
+    RESOURCE_ERROR = bindings::MV3D_LP_E_RESOURCE.cast_unsigned() => "MV3D_LP_E_RESOURCE",
+    NO_DATA = bindings::MV3D_LP_E_NODATA.cast_unsigned() => "MV3D_LP_E_NODATA",
+    PRECONDITION_FAILED = bindings::MV3D_LP_E_PRECONDITION.cast_unsigned() => "MV3D_LP_E_PRECONDITION",
+    VERSION_MISMATCH = bindings::MV3D_LP_E_VERSION.cast_unsigned() => "MV3D_LP_E_VERSION",
+    INSUFFICIENT_BUFFER = bindings::MV3D_LP_E_NOENOUGH_BUF.cast_unsigned() => "MV3D_LP_E_NOENOUGH_BUF",
+    ABNORMAL_IMAGE = bindings::MV3D_LP_E_ABNORMAL_IMAGE.cast_unsigned() => "MV3D_LP_E_ABNORMAL_IMAGE",
+    LOAD_LIBRARY_FAILED = bindings::MV3D_LP_E_LOAD_LIBRARY.cast_unsigned() => "MV3D_LP_E_LOAD_LIBRARY",
+    ALGORITHM_ERROR = bindings::MV3D_LP_E_ALGORITHM.cast_unsigned() => "MV3D_LP_E_ALGORITHM",
+    DEVICE_OFFLINE = bindings::MV3D_LP_E_DEVICE_OFFLINE.cast_unsigned() => "MV3D_LP_E_DEVICE_OFFLINE",
+    ACCESS_DENIED = bindings::MV3D_LP_E_ACCESS_DENIED.cast_unsigned() => "MV3D_LP_E_ACCESS_DENIED",
+    OUT_OF_RANGE = bindings::MV3D_LP_E_OUTOFRANGE.cast_unsigned() => "MV3D_LP_E_OUTOFRANGE",
+    UNKNOWN = bindings::MV3D_LP_E_UNKNOW.cast_unsigned() => "MV3D_LP_E_UNKNOW",
 }
 
 impl StatusCode {
-    /// 按位保留 SDK 返回的状态；未在头文件中的取值同样可表示。
-    #[must_use]
-    pub const fn from_raw(raw: i32) -> Self {
-        Self(raw.cast_unsigned())
-    }
-
-    /// 按位构造，供已经持有无符号位模式的调用方使用。
-    #[must_use]
-    pub const fn from_bits(bits: u32) -> Self {
-        Self(bits)
-    }
-
-    /// 还原成 SDK 头文件里的有符号状态码。
-    #[must_use]
-    pub const fn raw(self) -> i32 {
-        self.0.cast_signed()
-    }
-
-    /// 取出原始 32 位模式。
-    #[must_use]
-    pub const fn bits(self) -> u32 {
-        self.0
-    }
-
     /// 是否为 `MV3D_LP_OK`。
     #[must_use]
     pub const fn is_ok(self) -> bool {
-        self.0 == Self::OK.0
-    }
-}
-
-impl fmt::Debug for StatusCode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.name() {
-            Some(name) => write!(formatter, "StatusCode({name}, 0x{:08X})", self.0),
-            None => write!(formatter, "StatusCode(0x{:08X})", self.0),
-        }
-    }
-}
-
-impl fmt::Display for StatusCode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.name() {
-            Some(name) => write!(formatter, "{name} (0x{:08X})", self.0),
-            None => write!(formatter, "unknown SDK status 0x{:08X}", self.0),
-        }
+        self.raw() == bindings::MV3D_LP_OK
     }
 }
 
@@ -258,10 +194,8 @@ pub enum InputViolation {
         /// 实际字节数。
         actual: usize,
     },
-    /// 多图接口的输入张数不在允许区间内。
+    /// 多图接口的输入张数超过允许上限。
     ImageCount {
-        /// 允许的最少张数。
-        minimum: usize,
         /// 允许的最多张数。
         maximum: usize,
         /// 实际张数。
@@ -289,13 +223,9 @@ impl fmt::Display for InputViolation {
                 formatter,
                 "the value has {actual} bytes; at most {max} are allowed"
             ),
-            Self::ImageCount {
-                minimum,
-                maximum,
-                actual,
-            } => write!(
+            Self::ImageCount { maximum, actual } => write!(
                 formatter,
-                "the image count is {actual}; expected {minimum}..={maximum}"
+                "the image count is {actual}; at most {maximum} are allowed"
             ),
             Self::InvalidImageLayout { field } => {
                 write!(formatter, "the image has an invalid {field}")
@@ -516,9 +446,9 @@ mod tests {
     fn status_preserves_bits_and_operation() {
         let known = StatusCode::from_raw(0x8006_000D_u32.cast_signed());
         assert_eq!(known, StatusCode::DEVICE_OFFLINE);
-        assert_eq!(known.bits(), 0x8006_000D);
+        assert_eq!(known.raw(), 0x8006_000D_u32.cast_signed());
 
-        let unknown = StatusCode::from_bits(0xDEAD_BEEF);
+        let unknown = StatusCode::from_raw(0xDEAD_BEEF_u32.cast_signed());
         let error = SdkError::new(Operation::GetParam, unknown);
         assert_eq!(error.operation(), Operation::GetParam);
         assert_eq!(error.status(), unknown);

@@ -86,7 +86,7 @@ impl Device {
     /// SDK 调用失败时返回 [`Error::Sdk`](crate::Error::Sdk)；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform)。
     /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`](crate::Error::ContractViolation)。
     pub fn get_image_blocking(&mut self) -> Result<Image> {
-        self.inner.get_image(u32::MAX)
+        self.inner.get_image_blocking()
     }
 
     /// Registers native image delivery. The first success binds this handle to callback until Close.

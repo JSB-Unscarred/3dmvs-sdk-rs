@@ -158,7 +158,7 @@ SDK 的 reserved 字段、原始指针、回调函数指针和设备句柄只存
 ## 安全边界
 
 - 公共 crate 使用 `#![forbid(unsafe_code)]`；FFI、指针校验、C union 读取和 callback trampoline 位于 `mv3d-lp-internal`。
-- 状态码、图像类型、文件类型、IP 配置模式的位模式以 `bindings` 为唯一来源，`error.rs` 与 `bit_newtype!` 只保留名字映射；厂商头文件升级时只需改 `bindings.rs`。
+- 状态码、图像类型、文件类型、IP 配置模式的位模式以 `bindings` 为唯一来源，`bit_newtype!` 只保留名字映射；厂商头文件升级时只需改 `bindings.rs`。
 - 目标与 feature 组合由 `mv3d-lp-internal/build.rs` 输出的 `sdk_target`、`native_sdk` 两个 cfg 别名表达，源码中不再重复四条件谓词。
 - 原生图像输入与输出的判别值、指针、长度、布局和算术校验集中在 internal FFI，再复制到 Rust 所有值；已知格式要求主数据、可选亮度数据和曝光时间戳与宽高对应。采集输出允许 padding，输入与图像处理输出要求精确匹配。
 - 所有权、线程契约、清理顺序、callback、FileAccess、错误传播与终止边界统一见[生命周期与时序](生命周期与时序图.md)。

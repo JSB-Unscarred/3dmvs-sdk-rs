@@ -21,4 +21,7 @@ workspace = true
 [features]
 default = []
 native = []
-display-windows = ["native"]
+display-windows = ["native", "dep:raw-window-handle"]
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = { version = "0.6.2", optional = true }

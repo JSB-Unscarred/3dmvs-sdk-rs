@@ -1,14 +1,12 @@
 #![cfg_attr(not(native_sdk), allow(dead_code))]
 
 use std::net::Ipv4Addr;
-#[cfg(feature = "display-windows")]
-use std::num::NonZeroIsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::cstr::{bounded_c_string, non_empty_c_string};
-use crate::device::{DeviceInfo, IpConfigRaw, IpConfiguration};
-#[cfg(feature = "display-windows")]
+use crate::cstr::non_empty_c_string;
+use crate::device::{DeviceInfo, IpConfiguration};
+#[cfg(all(windows, feature = "display-windows"))]
 use crate::display::DisplayRange;
 use crate::driver::{DriverError, DriverResult};
 use crate::error::{Error, Operation, SdkError, StatusCode};
@@ -59,8 +57,10 @@ impl RuntimeCore {
     }
 }
 
-#[derive(Clone)]
 /// Control token for the process-wide native session.
+///
+/// 不提供 `Clone`：`shutdown` 依赖 `Arc::try_unwrap` 判定自己是最后一个 session owner，
+/// 新增 owner 只能像 `Device` 一样显式 `Arc::clone` 内部 core。
 pub struct Runtime {
     core: Arc<RuntimeCore>,
 }
@@ -74,19 +74,15 @@ impl Runtime {
     ///
     /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
-    pub fn version() -> Result<crate::text::SdkText, Error> {
-        Self::version_bytes().map(crate::text::SdkText::from_sdk_bytes)
-    }
-
-    /// Reads the raw SDK version bytes; `SdkText::into_bytes` covers the same need publicly.
     #[allow(
         clippy::missing_const_for_fn,
         reason = "函数体按 native_sdk 分叉，SDK target 上调用非 const 的 native 接口"
     )]
-    fn version_bytes() -> Result<Vec<u8>, Error> {
+    pub fn version() -> Result<crate::text::SdkText, Error> {
         #[cfg(native_sdk)]
         {
-            NativeDriver::version().map_err(|error| map_driver_error(Operation::GetVersion, error))
+            call_native(Operation::GetVersion, NativeDriver::version)
+                .map(crate::text::SdkText::from_sdk_bytes)
         }
 
         #[cfg(not(native_sdk))]
@@ -107,8 +103,7 @@ impl Runtime {
         #[cfg(native_sdk)]
         {
             claim_initialization(&INITIALIZE_CLAIMED)?;
-            NativeDriver::initialize()
-                .map_err(|error| map_driver_error(Operation::Initialize, error))?;
+            call_native(Operation::Initialize, NativeDriver::initialize)?;
             Ok(Self {
                 core: Arc::new(RuntimeCore {
                     image_processing: Mutex::new(()),
@@ -159,21 +154,19 @@ impl Runtime {
 
     /// Writes one IP configuration.
     ///
-    /// 序列号先经 `bounded_c_string` 限长并拒绝 interior NUL，再交给固定宽度的 native 字段。
+    /// 序列号约束在 [`SerialNumber`] 构造时校验完毕，这里直接借道 C 字符串传入。
     ///
     /// # Errors
     ///
-    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
     /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     pub fn set_ip_config(
         &self,
-        serial_number: &[u8],
+        serial_number: &SerialNumber,
         configuration: &IpConfiguration,
     ) -> Result<(), Error> {
-        let serial = bounded_c_string("serial number", serial_number, SerialNumber::MAX_LEN)?;
-        let raw = IpConfigRaw::from(configuration);
+        let serial = serial_number.to_c_string();
         call_native(Operation::SetIpConfig, || {
-            NativeDriver::set_ip_config(&serial, &raw)
+            NativeDriver::set_ip_config(&serial, configuration)
         })
     }
 
@@ -201,14 +194,14 @@ impl Runtime {
     /// Opens one device by serial number.
     ///
     /// handle 只有在 status 成功且指针非空时才存在，`Device` 因此是它唯一的 owner。
+    /// 序列号约束在 [`SerialNumber`] 构造时校验完毕，这里直接借道 C 字符串传入。
     ///
     /// # Errors
     ///
-    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
     /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
     /// SDK 返回的数据不满足其文档约定时返回 [`Error::ContractViolation`]。
-    pub fn open_by_serial(&self, serial_number: &[u8]) -> Result<Device, Error> {
-        let serial = bounded_c_string("serial number", serial_number, SerialNumber::MAX_LEN)?;
+    pub fn open_by_serial(&self, serial_number: &SerialNumber) -> Result<Device, Error> {
+        let serial = serial_number.to_c_string();
         let handle = call_native(Operation::OpenDeviceBySn, || {
             NativeDriver::open_by_serial(&serial)
         })?;
@@ -289,19 +282,26 @@ impl Runtime {
         })
     }
 
-    #[cfg(feature = "display-windows")]
+    #[cfg(all(windows, feature = "display-windows"))]
     /// 走 `call_image_processing`：输出只在下一次处理调用前有效，复制完成前必须串行。
+    ///
+    /// HWND 的提取与校验同样收在 internal 层，窗口类输入错误只在这一处产生。
     ///
     /// # Errors
     ///
-    /// 参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，此时不会发起 native 调用。
+    /// 窗口拿不到 Win32 `HWND`，或参数不满足 SDK 约束时返回 [`Error::InvalidInput`]，
+    /// 此时不会发起 native 调用。
     /// SDK 调用失败时返回 [`Error::Sdk`]；未链接 SDK 的 target 上返回 [`Error::UnsupportedPlatform`]。
-    pub fn display_image(
+    pub fn display_image<W>(
         &self,
         input: ImageRef<'_>,
-        window: NonZeroIsize,
+        window: &W,
         range: DisplayRange,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        W: raw_window_handle::HasWindowHandle + ?Sized,
+    {
+        let window = crate::display::win32_hwnd(window)?;
         self.core
             .call_image_processing(Operation::DisplayImage, || {
                 NativeDriver::display_image(input, window, range)
@@ -321,7 +321,7 @@ impl Runtime {
             actual: "session owners remain",
         })?;
         ensure_finalization_allowed(&core.finalize_blocked)?;
-        NativeDriver::finalize().map_err(|error| map_driver_error(Operation::Finalize, error))
+        call_native(Operation::Finalize, NativeDriver::finalize)
     }
 }
 

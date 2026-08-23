@@ -37,5 +37,7 @@ pub use file_transfer::FileProgress;
 pub use frame::{Image, ImageCalibration, ImageFileFormat, ImageRef, ImageType};
 pub use opened_device::Device;
 pub use parameter::{Parameter, ParameterValue};
+#[cfg(all(windows, feature = "display-windows"))]
+pub use raw_window_handle::HasWindowHandle;
 pub use runtime::Runtime;
 pub use text::{SdkText, SerialNumber};

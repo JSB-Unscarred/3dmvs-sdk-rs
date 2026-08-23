@@ -4,6 +4,58 @@ macro_rules! bit_newtype {
         $vis:vis struct $name:ident;
         $($const:ident = $value:expr => $label:expr),+ $(,)?
     ) => {
+        bit_newtype! {
+            @base
+            $(#[$meta])*
+            $vis struct $name;
+            $($const = $value => $label),+
+        }
+
+        impl core::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self.name() {
+                    Some(name) => formatter.write_str(name),
+                    None => write!(
+                        formatter,
+                        concat!("unknown ", stringify!($name), " 0x{:08X}"),
+                        self.0
+                    ),
+                }
+            }
+        }
+    };
+    // 状态码类取值的名字直接对照厂商头文件，Display 额外带十六进制位模式。
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident(hex display);
+        $($const:ident = $value:expr => $label:expr),+ $(,)?
+    ) => {
+        bit_newtype! {
+            @base
+            $(#[$meta])*
+            $vis struct $name;
+            $($const = $value => $label),+
+        }
+
+        impl core::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self.name() {
+                    Some(name) => write!(formatter, "{name} (0x{:08X})", self.0),
+                    None => write!(
+                        formatter,
+                        concat!("unknown ", stringify!($name), " 0x{:08X}"),
+                        self.0
+                    ),
+                }
+            }
+        }
+    };
+    (
+        @base
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident;
+        $($const:ident = $value:expr => $label:expr),+
+    ) => {
         $(#[$meta])*
         #[repr(transparent)]
         #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -21,22 +73,10 @@ macro_rules! bit_newtype {
                 Self(raw.cast_unsigned())
             }
 
-            /// 按位构造，供已经持有无符号位模式的调用方使用。
-            #[must_use]
-            pub const fn from_bits(bits: u32) -> Self {
-                Self(bits)
-            }
-
             /// 还原成 SDK 头文件里的有符号取值。
             #[must_use]
             pub const fn raw(self) -> i32 {
                 self.0.cast_signed()
-            }
-
-            /// 取出原始 32 位模式。
-            #[must_use]
-            pub const fn bits(self) -> u32 {
-                self.0
             }
 
             /// 返回该取值的可读名字；来自更新版本 SDK 的未知值返回 `None`。
@@ -68,19 +108,6 @@ macro_rules! bit_newtype {
                             self.0
                         )
                     }
-                }
-            }
-        }
-
-        impl core::fmt::Display for $name {
-            fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                match self.name() {
-                    Some(name) => formatter.write_str(name),
-                    None => write!(
-                        formatter,
-                        concat!("unknown ", stringify!($name), " 0x{:08X}"),
-                        self.0
-                    ),
                 }
             }
         }

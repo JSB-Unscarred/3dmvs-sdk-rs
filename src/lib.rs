@@ -7,21 +7,19 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-#[cfg(all(windows, feature = "display-windows"))]
-mod display_windows;
-mod error;
 mod opened_device;
 mod sdk;
 
-pub use error::{
-    ContractViolation, Error, InputViolation, Operation, Result, SdkError, StatusCode,
+pub use mv3d_lp_internal::{
+    ContractViolation, DeviceException, DeviceExceptionType, DeviceInfo, Error, FileProgress,
+    Image, ImageCalibration, ImageFileFormat, ImageRef, ImageType, InputViolation, IpConfiguration,
+    IpConfigurationMode, Operation, Parameter, ParameterValue, SdkError, SdkText, SerialNumber,
+    StatusCode,
 };
 #[cfg(all(windows, feature = "display-windows"))]
-pub use mv3d_lp_internal::DisplayRange;
-pub use mv3d_lp_internal::{
-    DeviceException, DeviceExceptionType, DeviceInfo, FileProgress, Image, ImageCalibration,
-    ImageFileFormat, ImageRef, ImageType, IpConfiguration, IpConfigurationMode, Parameter,
-    ParameterValue, SdkText, SerialNumber,
-};
+pub use mv3d_lp_internal::{DisplayRange, HasWindowHandle};
 pub use opened_device::Device;
 pub use sdk::Sdk;
+
+/// 本 crate 全部接口共用的 `Result` 别名。
+pub type Result<T> = std::result::Result<T, Error>;

@@ -29,14 +29,6 @@ pub struct DeviceException {
     pub description: SdkText,
 }
 
-impl DeviceException {
-    /// 由类型与描述组装一条异常。
-    #[must_use]
-    pub const fn new(kind: DeviceExceptionType, description: SdkText) -> Self {
-        Self { kind, description }
-    }
-}
-
 /// Opaque callback identifier passed through the SDK without dereferencing native user data.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct CallbackCookie(NonZeroUsize);
@@ -62,23 +54,8 @@ enum CallbackSink {
     Exception(ExceptionCallback),
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum CallbackKind {
-    Image,
-    Exception,
-}
-
-impl CallbackSink {
-    const fn kind(&self) -> CallbackKind {
-        match self {
-            Self::Image(_) => CallbackKind::Image,
-            Self::Exception(_) => CallbackKind::Exception,
-        }
-    }
-}
-
 struct RegistryState {
-    next_cookie: usize,
+    next_cookie: NonZeroUsize,
     entries: HashMap<CallbackCookie, CallbackSink>,
 }
 
@@ -90,7 +67,7 @@ impl CallbackRegistry {
     fn new() -> Self {
         Self {
             state: Mutex::new(RegistryState {
-                next_cookie: 1,
+                next_cookie: NonZeroUsize::MIN,
                 entries: HashMap::new(),
             }),
         }
@@ -105,22 +82,17 @@ impl CallbackRegistry {
     /// Inserts a sink under a never-reused cookie so a late callback cannot hit a newer sink.
     fn insert(&self, sink: CallbackSink) -> CallbackCookie {
         let mut state = self.lock();
-        let cookie = CallbackCookie(
-            NonZeroUsize::new(state.next_cookie).expect("callback cookie space exhausted"),
-        );
+        let cookie = CallbackCookie(state.next_cookie);
         state.next_cookie = state
             .next_cookie
             .checked_add(1)
             .expect("callback cookie space exhausted");
-        let previous = state.entries.insert(cookie, sink);
-        drop(state);
-        debug_assert!(previous.is_none(), "callback cookies are never reused");
+        state.entries.insert(cookie, sink);
         cookie
     }
 
-    fn lookup(&self, cookie: CallbackCookie, expected: CallbackKind) -> Option<CallbackSink> {
-        let sink = self.lock().entries.get(&cookie).cloned()?;
-        (sink.kind() == expected).then_some(sink)
+    fn lookup(&self, cookie: CallbackCookie) -> Option<CallbackSink> {
+        self.lock().entries.get(&cookie).cloned()
     }
 
     fn remove(&self, cookie: CallbackCookie) {
@@ -185,7 +157,7 @@ pub unsafe extern "system" fn exception_trampoline(
 }
 
 fn dispatch_image(cookie: CallbackCookie, image: *mut bindings::MV3D_LP_IMAGE_DATA) {
-    let Some(CallbackSink::Image(sink)) = registry().lookup(cookie, CallbackKind::Image) else {
+    let Some(CallbackSink::Image(sink)) = registry().lookup(cookie) else {
         return;
     };
     // SAFETY: the SDK owns the descriptor for the duration of this callback.
@@ -196,14 +168,11 @@ fn dispatch_image(cookie: CallbackCookie, image: *mut bindings::MV3D_LP_IMAGE_DA
     let Ok(frame) = (unsafe { crate::ffi::callback_image_from_native(image) }) else {
         return;
     };
-    if catch_unwind(AssertUnwindSafe(|| sink(frame))).is_err() {
-        registry().remove(cookie);
-    }
+    deliver(cookie, || sink(frame));
 }
 
 fn dispatch_exception(cookie: CallbackCookie, exception: *mut bindings::MV3D_LP_EXCEPTION_INFO) {
-    let Some(CallbackSink::Exception(sink)) = registry().lookup(cookie, CallbackKind::Exception)
-    else {
+    let Some(CallbackSink::Exception(sink)) = registry().lookup(cookie) else {
         return;
     };
     // SAFETY: the SDK owns the descriptor for the duration of this callback.
@@ -211,17 +180,24 @@ fn dispatch_exception(cookie: CallbackCookie, exception: *mut bindings::MV3D_LP_
         return;
     };
     let event = exception_from_native(exception);
-    if catch_unwind(AssertUnwindSafe(|| sink(event))).is_err() {
+    deliver(cookie, || sink(event));
+}
+
+/// Runs one sink invocation; a panic retires the cookie so the SDK thread never unwinds.
+fn deliver(cookie: CallbackCookie, invoke: impl FnOnce()) {
+    if catch_unwind(AssertUnwindSafe(invoke)).is_err() {
         registry().remove(cookie);
     }
 }
 
 /// Copies the fixed-width description out of the vendor descriptor before the callback returns.
 fn exception_from_native(exception: &bindings::MV3D_LP_EXCEPTION_INFO) -> DeviceException {
-    DeviceException::new(
-        DeviceExceptionType::from_raw(exception.enExceptionType),
-        SdkText::from_sdk_bytes(crate::ffi::bounded_c_bytes(&exception.chExceptionDesc)),
-    )
+    DeviceException {
+        kind: DeviceExceptionType::from_raw(exception.enExceptionType),
+        description: SdkText::from_sdk_bytes(crate::ffi::bounded_c_bytes(
+            &exception.chExceptionDesc,
+        )),
+    }
 }
 
 #[cfg(test)]

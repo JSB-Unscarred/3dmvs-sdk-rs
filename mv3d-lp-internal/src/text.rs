@@ -1,9 +1,10 @@
 use std::borrow::Cow;
+use std::ffi::CString;
 use std::fmt;
 use std::str::Utf8Error;
 
-use crate::cstr::bounded_c_string;
-use crate::error::{Error, InputViolation};
+use crate::cstr::{bounded_c_string, c_string};
+use crate::error::Error;
 
 /// Generates the byte-owning accessors shared by every SDK text newtype.
 ///
@@ -97,12 +98,7 @@ impl SdkText {
     /// 字节含有 NUL 时返回 [`Error::InvalidInput`]，因为它无法作为 C 字符串传入。
     pub fn new(bytes: impl AsRef<[u8]>) -> Result<Self, Error> {
         let bytes = bytes.as_ref();
-        if bytes.contains(&0) {
-            return Err(Error::InvalidInput {
-                field: "SDK text",
-                violation: InputViolation::InteriorNul,
-            });
-        }
+        c_string("SDK text", bytes)?;
         Ok(Self(bytes.to_vec()))
     }
 
@@ -133,6 +129,11 @@ impl SerialNumber {
     pub(crate) fn from_sdk_bytes(bytes: Vec<u8>) -> Self {
         debug_assert!(bytes.len() <= Self::MAX_LEN && !bytes.contains(&0));
         Self(bytes)
+    }
+
+    /// 借道 C 字符串传给 native `[IN]` 参数；两个构造入口都保证无 interior NUL。
+    pub(crate) fn to_c_string(&self) -> CString {
+        CString::new(self.0.clone()).expect("a SerialNumber contains no NUL byte")
     }
 }
 
