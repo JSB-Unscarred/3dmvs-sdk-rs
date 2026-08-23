@@ -21,7 +21,7 @@ use crate::text::{SdkText, SerialNumber};
 const MAX_MULTI_IMAGE_COUNT: usize = 8;
 
 /// Concrete native call boundary; lifecycle and ownership stay in the safe wrapper.
-pub(crate) struct NativeDriver;
+pub struct NativeDriver;
 
 #[cfg(native_sdk)]
 impl NativeDriver {
@@ -506,7 +506,7 @@ fn zeroed_device_info() -> bindings::MV3D_LP_DEVICE_INFO {
     unsafe { MaybeUninit::zeroed().assume_init() }
 }
 
-pub(crate) fn zeroed_image() -> bindings::MV3D_LP_IMAGE_DATA {
+pub fn zeroed_image() -> bindings::MV3D_LP_IMAGE_DATA {
     // SAFETY: The C structure consists of integer/float scalars, raw pointers, and a byte array;
     // all-zero is a valid initialization pattern and is required for this SDK output structure.
     unsafe { MaybeUninit::zeroed().assume_init() }
@@ -666,7 +666,7 @@ unsafe fn image_from_native(
     })
 }
 
-pub(crate) unsafe fn callback_image_from_native(
+pub unsafe fn callback_image_from_native(
     image: &bindings::MV3D_LP_IMAGE_DATA,
 ) -> DriverResult<Image> {
     // SAFETY: the trampoline keeps the descriptor and payloads readable for this copy.
@@ -738,7 +738,7 @@ fn sdk_length_overflow(field: &'static str) -> DriverError {
     DriverError::Contract(ContractViolation::LengthOverflow { field })
 }
 
-pub(crate) fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {
+pub fn zeroed_parameter() -> bindings::MV3D_LP_PARAM {
     // SAFETY: The C tagged union and its containing integer/byte fields admit an all-zero bit
     // pattern. Zeroing the entire object also satisfies the SDK reserved-byte contract.
     unsafe { MaybeUninit::zeroed().assume_init() }
@@ -766,9 +766,7 @@ fn device_info_from_native(native: bindings::MV3D_LP_DEVICE_INFO) -> DeviceInfo 
     }
 }
 
-pub(crate) fn parameter_from_native(
-    parameter: &bindings::MV3D_LP_PARAM,
-) -> DriverResult<Parameter> {
+pub fn parameter_from_native(parameter: &bindings::MV3D_LP_PARAM) -> DriverResult<Parameter> {
     match parameter.enParamType {
         bindings::ParamType_Bool => {
             // SAFETY: enParamType identifies bBoolParam as the active union member.
@@ -838,7 +836,7 @@ pub(crate) fn parameter_from_native(
     }
 }
 
-pub(crate) fn parameter_to_native(value: &ParameterValue) -> DriverResult<bindings::MV3D_LP_PARAM> {
+pub fn parameter_to_native(value: &ParameterValue) -> DriverResult<bindings::MV3D_LP_PARAM> {
     let mut parameter = zeroed_parameter();
     match value {
         ParameterValue::Bool(value) => {
@@ -896,7 +894,7 @@ pub(crate) fn parameter_to_native(value: &ParameterValue) -> DriverResult<bindin
 }
 
 /// Copies one fixed C buffer through its first NUL byte.
-pub(crate) fn bounded_c_bytes<const N: usize>(source: &[i8; N]) -> Vec<u8> {
+pub fn bounded_c_bytes<const N: usize>(source: &[i8; N]) -> Vec<u8> {
     let length = source.iter().position(|byte| *byte == 0).unwrap_or(N);
     source[..length].iter().map(|byte| *byte as u8).collect()
 }

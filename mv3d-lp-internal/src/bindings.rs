@@ -14,87 +14,87 @@
 
 use core::ffi::{c_char, c_void};
 
-pub(crate) type MV3D_LP_STATUS = i32;
-pub(crate) type HANDLE = *mut c_void;
-pub(crate) type BOOL = i32;
+pub type MV3D_LP_STATUS = i32;
+pub type HANDLE = *mut c_void;
+pub type BOOL = i32;
 
-pub(crate) const MV3D_LP_UNDEFINED: i32 = -1;
+pub const MV3D_LP_UNDEFINED: i32 = -1;
 
-pub(crate) const MV3D_LP_OK: MV3D_LP_STATUS = 0;
-pub(crate) const MV3D_LP_E_HANDLE: MV3D_LP_STATUS = 0x8006_0000_u32 as i32;
-pub(crate) const MV3D_LP_E_SUPPORT: MV3D_LP_STATUS = 0x8006_0001_u32 as i32;
-pub(crate) const MV3D_LP_E_BUFOVER: MV3D_LP_STATUS = 0x8006_0002_u32 as i32;
-pub(crate) const MV3D_LP_E_CALLORDER: MV3D_LP_STATUS = 0x8006_0003_u32 as i32;
-pub(crate) const MV3D_LP_E_PARAMETER: MV3D_LP_STATUS = 0x8006_0004_u32 as i32;
-pub(crate) const MV3D_LP_E_RESOURCE: MV3D_LP_STATUS = 0x8006_0005_u32 as i32;
-pub(crate) const MV3D_LP_E_NODATA: MV3D_LP_STATUS = 0x8006_0006_u32 as i32;
-pub(crate) const MV3D_LP_E_PRECONDITION: MV3D_LP_STATUS = 0x8006_0007_u32 as i32;
-pub(crate) const MV3D_LP_E_VERSION: MV3D_LP_STATUS = 0x8006_0008_u32 as i32;
-pub(crate) const MV3D_LP_E_NOENOUGH_BUF: MV3D_LP_STATUS = 0x8006_0009_u32 as i32;
-pub(crate) const MV3D_LP_E_ABNORMAL_IMAGE: MV3D_LP_STATUS = 0x8006_000A_u32 as i32;
-pub(crate) const MV3D_LP_E_LOAD_LIBRARY: MV3D_LP_STATUS = 0x8006_000B_u32 as i32;
-pub(crate) const MV3D_LP_E_ALGORITHM: MV3D_LP_STATUS = 0x8006_000C_u32 as i32;
-pub(crate) const MV3D_LP_E_DEVICE_OFFLINE: MV3D_LP_STATUS = 0x8006_000D_u32 as i32;
-pub(crate) const MV3D_LP_E_ACCESS_DENIED: MV3D_LP_STATUS = 0x8006_000E_u32 as i32;
-pub(crate) const MV3D_LP_E_OUTOFRANGE: MV3D_LP_STATUS = 0x8006_000F_u32 as i32;
-pub(crate) const MV3D_LP_E_UNKNOW: MV3D_LP_STATUS = 0x8006_00FF_u32 as i32;
+pub const MV3D_LP_OK: MV3D_LP_STATUS = 0;
+pub const MV3D_LP_E_HANDLE: MV3D_LP_STATUS = 0x8006_0000_u32 as i32;
+pub const MV3D_LP_E_SUPPORT: MV3D_LP_STATUS = 0x8006_0001_u32 as i32;
+pub const MV3D_LP_E_BUFOVER: MV3D_LP_STATUS = 0x8006_0002_u32 as i32;
+pub const MV3D_LP_E_CALLORDER: MV3D_LP_STATUS = 0x8006_0003_u32 as i32;
+pub const MV3D_LP_E_PARAMETER: MV3D_LP_STATUS = 0x8006_0004_u32 as i32;
+pub const MV3D_LP_E_RESOURCE: MV3D_LP_STATUS = 0x8006_0005_u32 as i32;
+pub const MV3D_LP_E_NODATA: MV3D_LP_STATUS = 0x8006_0006_u32 as i32;
+pub const MV3D_LP_E_PRECONDITION: MV3D_LP_STATUS = 0x8006_0007_u32 as i32;
+pub const MV3D_LP_E_VERSION: MV3D_LP_STATUS = 0x8006_0008_u32 as i32;
+pub const MV3D_LP_E_NOENOUGH_BUF: MV3D_LP_STATUS = 0x8006_0009_u32 as i32;
+pub const MV3D_LP_E_ABNORMAL_IMAGE: MV3D_LP_STATUS = 0x8006_000A_u32 as i32;
+pub const MV3D_LP_E_LOAD_LIBRARY: MV3D_LP_STATUS = 0x8006_000B_u32 as i32;
+pub const MV3D_LP_E_ALGORITHM: MV3D_LP_STATUS = 0x8006_000C_u32 as i32;
+pub const MV3D_LP_E_DEVICE_OFFLINE: MV3D_LP_STATUS = 0x8006_000D_u32 as i32;
+pub const MV3D_LP_E_ACCESS_DENIED: MV3D_LP_STATUS = 0x8006_000E_u32 as i32;
+pub const MV3D_LP_E_OUTOFRANGE: MV3D_LP_STATUS = 0x8006_000F_u32 as i32;
+pub const MV3D_LP_E_UNKNOW: MV3D_LP_STATUS = 0x8006_00FF_u32 as i32;
 
-pub(crate) const MV3D_LP_MAX_STRING_LENGTH: usize = 256;
-pub(crate) const MV3D_LP_MAX_ENUM_COUNT: usize = 16;
+pub const MV3D_LP_MAX_STRING_LENGTH: usize = 256;
+pub const MV3D_LP_MAX_ENUM_COUNT: usize = 16;
 
-pub(crate) const MV3D_LP_PIXEL_MONO: u32 = 0x0100_0000;
-pub(crate) const MV3D_LP_PIXEL_COLOR: u32 = 0x0200_0000;
-pub(crate) const MV3D_LP_PIXEL_CUSTOM: u32 = 0x8000_0000;
+pub const MV3D_LP_PIXEL_MONO: u32 = 0x0100_0000;
+pub const MV3D_LP_PIXEL_COLOR: u32 = 0x0200_0000;
+pub const MV3D_LP_PIXEL_CUSTOM: u32 = 0x8000_0000;
 
-pub(crate) type Mv3dLpIpCfgMode = i32;
-pub(crate) const IpCfgMode_Static: Mv3dLpIpCfgMode = 1;
-pub(crate) const IpCfgMode_DHCP: Mv3dLpIpCfgMode = 2;
-pub(crate) const IpCfgMode_LLA: Mv3dLpIpCfgMode = 4;
+pub type Mv3dLpIpCfgMode = i32;
+pub const IpCfgMode_Static: Mv3dLpIpCfgMode = 1;
+pub const IpCfgMode_DHCP: Mv3dLpIpCfgMode = 2;
+pub const IpCfgMode_LLA: Mv3dLpIpCfgMode = 4;
 
-pub(crate) type Mv3dLpDevExceptionType = i32;
-pub(crate) const DevExceptionType_Undefined: Mv3dLpDevExceptionType = -1;
-pub(crate) const DevExceptionType_Disconnect: Mv3dLpDevExceptionType = 1;
+pub type Mv3dLpDevExceptionType = i32;
+pub const DevExceptionType_Undefined: Mv3dLpDevExceptionType = -1;
+pub const DevExceptionType_Disconnect: Mv3dLpDevExceptionType = 1;
 
-pub(crate) type Mv3dLpParamType = i32;
-pub(crate) const ParamType_Undefined: Mv3dLpParamType = -1;
-pub(crate) const ParamType_Bool: Mv3dLpParamType = 1;
-pub(crate) const ParamType_Int: Mv3dLpParamType = 2;
-pub(crate) const ParamType_Float: Mv3dLpParamType = 3;
-pub(crate) const ParamType_Enum: Mv3dLpParamType = 4;
-pub(crate) const ParamType_String: Mv3dLpParamType = 5;
+pub type Mv3dLpParamType = i32;
+pub const ParamType_Undefined: Mv3dLpParamType = -1;
+pub const ParamType_Bool: Mv3dLpParamType = 1;
+pub const ParamType_Int: Mv3dLpParamType = 2;
+pub const ParamType_Float: Mv3dLpParamType = 3;
+pub const ParamType_Enum: Mv3dLpParamType = 4;
+pub const ParamType_String: Mv3dLpParamType = 5;
 
-pub(crate) type Mv3dLpImageType = i32;
-pub(crate) const ImageType_Undefined: Mv3dLpImageType = -1;
-pub(crate) const ImageType_Mono8: Mv3dLpImageType = 0x0108_0001;
-pub(crate) const ImageType_Depth: Mv3dLpImageType = 0x0110_00B8;
-pub(crate) const ImageType_Profile: Mv3dLpImageType = 0x0230_00B9;
-pub(crate) const ImageType_PointCloud: Mv3dLpImageType = 0x0260_00C0;
-pub(crate) const ImageType_RGB24_Packed: Mv3dLpImageType = 0x0218_0014;
-pub(crate) const ImageType_Jpeg: Mv3dLpImageType = 0x8018_0001_u32 as i32;
-pub(crate) const ImageType_Profile_ABC32: Mv3dLpImageType = 0x8260_3001_u32 as i32;
+pub type Mv3dLpImageType = i32;
+pub const ImageType_Undefined: Mv3dLpImageType = -1;
+pub const ImageType_Mono8: Mv3dLpImageType = 0x0108_0001;
+pub const ImageType_Depth: Mv3dLpImageType = 0x0110_00B8;
+pub const ImageType_Profile: Mv3dLpImageType = 0x0230_00B9;
+pub const ImageType_PointCloud: Mv3dLpImageType = 0x0260_00C0;
+pub const ImageType_RGB24_Packed: Mv3dLpImageType = 0x0218_0014;
+pub const ImageType_Jpeg: Mv3dLpImageType = 0x8018_0001_u32 as i32;
+pub const ImageType_Profile_ABC32: Mv3dLpImageType = 0x8260_3001_u32 as i32;
 
-pub(crate) type Mv3dLpFileType = i32;
-pub(crate) const FileType_Undefined: Mv3dLpFileType = -1;
-pub(crate) const FileType_PLY: Mv3dLpFileType = 1;
-pub(crate) const FileType_CSV: Mv3dLpFileType = 2;
-pub(crate) const FileType_OBJ: Mv3dLpFileType = 3;
-pub(crate) const FileType_BMP: Mv3dLpFileType = 4;
-pub(crate) const FileType_JPG: Mv3dLpFileType = 5;
-pub(crate) const FileType_TIFF: Mv3dLpFileType = 6;
-pub(crate) const FileType_TIFF_U16: Mv3dLpFileType = 7;
-pub(crate) const FileType_TIFF_F32: Mv3dLpFileType = 8;
-pub(crate) const FileType_PLY_BINARY: Mv3dLpFileType = 9;
-pub(crate) const FileType_PLY_TEXTURE: Mv3dLpFileType = 10;
-pub(crate) const FileType_HIBAG: Mv3dLpFileType = 11;
+pub type Mv3dLpFileType = i32;
+pub const FileType_Undefined: Mv3dLpFileType = -1;
+pub const FileType_PLY: Mv3dLpFileType = 1;
+pub const FileType_CSV: Mv3dLpFileType = 2;
+pub const FileType_OBJ: Mv3dLpFileType = 3;
+pub const FileType_BMP: Mv3dLpFileType = 4;
+pub const FileType_JPG: Mv3dLpFileType = 5;
+pub const FileType_TIFF: Mv3dLpFileType = 6;
+pub const FileType_TIFF_U16: Mv3dLpFileType = 7;
+pub const FileType_TIFF_F32: Mv3dLpFileType = 8;
+pub const FileType_PLY_BINARY: Mv3dLpFileType = 9;
+pub const FileType_PLY_TEXTURE: Mv3dLpFileType = 10;
+pub const FileType_HIBAG: Mv3dLpFileType = 11;
 
-pub(crate) type Mv3dLpDisplayType = i32;
-pub(crate) const DisplayType_Undefined: Mv3dLpDisplayType = -1;
-pub(crate) const DisplayType_Auto: Mv3dLpDisplayType = 1;
-pub(crate) const DisplayType_Manual: Mv3dLpDisplayType = 2;
+pub type Mv3dLpDisplayType = i32;
+pub const DisplayType_Undefined: Mv3dLpDisplayType = -1;
+pub const DisplayType_Auto: Mv3dLpDisplayType = 1;
+pub const DisplayType_Manual: Mv3dLpDisplayType = 2;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_DEVICE_INFO {
+pub struct MV3D_LP_DEVICE_INFO {
     pub(crate) chManufacturerName: [c_char; 32],
     pub(crate) chModelName: [c_char; 32],
     pub(crate) chDeviceVersion: [c_char; 32],
@@ -113,7 +113,7 @@ pub(crate) struct MV3D_LP_DEVICE_INFO {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_IP_CONFIG {
+pub struct MV3D_LP_IP_CONFIG {
     pub(crate) enIPCfgMode: Mv3dLpIpCfgMode,
     pub(crate) chDestIp: [c_char; 16],
     pub(crate) chDestNetMask: [c_char; 16],
@@ -123,7 +123,7 @@ pub(crate) struct MV3D_LP_IP_CONFIG {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_IMAGE_DATA {
+pub struct MV3D_LP_IMAGE_DATA {
     pub(crate) enImageType: Mv3dLpImageType,
     pub(crate) nWidth: u32,
     pub(crate) nHeight: u32,
@@ -146,7 +146,7 @@ pub(crate) struct MV3D_LP_IMAGE_DATA {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_INTPARAM {
+pub struct MV3D_LP_INTPARAM {
     pub(crate) nCurValue: i64,
     pub(crate) nMax: i64,
     pub(crate) nMin: i64,
@@ -155,7 +155,7 @@ pub(crate) struct MV3D_LP_INTPARAM {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_ENUMPARAM {
+pub struct MV3D_LP_ENUMPARAM {
     pub(crate) nCurValue: u32,
     pub(crate) nSupportedNum: u32,
     pub(crate) nSupportValue: [u32; MV3D_LP_MAX_ENUM_COUNT],
@@ -163,7 +163,7 @@ pub(crate) struct MV3D_LP_ENUMPARAM {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_FLOATPARAM {
+pub struct MV3D_LP_FLOATPARAM {
     pub(crate) fCurValue: f32,
     pub(crate) fMax: f32,
     pub(crate) fMin: f32,
@@ -171,14 +171,14 @@ pub(crate) struct MV3D_LP_FLOATPARAM {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_STRINGPARAM {
+pub struct MV3D_LP_STRINGPARAM {
     pub(crate) chCurValue: [c_char; MV3D_LP_MAX_STRING_LENGTH],
     pub(crate) nMaxLength: u32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) union MV3D_LP_PARAM_INFO {
+pub union MV3D_LP_PARAM_INFO {
     pub(crate) bBoolParam: BOOL,
     pub(crate) stIntParam: MV3D_LP_INTPARAM,
     pub(crate) stFloatParam: MV3D_LP_FLOATPARAM,
@@ -188,7 +188,7 @@ pub(crate) union MV3D_LP_PARAM_INFO {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_PARAM {
+pub struct MV3D_LP_PARAM {
     pub(crate) enParamType: Mv3dLpParamType,
     pub(crate) ParamInfo: MV3D_LP_PARAM_INFO,
     pub(crate) nReserved: [u8; 16],
@@ -196,7 +196,7 @@ pub(crate) struct MV3D_LP_PARAM {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_EXCEPTION_INFO {
+pub struct MV3D_LP_EXCEPTION_INFO {
     pub(crate) enExceptionType: Mv3dLpDevExceptionType,
     pub(crate) chExceptionDesc: [c_char; MV3D_LP_MAX_STRING_LENGTH],
     pub(crate) nReserved: [u8; 4],
@@ -204,7 +204,7 @@ pub(crate) struct MV3D_LP_EXCEPTION_INFO {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_FILE_ACCESS {
+pub struct MV3D_LP_FILE_ACCESS {
     pub(crate) pUserFileName: *const c_char,
     pub(crate) pDevFileName: *const c_char,
     pub(crate) nReserved: [u8; 32],
@@ -212,7 +212,7 @@ pub(crate) struct MV3D_LP_FILE_ACCESS {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_FILE_ACCESS_PROGRESS {
+pub struct MV3D_LP_FILE_ACCESS_PROGRESS {
     pub(crate) nCompleted: i64,
     pub(crate) nTotal: i64,
     pub(crate) nReserved: [u8; 32],
@@ -220,7 +220,7 @@ pub(crate) struct MV3D_LP_FILE_ACCESS_PROGRESS {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MVB3D_LP_POINT_XYZ_S16 {
+pub struct MVB3D_LP_POINT_XYZ_S16 {
     pub(crate) nX: i16,
     pub(crate) nY: i16,
     pub(crate) nZ: i16,
@@ -228,7 +228,7 @@ pub(crate) struct MVB3D_LP_POINT_XYZ_S16 {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MVB3D_LP_POINT_XYZ_F32 {
+pub struct MVB3D_LP_POINT_XYZ_F32 {
     pub(crate) fX: f32,
     pub(crate) fY: f32,
     pub(crate) fZ: f32,
@@ -236,7 +236,7 @@ pub(crate) struct MVB3D_LP_POINT_XYZ_F32 {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_PROFILE_DATA {
+pub struct MV3D_LP_PROFILE_DATA {
     pub(crate) nLinePntNum: u32,
     pub(crate) nProfileCnt: u32,
     pub(crate) pData: *mut MVB3D_LP_POINT_XYZ_S16,
@@ -255,7 +255,7 @@ pub(crate) struct MV3D_LP_PROFILE_DATA {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_DEPTH_DATA {
+pub struct MV3D_LP_DEPTH_DATA {
     pub(crate) nWidth: u32,
     pub(crate) nHeight: u32,
     pub(crate) pData: *mut i16,
@@ -274,7 +274,7 @@ pub(crate) struct MV3D_LP_DEPTH_DATA {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_INTENSITY_DATA {
+pub struct MV3D_LP_INTENSITY_DATA {
     pub(crate) nWidth: u32,
     pub(crate) nHeight: u32,
     pub(crate) pData: *mut u8,
@@ -287,7 +287,7 @@ pub(crate) struct MV3D_LP_INTENSITY_DATA {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub(crate) struct MV3D_LP_POINTCLOUD_DATA {
+pub struct MV3D_LP_POINTCLOUD_DATA {
     pub(crate) pData: *mut MVB3D_LP_POINT_XYZ_F32,
     pub(crate) nDataLen: u32,
     pub(crate) nFrameNum: u32,
@@ -296,14 +296,14 @@ pub(crate) struct MV3D_LP_POINTCLOUD_DATA {
     pub(crate) nReserved: [u8; 16],
 }
 
-pub(crate) type MV3D_LP_ImageDataCallBack =
+pub type MV3D_LP_ImageDataCallBack =
     Option<unsafe extern "system" fn(*mut MV3D_LP_IMAGE_DATA, *mut c_void)>;
-pub(crate) type MV3D_LP_ExceptionCallBack =
+pub type MV3D_LP_ExceptionCallBack =
     Option<unsafe extern "system" fn(*mut MV3D_LP_EXCEPTION_INFO, *mut c_void)>;
-pub(crate) type MV3D_LP_ProfileDataCallBack = Option<
+pub type MV3D_LP_ProfileDataCallBack = Option<
     unsafe extern "system" fn(*mut MV3D_LP_PROFILE_DATA, *mut MV3D_LP_INTENSITY_DATA, *mut c_void),
 >;
-pub(crate) type MV3D_LP_BatchProfileDataCallBack = Option<
+pub type MV3D_LP_BatchProfileDataCallBack = Option<
     unsafe extern "system" fn(*mut MV3D_LP_DEPTH_DATA, *mut MV3D_LP_INTENSITY_DATA, *mut c_void),
 >;
 

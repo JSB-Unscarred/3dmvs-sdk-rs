@@ -75,7 +75,7 @@ impl IpConfiguration {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct IpConfigRaw {
+pub struct IpConfigRaw {
     pub(crate) mode: i32,
     pub(crate) address: [u8; 16],
     pub(crate) subnet_mask: [u8; 16],
@@ -110,7 +110,7 @@ fn write_ipv4(destination: &mut [u8; 16], address: Ipv4Addr) {
     destination[..text.len()].copy_from_slice(text.as_bytes());
 }
 
-pub(crate) fn parse_optional_ipv4(bytes: &[u8]) -> Option<Ipv4Addr> {
+pub fn parse_optional_ipv4(bytes: &[u8]) -> Option<Ipv4Addr> {
     if bytes.is_empty() {
         return None;
     }

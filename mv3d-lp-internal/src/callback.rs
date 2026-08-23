@@ -36,7 +36,7 @@ impl DeviceException {
 
 /// Opaque callback identifier passed through the SDK without dereferencing native user data.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct CallbackCookie(NonZeroUsize);
+pub struct CallbackCookie(NonZeroUsize);
 
 impl CallbackCookie {
     pub(crate) fn as_user_pointer(self) -> *mut c_void {
@@ -128,7 +128,7 @@ fn registry() -> &'static CallbackRegistry {
 }
 
 /// Owns one registry entry while the corresponding native registration is usable.
-pub(crate) struct CallbackRegistration {
+pub struct CallbackRegistration {
     cookie: CallbackCookie,
 }
 
@@ -158,7 +158,7 @@ impl Drop for CallbackRegistration {
     }
 }
 
-pub(crate) unsafe extern "system" fn image_trampoline(
+pub unsafe extern "system" fn image_trampoline(
     image: *mut bindings::MV3D_LP_IMAGE_DATA,
     user: *mut c_void,
 ) {
@@ -168,7 +168,7 @@ pub(crate) unsafe extern "system" fn image_trampoline(
     dispatch_image(cookie, image);
 }
 
-pub(crate) unsafe extern "system" fn exception_trampoline(
+pub unsafe extern "system" fn exception_trampoline(
     exception: *mut bindings::MV3D_LP_EXCEPTION_INFO,
     user: *mut c_void,
 ) {

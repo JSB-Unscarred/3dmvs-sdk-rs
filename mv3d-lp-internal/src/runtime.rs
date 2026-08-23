@@ -18,7 +18,7 @@ use crate::opened_device::Device;
 use crate::text::SerialNumber;
 
 /// Owned native session shared by all session owners.
-pub(crate) struct RuntimeCore {
+pub struct RuntimeCore {
     // 图像处理输出只在下一次处理调用前有效；同一 session 串行到 owned copy 完成。
     image_processing: Mutex<()>,
     // Close 失败后 native handle 状态未知；该单向 latch 禁止随后 Finalize。

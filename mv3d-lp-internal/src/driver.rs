@@ -5,7 +5,7 @@ use std::ptr::NonNull;
 use crate::error::{ContractViolation, InputViolation};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DriverError {
+pub enum DriverError {
     Status(i32),
     InvalidInput {
         field: &'static str,
@@ -14,10 +14,10 @@ pub(crate) enum DriverError {
     Contract(ContractViolation),
 }
 
-pub(crate) type DriverResult<T> = Result<T, DriverError>;
+pub type DriverResult<T> = Result<T, DriverError>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Handle(NonNull<std::ffi::c_void>);
+pub struct Handle(NonNull<std::ffi::c_void>);
 
 // SAFETY: Production handles are opaque values returned by successful device opens.
 // Rust never dereferences them, and the crate's safe public API does not expose the raw
@@ -37,7 +37,7 @@ impl Handle {
     }
 }
 
-pub(crate) fn status_result(status: i32) -> DriverResult<()> {
+pub fn status_result(status: i32) -> DriverResult<()> {
     if status == 0 {
         Ok(())
     } else {
