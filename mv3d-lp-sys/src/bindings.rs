@@ -1,18 +1,3 @@
-//! Audited raw bindings for the public 3DMVS LPSDK C headers.
-//!
-//! This module targets Windows `x86_64` with the MSVC ABI only. The declarations
-//! correspond to the three public headers shipped with LPSDK 1.3.3.3. Symbols
-//! exported by the DLL but absent from those headers, and the deprecated
-//! profile-era interfaces the README lists as unwrapped, are intentionally omitted.
-
-#![allow(
-    dead_code,
-    clippy::upper_case_acronyms,
-    non_camel_case_types,
-    non_snake_case,
-    non_upper_case_globals
-)]
-
 use core::ffi::{c_char, c_void};
 
 pub type MV3D_LP_STATUS = i32;
@@ -87,127 +72,127 @@ pub const DisplayType_Manual: Mv3dLpDisplayType = 2;
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_DEVICE_INFO {
-    pub(crate) chManufacturerName: [c_char; 32],
-    pub(crate) chModelName: [c_char; 32],
-    pub(crate) chDeviceVersion: [c_char; 32],
-    pub(crate) chManufacturerSpecificInfo: [c_char; 48],
-    pub(crate) chSerialNumber: [c_char; 16],
-    pub(crate) chUserDefinedName: [c_char; 16],
-    pub(crate) chMacAddress: [u8; 8],
-    pub(crate) enIPCfgMode: Mv3dLpIpCfgMode,
-    pub(crate) chCurrentIp: [c_char; 16],
-    pub(crate) chCurrentSubNetMask: [c_char; 16],
-    pub(crate) chDefultGateWay: [c_char; 16],
-    pub(crate) chNetExport: [c_char; 16],
-    pub(crate) nDevTypeInfo: u32,
-    pub(crate) nReserved: [u8; 12],
+    pub chManufacturerName: [c_char; 32],
+    pub chModelName: [c_char; 32],
+    pub chDeviceVersion: [c_char; 32],
+    pub chManufacturerSpecificInfo: [c_char; 48],
+    pub chSerialNumber: [c_char; 16],
+    pub chUserDefinedName: [c_char; 16],
+    pub chMacAddress: [u8; 8],
+    pub enIPCfgMode: Mv3dLpIpCfgMode,
+    pub chCurrentIp: [c_char; 16],
+    pub chCurrentSubNetMask: [c_char; 16],
+    pub chDefultGateWay: [c_char; 16],
+    pub chNetExport: [c_char; 16],
+    pub nDevTypeInfo: u32,
+    pub nReserved: [u8; 12],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_IP_CONFIG {
-    pub(crate) enIPCfgMode: Mv3dLpIpCfgMode,
-    pub(crate) chDestIp: [c_char; 16],
-    pub(crate) chDestNetMask: [c_char; 16],
-    pub(crate) chDestGateWay: [c_char; 16],
-    pub(crate) nReserved: [u8; 16],
+    pub enIPCfgMode: Mv3dLpIpCfgMode,
+    pub chDestIp: [c_char; 16],
+    pub chDestNetMask: [c_char; 16],
+    pub chDestGateWay: [c_char; 16],
+    pub nReserved: [u8; 16],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_IMAGE_DATA {
-    pub(crate) enImageType: Mv3dLpImageType,
-    pub(crate) nWidth: u32,
-    pub(crate) nHeight: u32,
-    pub(crate) pData: *mut u8,
-    pub(crate) nDataLen: u32,
-    pub(crate) pIntensityData: *mut u8,
-    pub(crate) nIntensityDataLen: u32,
-    pub(crate) nFrameNum: u32,
-    pub(crate) nTimeStamp: i64,
-    pub(crate) bValid: BOOL,
-    pub(crate) fXScale: f32,
-    pub(crate) fYScale: f32,
-    pub(crate) fZScale: f32,
-    pub(crate) nXOffset: i32,
-    pub(crate) nYOffset: i32,
-    pub(crate) nZOffset: i32,
-    pub(crate) pExposureTimeStamp: *mut i64,
-    pub(crate) nReserved: [u8; 12],
+    pub enImageType: Mv3dLpImageType,
+    pub nWidth: u32,
+    pub nHeight: u32,
+    pub pData: *mut u8,
+    pub nDataLen: u32,
+    pub pIntensityData: *mut u8,
+    pub nIntensityDataLen: u32,
+    pub nFrameNum: u32,
+    pub nTimeStamp: i64,
+    pub bValid: BOOL,
+    pub fXScale: f32,
+    pub fYScale: f32,
+    pub fZScale: f32,
+    pub nXOffset: i32,
+    pub nYOffset: i32,
+    pub nZOffset: i32,
+    pub pExposureTimeStamp: *mut i64,
+    pub nReserved: [u8; 12],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_INTPARAM {
-    pub(crate) nCurValue: i64,
-    pub(crate) nMax: i64,
-    pub(crate) nMin: i64,
-    pub(crate) nInc: i64,
+    pub nCurValue: i64,
+    pub nMax: i64,
+    pub nMin: i64,
+    pub nInc: i64,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_ENUMPARAM {
-    pub(crate) nCurValue: u32,
-    pub(crate) nSupportedNum: u32,
-    pub(crate) nSupportValue: [u32; MV3D_LP_MAX_ENUM_COUNT],
+    pub nCurValue: u32,
+    pub nSupportedNum: u32,
+    pub nSupportValue: [u32; MV3D_LP_MAX_ENUM_COUNT],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_FLOATPARAM {
-    pub(crate) fCurValue: f32,
-    pub(crate) fMax: f32,
-    pub(crate) fMin: f32,
+    pub fCurValue: f32,
+    pub fMax: f32,
+    pub fMin: f32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_STRINGPARAM {
-    pub(crate) chCurValue: [c_char; MV3D_LP_MAX_STRING_LENGTH],
-    pub(crate) nMaxLength: u32,
+    pub chCurValue: [c_char; MV3D_LP_MAX_STRING_LENGTH],
+    pub nMaxLength: u32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union MV3D_LP_PARAM_INFO {
-    pub(crate) bBoolParam: BOOL,
-    pub(crate) stIntParam: MV3D_LP_INTPARAM,
-    pub(crate) stFloatParam: MV3D_LP_FLOATPARAM,
-    pub(crate) stEnumParam: MV3D_LP_ENUMPARAM,
-    pub(crate) stStringParam: MV3D_LP_STRINGPARAM,
+    pub bBoolParam: BOOL,
+    pub stIntParam: MV3D_LP_INTPARAM,
+    pub stFloatParam: MV3D_LP_FLOATPARAM,
+    pub stEnumParam: MV3D_LP_ENUMPARAM,
+    pub stStringParam: MV3D_LP_STRINGPARAM,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_PARAM {
-    pub(crate) enParamType: Mv3dLpParamType,
-    pub(crate) ParamInfo: MV3D_LP_PARAM_INFO,
-    pub(crate) nReserved: [u8; 16],
+    pub enParamType: Mv3dLpParamType,
+    pub ParamInfo: MV3D_LP_PARAM_INFO,
+    pub nReserved: [u8; 16],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_EXCEPTION_INFO {
-    pub(crate) enExceptionType: Mv3dLpDevExceptionType,
-    pub(crate) chExceptionDesc: [c_char; MV3D_LP_MAX_STRING_LENGTH],
-    pub(crate) nReserved: [u8; 4],
+    pub enExceptionType: Mv3dLpDevExceptionType,
+    pub chExceptionDesc: [c_char; MV3D_LP_MAX_STRING_LENGTH],
+    pub nReserved: [u8; 4],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_FILE_ACCESS {
-    pub(crate) pUserFileName: *const c_char,
-    pub(crate) pDevFileName: *const c_char,
-    pub(crate) nReserved: [u8; 32],
+    pub pUserFileName: *const c_char,
+    pub pDevFileName: *const c_char,
+    pub nReserved: [u8; 32],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MV3D_LP_FILE_ACCESS_PROGRESS {
-    pub(crate) nCompleted: i64,
-    pub(crate) nTotal: i64,
-    pub(crate) nReserved: [u8; 32],
+    pub nCompleted: i64,
+    pub nTotal: i64,
+    pub nReserved: [u8; 32],
 }
 
 pub type MV3D_LP_ImageDataCallBack =
@@ -216,95 +201,95 @@ pub type MV3D_LP_ExceptionCallBack =
     Option<unsafe extern "system" fn(*mut MV3D_LP_EXCEPTION_INFO, *mut c_void)>;
 
 unsafe extern "C" {
-    pub(crate) fn MV3D_LP_GetVersion() -> *const c_char;
-    pub(crate) fn MV3D_LP_Initialize() -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_Finalize() -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_GetDeviceNumber(pDeviceNumber: *mut u32) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_GetDeviceList(
+    pub fn MV3D_LP_GetVersion() -> *const c_char;
+    pub fn MV3D_LP_Initialize() -> MV3D_LP_STATUS;
+    pub fn MV3D_LP_Finalize() -> MV3D_LP_STATUS;
+    pub fn MV3D_LP_GetDeviceNumber(pDeviceNumber: *mut u32) -> MV3D_LP_STATUS;
+    pub fn MV3D_LP_GetDeviceList(
         pstDeviceInfos: *mut MV3D_LP_DEVICE_INFO,
         nMaxDeviceCount: u32,
         pDeviceCount: *mut u32,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_OpenDeviceByIP(
+    pub fn MV3D_LP_OpenDeviceByIP(
         handle: *mut HANDLE,
         chIP: *const c_char,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_OpenDeviceBySN(
+    pub fn MV3D_LP_OpenDeviceBySN(
         handle: *mut HANDLE,
         chSN: *const c_char,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_CloseDevice(handle: *mut HANDLE) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_SetIpConfig(
+    pub fn MV3D_LP_CloseDevice(handle: *mut HANDLE) -> MV3D_LP_STATUS;
+    pub fn MV3D_LP_SetIpConfig(
         chSerialNumber: *const c_char,
         pstIPConfig: *mut MV3D_LP_IP_CONFIG,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_RegisterExceptionCallBack(
+    pub fn MV3D_LP_RegisterExceptionCallBack(
         handle: HANDLE,
         cbException: MV3D_LP_ExceptionCallBack,
         pUser: *mut c_void,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_StartMeasure(handle: HANDLE) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_StopMeasure(handle: HANDLE) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_SoftTrigger(handle: HANDLE) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_GetImage(
+    pub fn MV3D_LP_StartMeasure(handle: HANDLE) -> MV3D_LP_STATUS;
+    pub fn MV3D_LP_StopMeasure(handle: HANDLE) -> MV3D_LP_STATUS;
+    pub fn MV3D_LP_SoftTrigger(handle: HANDLE) -> MV3D_LP_STATUS;
+    pub fn MV3D_LP_GetImage(
         handle: HANDLE,
         pstImageData: *mut MV3D_LP_IMAGE_DATA,
         nTimeout: u32,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_RegisterImageDataCallBack(
+    pub fn MV3D_LP_RegisterImageDataCallBack(
         handle: HANDLE,
         cbOutput: MV3D_LP_ImageDataCallBack,
         pUser: *mut c_void,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_ClearDataBuffer(handle: HANDLE) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_GetParam(
+    pub fn MV3D_LP_ClearDataBuffer(handle: HANDLE) -> MV3D_LP_STATUS;
+    pub fn MV3D_LP_GetParam(
         handle: HANDLE,
         strKey: *const c_char,
         pstParam: *mut MV3D_LP_PARAM,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_SetParam(
+    pub fn MV3D_LP_SetParam(
         handle: HANDLE,
         strKey: *const c_char,
         pstParam: *mut MV3D_LP_PARAM,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_Execute(handle: HANDLE, strKey: *const c_char) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_FileAccessRead(
+    pub fn MV3D_LP_Execute(handle: HANDLE, strKey: *const c_char) -> MV3D_LP_STATUS;
+    pub fn MV3D_LP_FileAccessRead(
         handle: HANDLE,
         pstFileAccess: *mut MV3D_LP_FILE_ACCESS,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_FileAccessWrite(
+    pub fn MV3D_LP_FileAccessWrite(
         handle: HANDLE,
         pstFileAccess: *mut MV3D_LP_FILE_ACCESS,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_GetFileAccessProgress(
+    pub fn MV3D_LP_GetFileAccessProgress(
         handle: HANDLE,
         pstFileAccessProgress: *mut MV3D_LP_FILE_ACCESS_PROGRESS,
     ) -> MV3D_LP_STATUS;
 
-    pub(crate) fn MV3D_LP_MapDepthToPointCloud(
+    pub fn MV3D_LP_MapDepthToPointCloud(
         pstDepthImageData: *mut MV3D_LP_IMAGE_DATA,
         pstPointCloudData: *mut MV3D_LP_IMAGE_DATA,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_MapDepthToPointCloudRound(
+    pub fn MV3D_LP_MapDepthToPointCloudRound(
         pstDepthDataList: *mut MV3D_LP_IMAGE_DATA,
         nImageCount: u32,
         pstPointCloudData: *mut MV3D_LP_IMAGE_DATA,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_ImageConvert(
+    pub fn MV3D_LP_ImageConvert(
         pstInImageData: *mut MV3D_LP_IMAGE_DATA,
         pstOutImageData: *mut MV3D_LP_IMAGE_DATA,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_DepthMosaic(
+    pub fn MV3D_LP_DepthMosaic(
         pstDepthDataList: *mut MV3D_LP_IMAGE_DATA,
         nImageCount: u32,
         pstDepthData: *mut MV3D_LP_IMAGE_DATA,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_SaveImage(
+    pub fn MV3D_LP_SaveImage(
         pstImage: *mut MV3D_LP_IMAGE_DATA,
         enFileType: Mv3dLpFileType,
         chFileName: *const c_char,
     ) -> MV3D_LP_STATUS;
-    pub(crate) fn MV3D_LP_DisplayImage(
+    pub fn MV3D_LP_DisplayImage(
         pstImage: *mut MV3D_LP_IMAGE_DATA,
         hWnd: *mut c_void,
         enDisplayType: Mv3dLpDisplayType,

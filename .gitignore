@@ -1,2 +1,6 @@
 /target/
+
+/.claude/
+/.idea/
+/.vscode/
 .DS_Store

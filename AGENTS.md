@@ -18,6 +18,8 @@
 - 测试必须要精简，必要测试要注释说明针对的功能或约定
 - 修改代码后要同步更新注释和测试
 - 尽可能减少模块、类型、字段、线程和中间状态
+- 结构参照 realsense-rust 并与 mvs-sdk-rs 保持一致：每种 native 资源由一个类型拥有并在 `Drop` 中释放，方法直接调用 `sys`；调用顺序用类型与借用表达，不用运行时状态检查
+- 新增一个 SDK 接口时同步 README 接口表；改动生命周期或所有权时同步 `src/docs/architecture.rs`
 
 # Git
 
@@ -31,10 +33,8 @@
 
 # 索引
 
-- 生命周期与时序图总览：[生命周期与时序图.md](生命周期与时序图.md)
-- 标准生命周期与 pull 采集：[标准生命周期与-pull-采集.md](时序图/标准生命周期与-pull-采集.md)
-- callback 采集与停止：[callback-采集与停止.md](时序图/callback-采集与停止.md)
-- 文件上传与下载：[文件上传与下载.md](时序图/文件上传与下载.md)
+- 所有权、类型状态、清理失败、callback 与图像约定：src/docs/architecture.rs
+- 使用示例：examples/
 - SDK的环境变量： MV3DLP_DEV_ENV
 - SDK说明文档：C:\Program Files (x86)\3DMVS\Development\Documentations\3D激光轮廓传感器SDK开发指南V1.3.2（C）.chm
 - SDK的头文件目录：C:\Program Files (x86)\3DMVS\Development\Includes

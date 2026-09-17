@@ -1,3 +1,5 @@
+//! 公开类型的线程约定。
+
 use mv3d_lp::{Device, DeviceInfo, Sdk};
 
 macro_rules! assert_not_impl {
@@ -14,11 +16,12 @@ macro_rules! assert_not_impl {
     };
 }
 
+// 同一 handle 的调用必须由 owner 串行发起，也保证 GetImage 输出在复制前不被覆盖。
 assert_not_impl!(Device: Sync);
 
-// 验证共享 Runtime 与独占 Device 的线程契约。
+// 会话与设备信息可以共享，设备可以移动到工作线程。
 #[test]
-fn public_runtime_types_follow_the_thread_contract() {
+fn public_types_follow_the_thread_contract() {
     fn assert_send<T: Send>() {}
     fn assert_send_sync<T: Send + Sync>() {}
 

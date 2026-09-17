@@ -1,0 +1,14 @@
+[package]
+name = "mv3d-lp-sys"
+description = "Raw FFI bindings for the Hikrobot 3DMVS laser profiler SDK."
+readme = "README.md"
+links = "Mv3dLp"
+keywords = ["3d-vision", "ffi", "hikrobot", "laser-profiler", "bindings"]
+categories = ["external-ffi-bindings", "hardware-support"]
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true

@@ -1,11 +1,6 @@
 [workspace]
-members = ["mv3d-lp-internal"]
-default-members = [".", "mv3d-lp-internal"]
+members = ["mv3d-lp-sys"]
 resolver = "3"
-
-[workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
 
 [workspace.package]
 version = "0.1.0"
@@ -15,36 +10,47 @@ license = "MIT"
 repository = "https://github.com/JSB-Unscarred/3dmvs-sdk-rs"
 homepage = "https://github.com/JSB-Unscarred/3dmvs-sdk-rs"
 
+[workspace.lints.rust]
+missing_docs = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# 错误语义统一记录在 docs::architecture，逐函数复制 `# Errors` 只会制造模板文档。
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+undocumented_unsafe_blocks = "deny"
+
 [package]
 name = "mv3d-lp"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
 description = "Safe Rust wrapper for the Hikrobot 3D MVS laser profiler SDK."
 readme = "README.md"
-license.workspace = true
-repository.workspace = true
-homepage.workspace = true
 keywords = ["3d-vision", "ffi", "hikrobot", "laser-profiler"]
 categories = ["api-bindings", "hardware-support"]
 publish = false
-
-[lib]
-name = "mv3d_lp"
-path = "src/lib.rs"
-
-[[test]]
-name = "native_smoke"
-path = "tests/native_smoke.rs"
-required-features = ["native"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [features]
-default = []
-native = ["mv3d-lp-internal/native"]
-display-windows = ["native", "mv3d-lp-internal/display-windows"]
+# 通过 raw-window-handle 把图像绘制到 Win32 窗口。
+display-windows = ["dep:raw-window-handle"]
+# 启用需要 3DMVS SDK 与专用设备的真机测试。
+hardware-tests = []
+
+[[test]]
+name = "hardware_smoke"
+required-features = ["hardware-tests"]
 
 [lints]
 workspace = true
 
 [dependencies]
-mv3d-lp-internal = { path = "mv3d-lp-internal", version = "=0.1.0", default-features = false }
+mv3d-lp-sys = { path = "mv3d-lp-sys", version = "0.1.0" }
+thiserror = "2"
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = { version = "0.6.2", optional = true }
