@@ -1,27 +1,30 @@
+// Hand-written from Mv3dLpApi.h, Mv3dLpDefine.h and Mv3dLpImgProc.h (LPSDK 1.3.3.3);
+// layout.rs checks every structure size and field offset at compile time.
+
 use core::ffi::{c_char, c_void};
 
 pub type MV3D_LP_STATUS = i32;
 pub type HANDLE = *mut c_void;
 pub type BOOL = i32;
 
-pub const MV3D_LP_OK: MV3D_LP_STATUS = 0;
-pub const MV3D_LP_E_HANDLE: MV3D_LP_STATUS = 0x8006_0000_u32.cast_signed();
-pub const MV3D_LP_E_SUPPORT: MV3D_LP_STATUS = 0x8006_0001_u32.cast_signed();
-pub const MV3D_LP_E_BUFOVER: MV3D_LP_STATUS = 0x8006_0002_u32.cast_signed();
-pub const MV3D_LP_E_CALLORDER: MV3D_LP_STATUS = 0x8006_0003_u32.cast_signed();
-pub const MV3D_LP_E_PARAMETER: MV3D_LP_STATUS = 0x8006_0004_u32.cast_signed();
-pub const MV3D_LP_E_RESOURCE: MV3D_LP_STATUS = 0x8006_0005_u32.cast_signed();
-pub const MV3D_LP_E_NODATA: MV3D_LP_STATUS = 0x8006_0006_u32.cast_signed();
-pub const MV3D_LP_E_PRECONDITION: MV3D_LP_STATUS = 0x8006_0007_u32.cast_signed();
-pub const MV3D_LP_E_VERSION: MV3D_LP_STATUS = 0x8006_0008_u32.cast_signed();
-pub const MV3D_LP_E_NOENOUGH_BUF: MV3D_LP_STATUS = 0x8006_0009_u32.cast_signed();
-pub const MV3D_LP_E_ABNORMAL_IMAGE: MV3D_LP_STATUS = 0x8006_000A_u32.cast_signed();
-pub const MV3D_LP_E_LOAD_LIBRARY: MV3D_LP_STATUS = 0x8006_000B_u32.cast_signed();
-pub const MV3D_LP_E_ALGORITHM: MV3D_LP_STATUS = 0x8006_000C_u32.cast_signed();
-pub const MV3D_LP_E_DEVICE_OFFLINE: MV3D_LP_STATUS = 0x8006_000D_u32.cast_signed();
-pub const MV3D_LP_E_ACCESS_DENIED: MV3D_LP_STATUS = 0x8006_000E_u32.cast_signed();
-pub const MV3D_LP_E_OUTOFRANGE: MV3D_LP_STATUS = 0x8006_000F_u32.cast_signed();
-pub const MV3D_LP_E_UNKNOW: MV3D_LP_STATUS = 0x8006_00FF_u32.cast_signed();
+pub const MV3D_LP_OK: u32 = 0;
+pub const MV3D_LP_E_HANDLE: u32 = 0x8006_0000;
+pub const MV3D_LP_E_SUPPORT: u32 = 0x8006_0001;
+pub const MV3D_LP_E_BUFOVER: u32 = 0x8006_0002;
+pub const MV3D_LP_E_CALLORDER: u32 = 0x8006_0003;
+pub const MV3D_LP_E_PARAMETER: u32 = 0x8006_0004;
+pub const MV3D_LP_E_RESOURCE: u32 = 0x8006_0005;
+pub const MV3D_LP_E_NODATA: u32 = 0x8006_0006;
+pub const MV3D_LP_E_PRECONDITION: u32 = 0x8006_0007;
+pub const MV3D_LP_E_VERSION: u32 = 0x8006_0008;
+pub const MV3D_LP_E_NOENOUGH_BUF: u32 = 0x8006_0009;
+pub const MV3D_LP_E_ABNORMAL_IMAGE: u32 = 0x8006_000A;
+pub const MV3D_LP_E_LOAD_LIBRARY: u32 = 0x8006_000B;
+pub const MV3D_LP_E_ALGORITHM: u32 = 0x8006_000C;
+pub const MV3D_LP_E_DEVICE_OFFLINE: u32 = 0x8006_000D;
+pub const MV3D_LP_E_ACCESS_DENIED: u32 = 0x8006_000E;
+pub const MV3D_LP_E_OUTOFRANGE: u32 = 0x8006_000F;
+pub const MV3D_LP_E_UNKNOW: u32 = 0x8006_00FF;
 
 pub const MV3D_LP_MAX_STRING_LENGTH: usize = 256;
 pub const MV3D_LP_MAX_ENUM_COUNT: usize = 16;
@@ -70,7 +73,7 @@ pub const DisplayType_Auto: Mv3dLpDisplayType = 1;
 pub const DisplayType_Manual: Mv3dLpDisplayType = 2;
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MV3D_LP_DEVICE_INFO {
     pub chManufacturerName: [c_char; 32],
     pub chModelName: [c_char; 32],
@@ -89,7 +92,7 @@ pub struct MV3D_LP_DEVICE_INFO {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MV3D_LP_IP_CONFIG {
     pub enIPCfgMode: Mv3dLpIpCfgMode,
     pub chDestIp: [c_char; 16],
@@ -99,7 +102,7 @@ pub struct MV3D_LP_IP_CONFIG {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MV3D_LP_IMAGE_DATA {
     pub enImageType: Mv3dLpImageType,
     pub nWidth: u32,
@@ -122,7 +125,7 @@ pub struct MV3D_LP_IMAGE_DATA {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MV3D_LP_INTPARAM {
     pub nCurValue: i64,
     pub nMax: i64,
@@ -131,7 +134,7 @@ pub struct MV3D_LP_INTPARAM {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MV3D_LP_ENUMPARAM {
     pub nCurValue: u32,
     pub nSupportedNum: u32,
@@ -139,7 +142,7 @@ pub struct MV3D_LP_ENUMPARAM {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MV3D_LP_FLOATPARAM {
     pub fCurValue: f32,
     pub fMax: f32,
@@ -147,7 +150,7 @@ pub struct MV3D_LP_FLOATPARAM {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MV3D_LP_STRINGPARAM {
     pub chCurValue: [c_char; MV3D_LP_MAX_STRING_LENGTH],
     pub nMaxLength: u32,
@@ -172,7 +175,7 @@ pub struct MV3D_LP_PARAM {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MV3D_LP_EXCEPTION_INFO {
     pub enExceptionType: Mv3dLpDevExceptionType,
     pub chExceptionDesc: [c_char; MV3D_LP_MAX_STRING_LENGTH],
@@ -180,7 +183,7 @@ pub struct MV3D_LP_EXCEPTION_INFO {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MV3D_LP_FILE_ACCESS {
     pub pUserFileName: *const c_char,
     pub pDevFileName: *const c_char,
@@ -188,18 +191,20 @@ pub struct MV3D_LP_FILE_ACCESS {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MV3D_LP_FILE_ACCESS_PROGRESS {
     pub nCompleted: i64,
     pub nTotal: i64,
     pub nReserved: [u8; 32],
 }
 
+// The headers declare callbacks `__stdcall` and functions `__cdecl`; both are the C ABI on x86_64.
 pub type MV3D_LP_ImageDataCallBack =
-    Option<unsafe extern "system" fn(*mut MV3D_LP_IMAGE_DATA, *mut c_void)>;
+    Option<unsafe extern "C" fn(*mut MV3D_LP_IMAGE_DATA, *mut c_void)>;
 pub type MV3D_LP_ExceptionCallBack =
-    Option<unsafe extern "system" fn(*mut MV3D_LP_EXCEPTION_INFO, *mut c_void)>;
+    Option<unsafe extern "C" fn(*mut MV3D_LP_EXCEPTION_INFO, *mut c_void)>;
 
+#[link(name = "Mv3dLp", kind = "raw-dylib")]
 unsafe extern "C" {
     pub fn MV3D_LP_GetVersion() -> *const c_char;
     pub fn MV3D_LP_Initialize() -> MV3D_LP_STATUS;

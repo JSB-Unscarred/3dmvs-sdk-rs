@@ -1,20 +1,24 @@
-//! Raw FFI bindings for the Hikrobot 3DMVS laser profiler SDK (LPSDK 1.3.3.3).
+//! Raw FFI bindings for the Hikrobot 3DMVS laser profiler SDK (LPSDK 1.3.3.3, `Mv3dLp`).
 //!
 //! The declarations are hand-audited against the three public LPSDK headers for Windows x86_64
-//! MSVC. Deprecated profile-era interfaces are omitted.
-//! Applications should normally use the safe `mv3d-lp` crate instead.
+//! MSVC. Deprecated profile-era interfaces are omitted. They link `Mv3dLp.dll` through
+//! `raw-dylib`, so building needs neither the SDK nor its import library; the DLL must be on
+//! `PATH` at run time. Applications should normally use the safe `mv3d-lp` crate instead.
 
 #![allow(
     non_camel_case_types,
     non_snake_case,
     non_upper_case_globals,
-    clippy::upper_case_acronyms
+    reason = "names follow the vendor C headers"
 )]
+
+// layout.rs pins the audited layouts of this target, where the headers' `__stdcall` is the C ABI.
+#[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
+compile_error!("mv3d-lp-sys only supports x86_64-pc-windows-msvc");
 
 include!("bindings.rs");
 
 /// Compile-time size and offset checks copied from the audited headers.
-#[cfg(all(windows, target_arch = "x86_64"))]
 mod layout;
 
 /// Implements `Default` as all-zero bytes, which the SDK requires for output and reserved fields.
@@ -36,6 +40,11 @@ zeroed_default!(
     MV3D_LP_DEVICE_INFO,
     MV3D_LP_IP_CONFIG,
     MV3D_LP_IMAGE_DATA,
+    MV3D_LP_INTPARAM,
+    MV3D_LP_ENUMPARAM,
+    MV3D_LP_FLOATPARAM,
+    MV3D_LP_STRINGPARAM,
+    MV3D_LP_PARAM_INFO,
     MV3D_LP_PARAM,
     MV3D_LP_EXCEPTION_INFO,
     MV3D_LP_FILE_ACCESS,

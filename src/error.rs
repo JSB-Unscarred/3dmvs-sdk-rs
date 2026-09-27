@@ -32,6 +32,7 @@ pub enum Error {
 
 /// 把 SDK 返回值转换为 `Result`；通常经由 [`sdk_call!`] 调用。
 pub(crate) fn check(function: &'static str, code: sys::MV3D_LP_STATUS) -> Result<()> {
+    let code = code.cast_unsigned();
     if code == sys::MV3D_LP_OK {
         Ok(())
     } else {
@@ -62,12 +63,12 @@ macro_rules! error_codes {
         pub enum ErrorCode {
             $($(#[$meta])* $variant,)+
             /// 头文件未定义的状态码。
-            Other(i32),
+            Other(u32),
         }
 
         impl ErrorCode {
             /// 由 SDK 返回值构造。
-            pub const fn from_raw(code: i32) -> Self {
+            pub const fn from_raw(code: u32) -> Self {
                 match code {
                     $(sys::$code => Self::$variant,)+
                     other => Self::Other(other),
@@ -75,7 +76,7 @@ macro_rules! error_codes {
             }
 
             /// 返回 SDK 状态码。
-            pub const fn raw(self) -> i32 {
+            pub const fn raw(self) -> u32 {
                 match self {
                     $(Self::$variant => sys::$code,)+
                     Self::Other(code) => code,
@@ -151,9 +152,13 @@ mod tests {
             ErrorCode::from_raw(sys::MV3D_LP_E_DEVICE_OFFLINE),
             ErrorCode::DeviceOffline
         );
-        assert_eq!(ErrorCode::from_raw(0x1234).raw(), 0x1234);
+        assert_eq!(ErrorCode::from_raw(0xDEAD_BEEF).raw(), 0xDEAD_BEEF);
 
-        let error = check("MV3D_LP_StartMeasure", sys::MV3D_LP_E_CALLORDER).unwrap_err();
+        let error = check(
+            "MV3D_LP_StartMeasure",
+            sys::MV3D_LP_E_CALLORDER.cast_signed(),
+        )
+        .unwrap_err();
         assert!(matches!(
             error,
             Error::Sdk {

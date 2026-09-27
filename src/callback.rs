@@ -2,7 +2,7 @@
 //!
 //! 注册时把 `Box<F>` 的地址作为 `pUser` 交给 SDK，trampoline 按注册时的具体类型 `F` 还原闭包，
 //! 不需要锁或全局表。LPSDK 不能注销 callback，闭包由设备保留到 Close。
-//! Rust 1.81 起，panic 越过 `extern "system"` 函数会直接终止进程。
+//! Rust 1.81 起，panic 越过 `extern "C"` 函数会直接终止进程。
 
 use std::ffi::CStr;
 use std::os::raw::c_void;
@@ -34,7 +34,7 @@ pub struct DeviceException<'a> {
 /// # Safety
 ///
 /// `user` 必须是注册时传入的 `Box<F>` 地址且闭包仍然存活；`image` 只在本次调用期间有效。
-pub(crate) unsafe extern "system" fn image_trampoline<F>(
+pub(crate) unsafe extern "C" fn image_trampoline<F>(
     image: *mut sys::MV3D_LP_IMAGE_DATA,
     user: *mut c_void,
 ) where
@@ -53,7 +53,7 @@ pub(crate) unsafe extern "system" fn image_trampoline<F>(
 /// # Safety
 ///
 /// `user` 必须是注册时传入的 `Box<F>` 地址且闭包仍然存活；`info` 只在本次调用期间有效。
-pub(crate) unsafe extern "system" fn exception_trampoline<F>(
+pub(crate) unsafe extern "C" fn exception_trampoline<F>(
     info: *mut sys::MV3D_LP_EXCEPTION_INFO,
     user: *mut c_void,
 ) where
