@@ -5,10 +5,9 @@
 
 use std::mem;
 use std::ops::Deref;
-use std::ptr;
 use std::time::Duration;
 
-use crate::callback::image_trampoline;
+use crate::callback::{image_trampoline, into_user_data};
 use crate::error::sdk_call;
 use crate::{Device, Error, Image, Result, sys};
 
@@ -35,9 +34,8 @@ impl Device {
         F: Fn(Image) + Send + Sync + 'static,
     {
         let handle = self.as_raw_handle();
-        let callback = Box::new(callback);
-        let user = ptr::from_ref(callback.as_ref()).cast_mut().cast();
-        // SAFETY: trampoline 与 F 匹配；闭包由设备保留到 Close。
+        let (callback, user) = into_user_data(callback);
+        // SAFETY: trampoline 与 F 匹配；设备持有闭包到 `CloseDevice` 成功。
         unsafe {
             sdk_call!(MV3D_LP_RegisterImageDataCallBack(
                 handle,

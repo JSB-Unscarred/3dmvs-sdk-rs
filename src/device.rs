@@ -1,19 +1,15 @@
 //! 已打开的设备：handle 所有权、参数、文件传输与 exception callback。
 
-use std::any::Any;
 use std::ffi::{CStr, c_void};
 use std::fmt;
 use std::mem;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
-use crate::callback::exception_trampoline;
+use crate::callback::{exception_trampoline, into_user_data};
 use crate::error::sdk_call;
 use crate::sdk::Session;
 use crate::{DeviceException, Parameter, ParameterValue, Result, sys};
-
-/// 交给 SDK 的 callback 闭包；只做类型擦除后的释放。
-pub(crate) type BoxedCallback = Box<dyn Any + Send + Sync>;
 
 /// 已打开的激光轮廓传感器。
 ///
@@ -23,8 +19,8 @@ pub(crate) type BoxedCallback = Box<dyn Any + Send + Sync>;
 pub struct Device {
     /// 只在 `release` 中被取走，存活的设备总是持有 handle。
     handle: Option<NonNull<c_void>>,
-    /// 已交给 SDK 的闭包；LPSDK 不能注销 callback，只在 Close 成功后释放。
-    callbacks: Vec<BoxedCallback>,
+    /// 交给 SDK 的闭包；LPSDK 不能注销 callback，只在 `CloseDevice` 成功后释放。
+    callbacks: Vec<Arc<dyn Send + Sync>>,
     /// 注册过 image callback 后，Close 前不能再用 pull 取图。
     image_callback_registered: bool,
     session: Arc<Session>,
@@ -150,11 +146,10 @@ impl Device {
     /// callback 内的 panic 会在 FFI 边界终止进程。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> Result<()>
     where
-        F: Fn(&DeviceException<'_>) + Send + Sync + 'static,
+        F: Fn(DeviceException<'_>) + Send + Sync + 'static,
     {
-        let callback = Box::new(callback);
-        let user = ptr::from_ref(callback.as_ref()).cast_mut().cast();
-        // SAFETY: trampoline 与 F 匹配；闭包在 Close 之前不会释放。
+        let (callback, user) = into_user_data(callback);
+        // SAFETY: trampoline 与 F 匹配；设备持有闭包到 `CloseDevice` 成功。
         unsafe {
             sdk_call!(MV3D_LP_RegisterExceptionCallBack(
                 self.as_raw_handle(),
@@ -176,7 +171,7 @@ impl Device {
     }
 
     /// 记录已注册的 image callback；闭包保留到 Close。
-    pub(crate) fn keep_image_callback(&mut self, callback: BoxedCallback) {
+    pub(crate) fn keep_image_callback(&mut self, callback: Arc<dyn Send + Sync>) {
         self.image_callback_registered = true;
         self.callbacks.push(callback);
     }
