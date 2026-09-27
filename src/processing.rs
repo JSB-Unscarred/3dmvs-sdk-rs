@@ -69,7 +69,6 @@ impl Sdk {
     }
 
     /// 把图像绘制到 Win32 窗口。
-    #[cfg(all(windows, feature = "display-windows"))]
     pub fn display<W>(&self, image: &Image, window: &W, range: DisplayRange) -> Result<()>
     where
         W: raw_window_handle::HasWindowHandle + ?Sized,
@@ -112,7 +111,6 @@ impl Sdk {
 }
 
 /// [`Sdk::display`] 使用的深度显示范围。
-#[cfg(all(windows, feature = "display-windows"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisplayRange {
     /// 由 SDK 自动确定。

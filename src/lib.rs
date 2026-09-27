@@ -51,7 +51,6 @@ pub use grabbing::{CallbackGrabbing, Grabbing};
 pub use image::{Image, ImageCalibration};
 pub use kind::{ImageFileFormat, ImageType, IpConfigMode};
 pub use parameter::{Parameter, ParameterValue};
-#[cfg(all(windows, feature = "display-windows"))]
 pub use processing::DisplayRange;
 pub use sdk::Sdk;
 
