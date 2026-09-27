@@ -5,7 +5,7 @@ use mv3d_lp::Sdk;
 fn main() -> mv3d_lp::Result<()> {
     println!("LPSDK {}", Sdk::version().to_string_lossy());
 
-    let sdk = Sdk::initialize()?;
+    let sdk = Sdk::new()?;
     for device in sdk.devices()? {
         println!(
             "{:<24} SN {:<16} {:?} {:?}",

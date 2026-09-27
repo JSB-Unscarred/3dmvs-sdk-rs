@@ -16,7 +16,7 @@
 //! use mv3d_lp::Sdk;
 //!
 //! fn main() -> mv3d_lp::Result<()> {
-//!     let sdk = Sdk::initialize()?;
+//!     let sdk = Sdk::new()?;
 //!     let mut device = sdk.open_by_ip(Ipv4Addr::new(192, 168, 1, 100))?;
 //!
 //!     let grabbing = device.start_grabbing()?;

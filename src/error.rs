@@ -19,9 +19,9 @@ pub enum Error {
         /// SDK 返回的状态码。
         code: ErrorCode,
     },
-    /// 本进程已经调用过 `MV3D_LP_Initialize`；厂商约定每个进程只初始化一次。
-    #[error("本进程已经初始化过 3DMVS SDK")]
-    AlreadyInitialized,
+    /// 本进程的 SDK 会话已经 `MV3D_LP_Finalize`；厂商约定每个进程只初始化一次，不能再次初始化。
+    #[error("本进程的 3DMVS SDK 已反初始化，不能再次初始化")]
+    Finalized,
     /// 输入不满足 SDK 的内存约定，未调用 SDK。
     #[error("输入无效：{0}")]
     InvalidInput(&'static str),

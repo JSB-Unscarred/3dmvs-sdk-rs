@@ -5,7 +5,7 @@ use std::time::Duration;
 use mv3d_lp::{ImageFileFormat, ImageType, Sdk};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sdk = Sdk::initialize()?;
+    let sdk = Sdk::new()?;
     let devices = sdk.devices()?;
     let info = devices.first().ok_or("没有找到设备")?;
     let mut device = sdk.open_by_serial(info.serial_number())?;

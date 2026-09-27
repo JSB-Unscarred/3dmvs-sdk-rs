@@ -12,7 +12,7 @@ use mv3d_lp::Sdk;
 fn real_device_pull_flow() -> Result<(), Box<dyn Error>> {
     let serial = CString::new(std::env::var("MV3D_LP_TEST_SERIAL")?)?;
 
-    let sdk = Sdk::initialize()?;
+    let sdk = Sdk::new()?;
     let mut device = sdk.open_by_serial(&serial)?;
 
     let grabbing = device.start_grabbing()?;
