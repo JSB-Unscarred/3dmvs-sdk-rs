@@ -14,7 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last = None;
     for _ in 0..10 {
         let image = grabbing.get_image(Some(Duration::from_secs(1)))?;
-        println!("#{} {:?} {}x{}", image.frame_number, image.image_type, image.width, image.height);
+        println!(
+            "#{} {:?} {}x{}",
+            image.frame_number, image.image_type, image.width, image.height
+        );
         last = Some(image);
     }
     grabbing.stop()?;

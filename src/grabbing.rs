@@ -39,7 +39,11 @@ impl Device {
         let user = ptr::from_ref(callback.as_ref()).cast_mut().cast();
         // SAFETY: trampoline 与 F 匹配；闭包由设备保留到 Close。
         unsafe {
-            sdk_call!(MV3D_LP_RegisterImageDataCallBack(handle, Some(image_trampoline::<F>), user))
+            sdk_call!(MV3D_LP_RegisterImageDataCallBack(
+                handle,
+                Some(image_trampoline::<F>),
+                user
+            ))
         }?;
         self.keep_image_callback(callback);
         // SAFETY: 可变借用保证当前没有其它采集守卫。

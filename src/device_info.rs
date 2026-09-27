@@ -113,7 +113,11 @@ impl IpConfiguration {
     pub(crate) fn to_raw(self) -> sys::MV3D_LP_IP_CONFIG {
         let mut raw = sys::MV3D_LP_IP_CONFIG::default();
         raw.enIPCfgMode = match self {
-            Self::Static { ip, subnet_mask, gateway } => {
+            Self::Static {
+                ip,
+                subnet_mask,
+                gateway,
+            } => {
                 write_ipv4(&mut raw.chDestIp, ip);
                 write_ipv4(&mut raw.chDestNetMask, subnet_mask);
                 write_ipv4(&mut raw.chDestGateWay, gateway);
@@ -159,7 +163,12 @@ mod tests {
 
         assert_eq!(fixed_cstr(&IpConfiguration::Dhcp.to_raw().chDestIp), c"");
         let ip = Ipv4Addr::new(10, 0, 0, 255);
-        let raw = IpConfiguration::Static { ip, subnet_mask: ip, gateway: ip }.to_raw();
+        let raw = IpConfiguration::Static {
+            ip,
+            subnet_mask: ip,
+            gateway: ip,
+        }
+        .to_raw();
         assert_eq!(raw.enIPCfgMode, sys::IpCfgMode_Static);
         assert_eq!(fixed_cstr(&raw.chDestGateWay), c"10.0.0.255");
     }

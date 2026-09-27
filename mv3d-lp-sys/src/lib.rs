@@ -4,7 +4,12 @@
 //! MSVC. Deprecated profile-era interfaces are omitted.
 //! Applications should normally use the safe `mv3d-lp` crate instead.
 
-#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals, clippy::upper_case_acronyms)]
+#![allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    clippy::upper_case_acronyms
+)]
 
 include!("bindings.rs");
 

@@ -75,7 +75,13 @@ impl Device {
     pub fn get_parameter(&self, key: &CStr) -> Result<Parameter> {
         let mut raw = sys::MV3D_LP_PARAM::default();
         // SAFETY: key 以 NUL 结尾，raw 是清零的可写输出。
-        unsafe { sdk_call!(MV3D_LP_GetParam(self.as_raw_handle(), key.as_ptr(), &raw mut raw)) }?;
+        unsafe {
+            sdk_call!(MV3D_LP_GetParam(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                &raw mut raw
+            ))
+        }?;
         Parameter::from_raw(&raw)
     }
 
@@ -83,7 +89,13 @@ impl Device {
     pub fn set_parameter(&self, key: &CStr, value: &ParameterValue) -> Result<()> {
         let mut raw = value.to_raw()?;
         // SAFETY: key 以 NUL 结尾，raw 的类型字段与写入的 union 成员一致。
-        unsafe { sdk_call!(MV3D_LP_SetParam(self.as_raw_handle(), key.as_ptr(), &raw mut raw)) }
+        unsafe {
+            sdk_call!(MV3D_LP_SetParam(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                &raw mut raw
+            ))
+        }
     }
 
     /// 执行命令节点。
@@ -96,22 +108,40 @@ impl Device {
     pub fn download_file(&self, device_file: &CStr, local_file: &CStr) -> Result<()> {
         let mut access = file_access(local_file, device_file);
         // SAFETY: 两个文件名以 NUL 结尾，只在本次调用期间借出。
-        unsafe { sdk_call!(MV3D_LP_FileAccessRead(self.as_raw_handle(), &raw mut access)) }
+        unsafe {
+            sdk_call!(MV3D_LP_FileAccessRead(
+                self.as_raw_handle(),
+                &raw mut access
+            ))
+        }
     }
 
     /// 开始把主机文件上传到设备。
     pub fn upload_file(&self, local_file: &CStr, device_file: &CStr) -> Result<()> {
         let mut access = file_access(local_file, device_file);
         // SAFETY: 两个文件名以 NUL 结尾，只在本次调用期间借出。
-        unsafe { sdk_call!(MV3D_LP_FileAccessWrite(self.as_raw_handle(), &raw mut access)) }
+        unsafe {
+            sdk_call!(MV3D_LP_FileAccessWrite(
+                self.as_raw_handle(),
+                &raw mut access
+            ))
+        }
     }
 
     /// 当前文件传输的进度快照。
     pub fn file_transfer_progress(&self) -> Result<FileProgress> {
         let mut raw = sys::MV3D_LP_FILE_ACCESS_PROGRESS::default();
         // SAFETY: raw 是可写输出。
-        unsafe { sdk_call!(MV3D_LP_GetFileAccessProgress(self.as_raw_handle(), &raw mut raw)) }?;
-        Ok(FileProgress { completed: raw.nCompleted, total: raw.nTotal })
+        unsafe {
+            sdk_call!(MV3D_LP_GetFileAccessProgress(
+                self.as_raw_handle(),
+                &raw mut raw
+            ))
+        }?;
+        Ok(FileProgress {
+            completed: raw.nCompleted,
+            total: raw.nTotal,
+        })
     }
 
     /// 注册 exception callback，替换之前的注册。

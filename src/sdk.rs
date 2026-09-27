@@ -45,7 +45,11 @@ impl Sdk {
         }
         // SAFETY: 上面的原子标记保证本进程只调用一次。
         unsafe { sdk_call!(MV3D_LP_Initialize()) }?;
-        Ok(Self { session: Arc::new(Session { processing: Mutex::new(()) }) })
+        Ok(Self {
+            session: Arc::new(Session {
+                processing: Mutex::new(()),
+            }),
+        })
     }
 
     /// SDK 版本字符串，无需先初始化。
@@ -53,7 +57,11 @@ impl Sdk {
         // SAFETY: 厂商约定返回指向静态存储、以 NUL 结尾的版本字符串。
         unsafe {
             let version = sys::MV3D_LP_GetVersion();
-            if version.is_null() { c"" } else { CStr::from_ptr(version) }
+            if version.is_null() {
+                c""
+            } else {
+                CStr::from_ptr(version)
+            }
         }
     }
 
@@ -71,13 +79,22 @@ impl Sdk {
         let mut raw = vec![sys::MV3D_LP_DEVICE_INFO::default(); count as usize];
         let mut filled = 0;
         // SAFETY: raw 提供 count 个可写记录，filled 是可写输出。
-        unsafe { sdk_call!(MV3D_LP_GetDeviceList(raw.as_mut_ptr(), count, &raw mut filled)) }?;
+        unsafe {
+            sdk_call!(MV3D_LP_GetDeviceList(
+                raw.as_mut_ptr(),
+                count,
+                &raw mut filled
+            ))
+        }?;
         raw.truncate(filled as usize);
         Ok(raw.iter().map(DeviceInfo::from_raw).collect())
     }
 
     /// 按序列号写入设备的 IP 配置。
-    #[allow(clippy::unused_self, reason = "借用 Sdk 保证调用时会话仍处于初始化状态")]
+    #[allow(
+        clippy::unused_self,
+        reason = "借用 Sdk 保证调用时会话仍处于初始化状态"
+    )]
     pub fn set_ip_config(&self, serial_number: &CStr, config: IpConfiguration) -> Result<()> {
         let mut raw = config.to_raw();
         // SAFETY: serial_number 以 NUL 结尾，raw 是完整初始化的结构体。
@@ -104,7 +121,10 @@ impl Sdk {
 
     /// 图像处理接口的串行锁。
     pub(crate) fn lock_processing(&self) -> MutexGuard<'_, ()> {
-        self.session.processing.lock().unwrap_or_else(PoisonError::into_inner)
+        self.session
+            .processing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// 两个打开接口共用：只有状态成功且 handle 非空时才构造 [`Device`]。
@@ -115,8 +135,10 @@ impl Sdk {
     ) -> Result<Device> {
         let mut handle = ptr::null_mut();
         check(function, open(&raw mut handle))?;
-        let handle =
-            NonNull::new(handle).ok_or(Error::Sdk { function, code: ErrorCode::Handle })?;
+        let handle = NonNull::new(handle).ok_or(Error::Sdk {
+            function,
+            code: ErrorCode::Handle,
+        })?;
         Ok(Device::new(handle, Arc::clone(&self.session)))
     }
 }

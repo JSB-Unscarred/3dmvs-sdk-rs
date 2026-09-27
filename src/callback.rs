@@ -66,7 +66,10 @@ pub(crate) unsafe extern "system" fn exception_trampoline<F>(
             sys::DevExceptionType_Disconnect => ExceptionKind::Disconnected,
             other => ExceptionKind::Other(other),
         };
-        callback(&DeviceException { kind, description: fixed_cstr(&info.chExceptionDesc) });
+        callback(&DeviceException {
+            kind,
+            description: fixed_cstr(&info.chExceptionDesc),
+        });
     }
 }
 
@@ -124,7 +127,9 @@ mod tests {
             fire_exception(
                 &|exception: &DeviceException<'_>| {
                     assert_eq!(exception.kind, ExceptionKind::Disconnected);
-                    seen.lock().unwrap().push(format!("{:?}", exception.description));
+                    seen.lock()
+                        .unwrap()
+                        .push(format!("{:?}", exception.description));
                 },
                 &mut info,
             );

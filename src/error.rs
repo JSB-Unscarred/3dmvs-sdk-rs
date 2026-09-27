@@ -35,7 +35,10 @@ pub(crate) fn check(function: &'static str, code: sys::MV3D_LP_STATUS) -> Result
     if code == sys::MV3D_LP_OK {
         Ok(())
     } else {
-        Err(Error::Sdk { function, code: ErrorCode::from_raw(code) })
+        Err(Error::Sdk {
+            function,
+            code: ErrorCode::from_raw(code),
+        })
     }
 }
 
@@ -144,11 +147,20 @@ mod tests {
     // 已知状态码映射到变体，未知状态码原样保留，错误信息带上失败的函数名。
     #[test]
     fn status_codes_round_trip_and_name_the_function() {
-        assert_eq!(ErrorCode::from_raw(sys::MV3D_LP_E_DEVICE_OFFLINE), ErrorCode::DeviceOffline);
+        assert_eq!(
+            ErrorCode::from_raw(sys::MV3D_LP_E_DEVICE_OFFLINE),
+            ErrorCode::DeviceOffline
+        );
         assert_eq!(ErrorCode::from_raw(0x1234).raw(), 0x1234);
 
         let error = check("MV3D_LP_StartMeasure", sys::MV3D_LP_E_CALLORDER).unwrap_err();
-        assert!(matches!(error, Error::Sdk { code: ErrorCode::CallOrder, .. }));
+        assert!(matches!(
+            error,
+            Error::Sdk {
+                code: ErrorCode::CallOrder,
+                ..
+            }
+        ));
         assert_eq!(
             error.to_string(),
             "MV3D_LP_StartMeasure 失败：MV3D_LP_E_CALLORDER (0x80060003)"

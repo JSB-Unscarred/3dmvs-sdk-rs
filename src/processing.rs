@@ -26,7 +26,11 @@ impl Sdk {
         self.process(|output| {
             // SAFETY: inputs 含 count 个借用已校验缓冲区的描述符，output 是可写输出。
             unsafe {
-                sdk_call!(MV3D_LP_MapDepthToPointCloudRound(inputs.as_mut_ptr(), count, output))
+                sdk_call!(MV3D_LP_MapDepthToPointCloudRound(
+                    inputs.as_mut_ptr(),
+                    count,
+                    output
+                ))
             }
         })
     }
@@ -55,7 +59,13 @@ impl Sdk {
         let mut input = image.to_raw()?;
         let _processing = self.lock_processing();
         // SAFETY: input 借用已校验的缓冲区，file_name 以 NUL 结尾。
-        unsafe { sdk_call!(MV3D_LP_SaveImage(&raw mut input, format as i32, file_name.as_ptr())) }
+        unsafe {
+            sdk_call!(MV3D_LP_SaveImage(
+                &raw mut input,
+                format as i32,
+                file_name.as_ptr()
+            ))
+        }
     }
 
     /// 把图像绘制到 Win32 窗口。
@@ -121,5 +131,8 @@ fn raw_images(images: &[Image]) -> Result<(Vec<sys::MV3D_LP_IMAGE_DATA>, u32)> {
         Ok(count) if images.len() <= MAX_IMAGES => count,
         _ => return Err(Error::InvalidInput("多图接口最多接受 8 张图像")),
     };
-    Ok((images.iter().map(Image::to_raw).collect::<Result<_>>()?, count))
+    Ok((
+        images.iter().map(Image::to_raw).collect::<Result<_>>()?,
+        count,
+    ))
 }

@@ -81,7 +81,11 @@ impl Parameter {
                 }
                 sys::ParamType_Float => {
                     let float = &info.stFloatParam;
-                    Self::Float { value: float.fCurValue, min: float.fMin, max: float.fMax }
+                    Self::Float {
+                        value: float.fCurValue,
+                        min: float.fMin,
+                        max: float.fMax,
+                    }
                 }
                 sys::ParamType_Enum => {
                     let enumeration = &info.stEnumParam;
@@ -166,7 +170,10 @@ mod tests {
         match Parameter::from_raw(&raw).unwrap() {
             Parameter::Enumeration { value, supported } => {
                 assert_eq!(value, 7);
-                assert_eq!((supported.len(), supported[1]), (sys::MV3D_LP_MAX_ENUM_COUNT, 3));
+                assert_eq!(
+                    (supported.len(), supported[1]),
+                    (sys::MV3D_LP_MAX_ENUM_COUNT, 3)
+                );
             }
             other => panic!("unexpected {other:?}"),
         }

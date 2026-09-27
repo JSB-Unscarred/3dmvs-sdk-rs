@@ -96,7 +96,11 @@ impl Image {
         if !data_matches {
             return Err(Error::InvalidInput("图像数据长度与宽高、格式不一致"));
         }
-        if self.intensity_data.as_ref().is_some_and(|data| data.len() as u64 != pixels) {
+        if self
+            .intensity_data
+            .as_ref()
+            .is_some_and(|data| data.len() as u64 != pixels)
+        {
             return Err(Error::InvalidInput("亮度数据长度与像素数不一致"));
         }
         if self
@@ -194,11 +198,21 @@ mod tests {
         assert_eq!(image.intensity_data, None);
         assert!(image.to_raw().is_ok());
 
-        let short = Image { data: vec![1], ..image.clone() };
+        let short = Image {
+            data: vec![1],
+            ..image.clone()
+        };
         assert!(matches!(short.to_raw(), Err(Error::InvalidInput(_))));
-        let stamps = Image { exposure_timestamps: Some(vec![]), ..image.clone() };
+        let stamps = Image {
+            exposure_timestamps: Some(vec![]),
+            ..image.clone()
+        };
         assert!(matches!(stamps.to_raw(), Err(Error::InvalidInput(_))));
-        let jpeg = Image { image_type: ImageType::JPEG, data: vec![0xFF], ..image };
+        let jpeg = Image {
+            image_type: ImageType::JPEG,
+            data: vec![0xFF],
+            ..image
+        };
         assert!(jpeg.to_raw().is_ok());
     }
 }
