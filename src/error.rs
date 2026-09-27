@@ -8,11 +8,11 @@ use crate::sys;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// 本 crate 的错误。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     /// SDK 函数返回了非 `MV3D_LP_OK` 的状态码。
-    #[error("{function} 失败：{code}")]
+    #[error("{function} failed: {code}")]
     Sdk {
         /// 失败的 SDK 函数名。
         function: &'static str,
@@ -20,13 +20,13 @@ pub enum Error {
         code: ErrorCode,
     },
     /// 本进程的 SDK 会话已经 `MV3D_LP_Finalize`；厂商约定每个进程只初始化一次，不能再次初始化。
-    #[error("本进程的 3DMVS SDK 已反初始化，不能再次初始化")]
+    #[error("3DMVS SDK was finalized in this process and cannot be initialized again")]
     Finalized,
     /// 输入不满足 SDK 的内存约定，未调用 SDK。
-    #[error("输入无效：{0}")]
+    #[error("invalid input: {0}")]
     InvalidInput(&'static str),
     /// 设备注册过 image callback；LPSDK 不能注销 callback，Close 前不能再用 pull 取图。
-    #[error("设备已注册 image callback，关闭前不能使用 pull 取图")]
+    #[error("pull grabbing is unavailable after an image callback was registered on this device")]
     ImageCallbackRegistered,
 }
 
@@ -128,14 +128,14 @@ error_codes! {
     /// 值超出范围。
     OutOfRange = MV3D_LP_E_OUTOFRANGE,
     /// 未知错误。
-    UnknownGeneric = MV3D_LP_E_UNKNOW,
+    Unknown = MV3D_LP_E_UNKNOW,
 }
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.name() {
             Some(name) => write!(f, "{name} (0x{:08X})", self.raw()),
-            None => write!(f, "未知状态码 0x{:08X}", self.raw()),
+            None => write!(f, "unknown status code 0x{:08X}", self.raw()),
         }
     }
 }
@@ -168,7 +168,7 @@ mod tests {
         ));
         assert_eq!(
             error.to_string(),
-            "MV3D_LP_StartMeasure 失败：MV3D_LP_E_CALLORDER (0x80060003)"
+            "MV3D_LP_StartMeasure failed: MV3D_LP_E_CALLORDER (0x80060003)"
         );
     }
 }

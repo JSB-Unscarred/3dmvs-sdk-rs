@@ -4,50 +4,43 @@ use std::fmt;
 
 use crate::sys;
 
-/// 图像格式。
+/// 图像格式码，与 MVS 的 `GigE` Vision 像素格式码同一编码。
 ///
 /// SDK 输出可能包含本 crate 未列出的格式，因此用 newtype 保存原始值。
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ImageType(i32);
+pub struct ImageType(u32);
 
 impl ImageType {
     /// 未定义。
-    pub const UNDEFINED: Self = Self(sys::ImageType_Undefined);
+    pub const UNDEFINED: Self = Self(sys::ImageType_Undefined.cast_unsigned());
     /// 8 位单色。
-    pub const MONO8: Self = Self(sys::ImageType_Mono8);
-    /// 深度图，每像素 2 字节。
-    pub const DEPTH: Self = Self(sys::ImageType_Depth);
-    /// 轮廓数据，每点 6 字节。
-    pub const PROFILE: Self = Self(sys::ImageType_Profile);
-    /// 点云，每点 12 字节。
-    pub const POINT_CLOUD: Self = Self(sys::ImageType_PointCloud);
+    pub const MONO8: Self = Self(sys::ImageType_Mono8.cast_unsigned());
+    /// 深度图，每像素 16 位。
+    pub const DEPTH: Self = Self(sys::ImageType_Depth.cast_unsigned());
+    /// 轮廓数据，每点 48 位。
+    pub const PROFILE: Self = Self(sys::ImageType_Profile.cast_unsigned());
+    /// 点云，每点 96 位。
+    pub const POINT_CLOUD: Self = Self(sys::ImageType_PointCloud.cast_unsigned());
     /// RGB24。
-    pub const RGB24_PACKED: Self = Self(sys::ImageType_RGB24_Packed);
+    pub const RGB24_PACKED: Self = Self(sys::ImageType_RGB24_Packed.cast_unsigned());
     /// JPEG 压缩数据。
-    pub const JPEG: Self = Self(sys::ImageType_Jpeg);
-    /// ABC32 轮廓数据，每点 12 字节。
-    pub const PROFILE_ABC32: Self = Self(sys::ImageType_Profile_ABC32);
+    pub const JPEG: Self = Self(sys::ImageType_Jpeg.cast_unsigned());
+    /// ABC32 轮廓数据，每点 96 位。
+    pub const PROFILE_ABC32: Self = Self(sys::ImageType_Profile_ABC32.cast_unsigned());
 
     /// 由 SDK 原始值构造。
-    pub const fn from_raw(raw: i32) -> Self {
+    pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
 
     /// 返回 SDK 原始值。
-    pub const fn raw(self) -> i32 {
+    pub const fn raw(self) -> u32 {
         self.0
     }
 
-    /// 非压缩格式的每像素字节数；压缩或未知格式返回 `None`。
-    pub const fn bytes_per_pixel(self) -> Option<u64> {
-        match self {
-            Self::MONO8 => Some(1),
-            Self::DEPTH => Some(2),
-            Self::RGB24_PACKED => Some(3),
-            Self::PROFILE => Some(6),
-            Self::POINT_CLOUD | Self::PROFILE_ABC32 => Some(12),
-            _ => None,
-        }
+    /// 格式码中编码的每像素位数；对 JPEG 等压缩格式与 [`ImageType::UNDEFINED`] 没有意义。
+    pub const fn bits_per_pixel(self) -> u32 {
+        (self.0 >> 16) & 0xFF
     }
 }
 
@@ -57,8 +50,9 @@ impl fmt::Debug for ImageType {
     }
 }
 
-/// [`Sdk::save`](crate::Sdk::save) 支持的文件格式。
+/// [`Sdk::save_image`](crate::Sdk::save_image) 支持的文件格式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 #[repr(i32)]
 pub enum ImageFileFormat {
     /// ASCII PLY 点云。
@@ -87,23 +81,26 @@ pub enum ImageFileFormat {
 
 /// 设备的 IP 配置方式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(i32)]
+#[non_exhaustive]
 pub enum IpConfigMode {
     /// 静态 IP。
-    Static = sys::IpCfgMode_Static,
+    Static,
     /// DHCP。
-    Dhcp = sys::IpCfgMode_DHCP,
+    Dhcp,
     /// 链路本地地址（LLA）。
-    LinkLocal = sys::IpCfgMode_LLA,
+    LinkLocal,
+    /// 头文件未定义的配置方式。
+    Other(i32),
 }
 
 impl IpConfigMode {
-    pub(crate) const fn from_raw(raw: i32) -> Option<Self> {
+    /// 由 SDK 原始值构造，未定义的值保存在 [`IpConfigMode::Other`]。
+    pub(crate) const fn from_raw(raw: i32) -> Self {
         match raw {
-            sys::IpCfgMode_Static => Some(Self::Static),
-            sys::IpCfgMode_DHCP => Some(Self::Dhcp),
-            sys::IpCfgMode_LLA => Some(Self::LinkLocal),
-            _ => None,
+            sys::IpCfgMode_Static => Self::Static,
+            sys::IpCfgMode_DHCP => Self::Dhcp,
+            sys::IpCfgMode_LLA => Self::LinkLocal,
+            other => Self::Other(other),
         }
     }
 }

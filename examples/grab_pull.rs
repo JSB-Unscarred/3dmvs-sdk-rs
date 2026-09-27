@@ -7,7 +7,7 @@ use mv3d_lp::{ImageFileFormat, ImageType, Sdk};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdk = Sdk::new()?;
     let devices = sdk.devices()?;
-    let info = devices.first().ok_or("没有找到设备")?;
+    let info = devices.first().ok_or("no device found")?;
     let mut device = sdk.open_by_serial(info.serial_number())?;
 
     let grabbing = device.start_grabbing()?;
@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(image) = last.filter(|image| image.image_type == ImageType::DEPTH) {
         let cloud = sdk.depth_to_point_cloud(&image)?;
-        sdk.save(&cloud, ImageFileFormat::Ply, c"cloud.ply")?;
+        sdk.save_image(&cloud, ImageFileFormat::Ply, c"cloud.ply")?;
     }
 
     device.close()?;

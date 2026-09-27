@@ -9,13 +9,14 @@ use std::sync::Arc;
 use crate::callback::{exception_trampoline, into_user_data};
 use crate::error::sdk_call;
 use crate::sdk::Session;
-use crate::{DeviceException, Parameter, ParameterValue, Result, sys};
+use crate::{ExceptionInfo, Parameter, ParameterValue, Result, sys};
 
 /// 已打开的激光轮廓传感器。
 ///
 /// `Device` 独占 native handle，释放时调用 `MV3D_LP_CloseDevice`；需要观察清理错误时调用
 /// [`Device::close`]。设备持有 SDK 会话的引用，不借用 [`Sdk`](crate::Sdk)。
 /// `Device` 是 `Send` 但不是 `Sync`，同一 handle 上的调用由 owner 串行发起。
+#[must_use = "the device is closed when dropped"]
 pub struct Device {
     /// 只在 `release` 中被取走，存活的设备总是持有 handle。
     handle: Option<NonNull<c_void>>,
@@ -28,15 +29,6 @@ pub struct Device {
 
 // SAFETY: 厂商示例在工作线程中使用 handle。Device 独占 handle 且不是 Sync，调用不会并发。
 unsafe impl Send for Device {}
-
-/// 文件传输进度，原样保存 SDK 的计数。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FileProgress {
-    /// 已完成的量。
-    pub completed: i64,
-    /// 总量。
-    pub total: i64,
-}
 
 impl Device {
     pub(crate) const fn new(handle: NonNull<c_void>, session: Arc<Session>) -> Self {
@@ -78,11 +70,11 @@ impl Device {
                 &raw mut raw
             ))
         }?;
-        Parameter::from_raw(&raw)
+        Ok(Parameter::from_raw(&raw))
     }
 
     /// 写入参数。
-    pub fn set_parameter(&self, key: &CStr, value: &ParameterValue) -> Result<()> {
+    pub fn set_parameter(&self, key: &CStr, value: ParameterValue<'_>) -> Result<()> {
         let mut raw = value.to_raw()?;
         // SAFETY: key 以 NUL 结尾，raw 的类型字段与写入的 union 成员一致。
         unsafe {
@@ -94,16 +86,19 @@ impl Device {
         }
     }
 
-    /// 执行命令节点。
-    pub fn execute(&self, key: &CStr) -> Result<()> {
+    /// 执行 Command 节点。
+    pub fn execute_command(&self, key: &CStr) -> Result<()> {
         // SAFETY: key 以 NUL 结尾。
         unsafe { sdk_call!(MV3D_LP_Execute(self.as_raw_handle(), key.as_ptr())) }
     }
 
-    /// 开始把设备文件下载到主机；进度见 [`Device::file_transfer_progress`]。
+    /// 把设备文件下载到主机，传输结束后返回。
+    ///
+    /// 调用阻塞整个传输；`Device` 不是 `Sync`，传输期间无法查询进度，因此不封装
+    /// `MV3D_LP_GetFileAccessProgress`。
     pub fn download_file(&self, device_file: &CStr, local_file: &CStr) -> Result<()> {
         let mut access = file_access(local_file, device_file);
-        // SAFETY: 两个文件名以 NUL 结尾，只在本次调用期间借出。
+        // SAFETY: 调用阻塞到传输结束，两个以 NUL 结尾的文件名在此期间一直有效。
         unsafe {
             sdk_call!(MV3D_LP_FileAccessRead(
                 self.as_raw_handle(),
@@ -112,10 +107,10 @@ impl Device {
         }
     }
 
-    /// 开始把主机文件上传到设备。
+    /// 把主机文件上传到设备，传输结束后返回；阻塞语义同 [`Device::download_file`]。
     pub fn upload_file(&self, local_file: &CStr, device_file: &CStr) -> Result<()> {
         let mut access = file_access(local_file, device_file);
-        // SAFETY: 两个文件名以 NUL 结尾，只在本次调用期间借出。
+        // SAFETY: 调用阻塞到传输结束，两个以 NUL 结尾的文件名在此期间一直有效。
         unsafe {
             sdk_call!(MV3D_LP_FileAccessWrite(
                 self.as_raw_handle(),
@@ -124,29 +119,13 @@ impl Device {
         }
     }
 
-    /// 当前文件传输的进度快照。
-    pub fn file_transfer_progress(&self) -> Result<FileProgress> {
-        let mut raw = sys::MV3D_LP_FILE_ACCESS_PROGRESS::default();
-        // SAFETY: raw 是可写输出。
-        unsafe {
-            sdk_call!(MV3D_LP_GetFileAccessProgress(
-                self.as_raw_handle(),
-                &raw mut raw
-            ))
-        }?;
-        Ok(FileProgress {
-            completed: raw.nCompleted,
-            total: raw.nTotal,
-        })
-    }
-
     /// 注册 exception callback，替换之前的注册。
     ///
     /// SDK 在内部线程调用 `callback`；闭包保留到 Close，重复注册会累积闭包。
     /// callback 内的 panic 会在 FFI 边界终止进程。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> Result<()>
     where
-        F: Fn(DeviceException<'_>) + Send + Sync + 'static,
+        F: Fn(ExceptionInfo<'_>) + Send + Sync + 'static,
     {
         let (callback, user) = into_user_data(callback);
         // SAFETY: trampoline 与 F 匹配；设备持有闭包到 `CloseDevice` 成功。
@@ -210,7 +189,7 @@ impl fmt::Debug for Device {
     }
 }
 
-/// 两个文件名只在本次调用期间借出。
+/// 借用两个文件名构造描述符；SDK 只在阻塞的传输调用期间读取它们。
 fn file_access(local_file: &CStr, device_file: &CStr) -> sys::MV3D_LP_FILE_ACCESS {
     sys::MV3D_LP_FILE_ACCESS {
         pUserFileName: local_file.as_ptr(),

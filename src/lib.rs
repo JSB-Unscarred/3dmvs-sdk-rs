@@ -1,4 +1,4 @@
-//! 海康威视 3D 激光轮廓传感器 SDK（LPSDK）的安全 Rust 封装。
+//! 海康机器人（Hikrobot）3D 激光轮廓传感器 SDK（LPSDK）的安全 Rust 封装。
 //!
 //! 原始 FFI 位于 `mv3d-lp-sys`。本 crate 用所有权与借用表达 SDK 的调用约定：
 //!
@@ -21,15 +21,17 @@
 //!
 //!     let grabbing = device.start_grabbing()?;
 //!     let image = grabbing.get_image(Some(Duration::from_secs(1)))?;
-//!     println!("{}x{}，{} 字节", image.width, image.height, image.data.len());
+//!     println!("{}x{}, {} bytes", image.width, image.height, image.data.len());
 //!     Ok(())
 //! }
 //! ```
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-pub(crate) use mv3d_lp_sys as sys;
+/// 原始 FFI 绑定（`mv3d-lp-sys`），与本 crate 同版本发布；配合 [`Device::as_raw_handle`]
+/// 调用尚未封装的 SDK 接口。
+pub use mv3d_lp_sys as sys;
 
 mod callback;
 mod device;
@@ -43,9 +45,9 @@ mod parameter;
 mod processing;
 mod sdk;
 
-pub use callback::{DeviceException, ExceptionKind};
-pub use device::{Device, FileProgress};
-pub use device_info::{DeviceInfo, IpConfiguration};
+pub use callback::{ExceptionInfo, ExceptionKind};
+pub use device::Device;
+pub use device_info::{DeviceInfo, IpConfig};
 pub use error::{Error, ErrorCode, Result};
 pub use grabbing::{CallbackGrabbing, Grabbing};
 pub use image::{Image, ImageCalibration};
@@ -56,9 +58,42 @@ pub use sdk::Sdk;
 
 /// 读取 SDK 定长字符数组中首个 NUL 之前的字符串。
 ///
-/// 厂商保证这些字段以 NUL 结尾；缺少 NUL 时返回空串，避免越界读取。
+/// 这些字段是 C 字符串，厂商示例直接以 `%s` 读取，写入方保证以 NUL 结尾；缺少 NUL 属于违约数据，
+/// 此时返回空串而不越界读取。
 fn fixed_cstr(chars: &[c_char]) -> &CStr {
+    CStr::from_bytes_until_nul(char_bytes(chars)).unwrap_or_default()
+}
+
+/// 复制 SDK 定长字符数组中的字符串：截到首个 NUL，字段写满、没有 NUL 时取整个字段，不丢数据。
+fn fixed_cstring(chars: &[c_char]) -> CString {
+    let bytes = char_bytes(chars);
+    let len = bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(bytes.len());
+    // 截到首个 NUL 后不含内部 NUL，CString::new 不会失败。
+    CString::new(&bytes[..len]).unwrap_or_default()
+}
+
+/// 把 SDK 的 `c_char` 数组按字节读取。
+fn char_bytes(chars: &[c_char]) -> &[u8] {
     // SAFETY: `c_char` 与 `u8` 大小、对齐相同，只重新解释已初始化的字节。
-    let bytes = unsafe { std::slice::from_raw_parts(chars.as_ptr().cast::<u8>(), chars.len()) };
-    CStr::from_bytes_until_nul(bytes).unwrap_or_default()
+    unsafe { std::slice::from_raw_parts(chars.as_ptr().cast::<u8>(), chars.len()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fixed_cstr, fixed_cstring};
+
+    // 拥有型字符串无损：字段写满、没有 NUL 时取整个字段；借用型按厂商约定截到 NUL，违约时为空串。
+    #[test]
+    fn fixed_strings_follow_the_nul_policy() {
+        let full = [b'a'.cast_signed(); 4];
+        assert_eq!(fixed_cstring(&full).as_bytes(), b"aaaa");
+        assert_eq!(fixed_cstr(&full), c"");
+
+        let terminated = [b'a'.cast_signed(), 0, b'b'.cast_signed(), 0];
+        assert_eq!(fixed_cstring(&terminated).as_bytes(), b"a");
+        assert_eq!(fixed_cstr(&terminated), c"a");
+    }
 }

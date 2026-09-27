@@ -21,10 +21,20 @@ pub enum ExceptionKind {
     Other(i32),
 }
 
+impl ExceptionKind {
+    /// 由 SDK 原始值构造，未定义的值保存在 [`ExceptionKind::Other`]。
+    const fn from_raw(raw: i32) -> Self {
+        match raw {
+            sys::DevExceptionType_Disconnect => Self::Disconnected,
+            other => Self::Other(other),
+        }
+    }
+}
+
 /// exception callback 收到的异常，只在本次回调期间有效。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub struct DeviceException<'a> {
+pub struct ExceptionInfo<'a> {
     /// 异常类型。
     pub kind: ExceptionKind,
     /// SDK 给出的描述。
@@ -87,17 +97,13 @@ pub(crate) unsafe extern "C" fn exception_trampoline<F>(
     info: *mut sys::MV3D_LP_EXCEPTION_INFO,
     user: *mut c_void,
 ) where
-    F: Fn(DeviceException<'_>),
+    F: Fn(ExceptionInfo<'_>),
 {
     // SAFETY: 见函数的 Safety 约定。
     let (callback, info) = unsafe { (from_user_data::<F>(user), info.as_ref()) };
     if let Some(info) = info {
-        let kind = match info.enExceptionType {
-            sys::DevExceptionType_Disconnect => ExceptionKind::Disconnected,
-            other => ExceptionKind::Other(other),
-        };
-        callback(DeviceException {
-            kind,
+        callback(ExceptionInfo {
+            kind: ExceptionKind::from_raw(info.enExceptionType),
             description: fixed_cstr(&info.chExceptionDesc),
         });
     }
@@ -109,7 +115,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use super::{DeviceException, exception_trampoline, image_trampoline, into_user_data};
+    use super::{ExceptionInfo, exception_trampoline, image_trampoline, into_user_data};
     use crate::{Image, sys};
 
     // 与注册时相同：返回 owner 的强引用、交给 SDK 的 callback 与 pUser。
@@ -135,7 +141,7 @@ mod tests {
         *mut c_void,
     )
     where
-        F: Fn(DeviceException<'_>) + Send + Sync + 'static,
+        F: Fn(ExceptionInfo<'_>) + Send + Sync + 'static,
     {
         let (owner, user) = into_user_data(callback);
         (owner, Some(exception_trampoline::<F>), user)

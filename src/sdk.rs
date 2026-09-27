@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use crate::device_info::write_ipv4;
 use crate::error::{check, sdk_call};
-use crate::{Device, DeviceInfo, Error, ErrorCode, IpConfiguration, Result, sys};
+use crate::{Device, DeviceInfo, Error, ErrorCode, IpConfig, Result, sys};
 
 /// 本进程的 SDK 会话登记。
 ///
@@ -40,6 +40,7 @@ impl Drop for Session {
 /// 而不借用 `Sdk`，因此可以存入结构体或移动到其它线程；`Sdk` 与全部设备都释放后 SDK 自动反初始化。
 /// `Sdk` 是 `Send + Sync`。
 #[derive(Clone)]
+#[must_use = "the SDK is finalized once the last Sdk and device are dropped"]
 pub struct Sdk {
     session: Arc<Session>,
 }
@@ -115,7 +116,7 @@ impl Sdk {
         clippy::unused_self,
         reason = "借用 Sdk 保证调用时会话仍处于初始化状态"
     )]
-    pub fn set_ip_config(&self, serial_number: &CStr, config: IpConfiguration) -> Result<()> {
+    pub fn set_ip_config(&self, serial_number: &CStr, config: IpConfig) -> Result<()> {
         let mut raw = config.to_raw();
         // SAFETY: serial_number 以 NUL 结尾，raw 是完整初始化的结构体。
         unsafe { sdk_call!(MV3D_LP_SetIpConfig(serial_number.as_ptr(), &raw mut raw)) }

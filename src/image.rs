@@ -62,7 +62,7 @@ impl Image {
         // SAFETY: 见函数的 Safety 约定。
         unsafe {
             Self {
-                image_type: ImageType::from_raw(raw.enImageType),
+                image_type: ImageType::from_raw(raw.enImageType.cast_unsigned()),
                 width: raw.nWidth,
                 height: raw.nHeight,
                 data: copy(raw.pData, raw.nDataLen).unwrap_or_default(),
@@ -85,35 +85,51 @@ impl Image {
 
     /// 借用本图像构造 SDK 输入。
     ///
-    /// SDK 按宽高与格式读取缓冲区，长度不足会越界读，因此非压缩格式要求长度严格对应。
-    /// 返回值借用 `self` 的缓冲区，调用方须在 `self` 存活期间使用。
+    /// SDK 按宽高与格式读取缓冲区，长度不足会越界读，因此只放行本 crate 能校验长度的格式：
+    /// 非压缩格式要求长度与宽高、位数严格对应，JPEG 只要求非空，其余格式返回
+    /// [`Error::InvalidInput`]。返回值借用 `self` 的缓冲区，调用方须在 `self` 存活期间使用。
     pub(crate) fn to_raw(&self) -> Result<sys::MV3D_LP_IMAGE_DATA> {
         let pixels = u64::from(self.width) * u64::from(self.height);
-        let data_matches = match self.image_type.bytes_per_pixel() {
-            Some(bytes) => pixels.checked_mul(bytes) == Some(self.data.len() as u64),
-            None => !self.data.is_empty(),
+        let data_matches = match self.image_type {
+            ImageType::JPEG => !self.data.is_empty(),
+            ImageType::MONO8
+            | ImageType::DEPTH
+            | ImageType::RGB24_PACKED
+            | ImageType::PROFILE
+            | ImageType::POINT_CLOUD
+            | ImageType::PROFILE_ABC32 => {
+                pixels.checked_mul(u64::from(self.image_type.bits_per_pixel()))
+                    == (self.data.len() as u64).checked_mul(8)
+            }
+            _ => return Err(Error::InvalidInput("unsupported image type")),
         };
         if !data_matches {
-            return Err(Error::InvalidInput("图像数据长度与宽高、格式不一致"));
+            return Err(Error::InvalidInput(
+                "image data length does not match width, height and image type",
+            ));
         }
         if self
             .intensity_data
             .as_ref()
             .is_some_and(|data| data.len() as u64 != pixels)
         {
-            return Err(Error::InvalidInput("亮度数据长度与像素数不一致"));
+            return Err(Error::InvalidInput(
+                "intensity data length does not match the pixel count",
+            ));
         }
         if self
             .exposure_timestamps
             .as_ref()
             .is_some_and(|stamps| stamps.len() as u64 != u64::from(self.height))
         {
-            return Err(Error::InvalidInput("曝光时间戳数量与行数不一致"));
+            return Err(Error::InvalidInput(
+                "exposure timestamp count does not match the row count",
+            ));
         }
-        let too_large = || Error::InvalidInput("图像数据超过 4 GiB");
+        let too_large = || Error::InvalidInput("image data exceeds 4 GiB");
 
         Ok(sys::MV3D_LP_IMAGE_DATA {
-            enImageType: self.image_type.raw(),
+            enImageType: self.image_type.raw().cast_signed(),
             nWidth: self.width,
             nHeight: self.height,
             pData: self.data.as_ptr().cast_mut(),
@@ -176,7 +192,7 @@ mod tests {
     use super::Image;
     use crate::{Error, ImageType, sys};
 
-    // SDK 输出被深拷贝；作为输入时，非压缩格式的各缓冲区长度必须与宽高严格对应。
+    // SDK 输出被深拷贝；作为输入时，非压缩格式的各缓冲区长度必须与宽高严格对应，未知格式被拒绝。
     #[test]
     fn output_is_copied_and_input_layout_is_checked() {
         let mut data = [1_u8, 2];
@@ -208,6 +224,11 @@ mod tests {
             ..image.clone()
         };
         assert!(matches!(stamps.to_raw(), Err(Error::InvalidInput(_))));
+        let unknown = Image {
+            image_type: ImageType::from_raw(0x0108_0002),
+            ..image.clone()
+        };
+        assert!(matches!(unknown.to_raw(), Err(Error::InvalidInput(_))));
         let jpeg = Image {
             image_type: ImageType::JPEG,
             data: vec![0xFF],

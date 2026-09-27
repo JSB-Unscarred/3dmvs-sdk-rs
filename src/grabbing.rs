@@ -52,6 +52,7 @@ impl Device {
 
 /// pull 模式的采集守卫。
 #[derive(Debug)]
+#[must_use = "grabbing stops when the guard is dropped"]
 pub struct Grabbing<'a> {
     device: &'a mut Device,
 }
@@ -96,6 +97,7 @@ impl Drop for Grabbing<'_> {
 
 /// callback 模式的采集守卫。
 #[derive(Debug)]
+#[must_use = "grabbing stops when the guard is dropped"]
 pub struct CallbackGrabbing<'a> {
     device: &'a mut Device,
 }

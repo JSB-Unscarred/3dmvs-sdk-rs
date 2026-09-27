@@ -8,12 +8,15 @@ use mv3d_lp::{ExceptionKind, Sdk};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdk = Sdk::new()?;
     let devices = sdk.devices()?;
-    let info = devices.first().ok_or("没有找到设备")?;
+    let info = devices.first().ok_or("no device found")?;
     let mut device = sdk.open_by_serial(info.serial_number())?;
 
     device.register_exception_callback(|exception| {
         if exception.kind == ExceptionKind::Disconnected {
-            eprintln!("设备断开：{}", exception.description.to_string_lossy());
+            eprintln!(
+                "device disconnected: {}",
+                exception.description.to_string_lossy()
+            );
         }
     })?;
 
@@ -25,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..10 {
         let image = receiver.recv_timeout(Duration::from_secs(1))?;
         println!(
-            "#{} {}x{} {} 字节",
+            "#{} {}x{} {} bytes",
             image.frame_number,
             image.width,
             image.height,

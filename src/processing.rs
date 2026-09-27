@@ -36,10 +36,10 @@ impl Sdk {
     }
 
     /// 转换为 SDK 支持的目标格式。
-    pub fn convert(&self, image: &Image, target: ImageType) -> Result<Image> {
+    pub fn convert_image(&self, image: &Image, target: ImageType) -> Result<Image> {
         let mut input = image.to_raw()?;
         self.process(|output| {
-            output.enImageType = target.raw();
+            output.enImageType = target.raw().cast_signed();
             // SAFETY: input 借用已校验的缓冲区，output 只预置了目标格式。
             unsafe { sdk_call!(MV3D_LP_ImageConvert(&raw mut input, output)) }
         })
@@ -55,7 +55,12 @@ impl Sdk {
     }
 
     /// 用厂商编码器保存图像；文件名按 SDK 的本地编码解释。
-    pub fn save(&self, image: &Image, format: ImageFileFormat, file_name: &CStr) -> Result<()> {
+    pub fn save_image(
+        &self,
+        image: &Image,
+        format: ImageFileFormat,
+        file_name: &CStr,
+    ) -> Result<()> {
         let mut input = image.to_raw()?;
         let _processing = self.lock_processing();
         // SAFETY: input 借用已校验的缓冲区，file_name 以 NUL 结尾。
@@ -69,7 +74,7 @@ impl Sdk {
     }
 
     /// 把图像绘制到 Win32 窗口。
-    pub fn display<W>(&self, image: &Image, window: &W, range: DisplayRange) -> Result<()>
+    pub fn display_image<W>(&self, image: &Image, window: &W, range: DisplayRange) -> Result<()>
     where
         W: raw_window_handle::HasWindowHandle + ?Sized,
     {
@@ -77,7 +82,7 @@ impl Sdk {
 
         let hwnd = match window.window_handle().map(|handle| handle.as_raw()) {
             Ok(RawWindowHandle::Win32(handle)) => handle.hwnd,
-            _ => return Err(Error::InvalidInput("窗口没有可用的 Win32 HWND")),
+            _ => return Err(Error::InvalidInput("window has no Win32 HWND")),
         };
         let (display_type, min, max) = match range {
             DisplayRange::Auto => (sys::DisplayType_Auto, 0, 0),
@@ -110,8 +115,9 @@ impl Sdk {
     }
 }
 
-/// [`Sdk::display`] 使用的深度显示范围。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// [`Sdk::display_image`] 使用的深度显示范围。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DisplayRange {
     /// 由 SDK 自动确定。
     Auto,
@@ -127,7 +133,7 @@ pub enum DisplayRange {
 fn raw_images(images: &[Image]) -> Result<(Vec<sys::MV3D_LP_IMAGE_DATA>, u32)> {
     let count = match u32::try_from(images.len()) {
         Ok(count) if images.len() <= MAX_IMAGES => count,
-        _ => return Err(Error::InvalidInput("多图接口最多接受 8 张图像")),
+        _ => return Err(Error::InvalidInput("at most 8 images are accepted")),
     };
     Ok((
         images.iter().map(Image::to_raw).collect::<Result<_>>()?,
