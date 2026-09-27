@@ -2,7 +2,7 @@
 //!
 //! SDK 的处理输出只在下一次处理调用前有效，因此调用与复制都在会话的处理锁内完成。
 
-use std::ffi::CStr;
+use std::ffi::{CStr, c_void};
 
 use crate::error::sdk_call;
 use crate::{Error, Image, ImageFileFormat, ImageType, Result, Sdk, sys};
@@ -15,7 +15,7 @@ impl Sdk {
     pub fn depth_to_point_cloud(&self, depth: &Image) -> Result<Image> {
         let mut input = depth.to_raw()?;
         self.process(|output| {
-            // SAFETY: input 借用已校验的缓冲区，output 是可写输出。
+            // SAFETY: input 借用已校验的buffer，output 是可写输出。
             unsafe { sdk_call!(MV3D_LP_MapDepthToPointCloud(&raw mut input, output)) }
         })
     }
@@ -24,7 +24,7 @@ impl Sdk {
     pub fn depth_to_round_point_cloud(&self, depths: &[Image]) -> Result<Image> {
         let (mut inputs, count) = raw_images(depths)?;
         self.process(|output| {
-            // SAFETY: inputs 含 count 个借用已校验缓冲区的描述符，output 是可写输出。
+            // SAFETY: inputs 含 count 个借用已校验 buffer 的输入，output 是可写输出。
             unsafe {
                 sdk_call!(MV3D_LP_MapDepthToPointCloudRound(
                     inputs.as_mut_ptr(),
@@ -40,7 +40,7 @@ impl Sdk {
         let mut input = image.to_raw()?;
         self.process(|output| {
             output.enImageType = target.raw().cast_signed();
-            // SAFETY: input 借用已校验的缓冲区，output 只预置了目标格式。
+            // SAFETY: input 借用已校验的buffer，output 只预置了目标格式。
             unsafe { sdk_call!(MV3D_LP_ImageConvert(&raw mut input, output)) }
         })
     }
@@ -49,7 +49,7 @@ impl Sdk {
     pub fn mosaic_depth(&self, depths: &[Image]) -> Result<Image> {
         let (mut inputs, count) = raw_images(depths)?;
         self.process(|output| {
-            // SAFETY: inputs 含 count 个借用已校验缓冲区的描述符，output 是可写输出。
+            // SAFETY: inputs 含 count 个借用已校验 buffer 的输入，output 是可写输出。
             unsafe { sdk_call!(MV3D_LP_DepthMosaic(inputs.as_mut_ptr(), count, output)) }
         })
     }
@@ -63,7 +63,7 @@ impl Sdk {
     ) -> Result<()> {
         let mut input = image.to_raw()?;
         let _processing = self.lock_processing();
-        // SAFETY: input 借用已校验的缓冲区，file_name 以 NUL 结尾。
+        // SAFETY: input 借用已校验的buffer，file_name 以 NUL 结尾。
         unsafe {
             sdk_call!(MV3D_LP_SaveImage(
                 &raw mut input,
@@ -90,11 +90,11 @@ impl Sdk {
         };
         let mut input = image.to_raw()?;
         let _processing = self.lock_processing();
-        // SAFETY: input 借用已校验的缓冲区；hwnd 来自调用期间借用的窗口。
+        // SAFETY: input 借用已校验的buffer；hwnd 来自调用期间借用的窗口。
         unsafe {
             sdk_call!(MV3D_LP_DisplayImage(
                 &raw mut input,
-                hwnd.get() as *mut std::ffi::c_void,
+                hwnd.get() as *mut c_void,
                 display_type,
                 min,
                 max
@@ -110,7 +110,7 @@ impl Sdk {
         let _processing = self.lock_processing();
         let mut output = sys::MV3D_LP_IMAGE_DATA::default();
         call(&mut output)?;
-        // SAFETY: SDK 调用成功，输出缓冲区在下一次处理调用（即锁释放）之前有效。
+        // SAFETY: SDK 调用成功，输出buffer在下一次处理调用（即锁释放）之前有效。
         Ok(unsafe { Image::from_raw(&output) })
     }
 }
@@ -130,6 +130,7 @@ pub enum DisplayRange {
     },
 }
 
+/// 校验多图接口的输入并构造借用它们的 SDK 输入数组；头文件规定最多 8 张。
 fn raw_images(images: &[Image]) -> Result<(Vec<sys::MV3D_LP_IMAGE_DATA>, u32)> {
     let count = match u32::try_from(images.len()) {
         Ok(count) if images.len() <= MAX_IMAGES => count,

@@ -25,7 +25,7 @@ pub struct ImageCalibration {
 
 /// 一帧图像，像素由 Rust 拥有。
 ///
-/// 采集与图像处理的输出都在返回前从 SDK 缓冲区复制。作为图像处理的输入时，
+/// 取流与图像处理的输出都在返回前从 SDK buffer复制。作为图像处理的输入时，
 /// 非压缩格式要求数据长度与宽高、格式严格对应。
 #[derive(Clone, PartialEq)]
 pub struct Image {
@@ -85,9 +85,9 @@ impl Image {
 
     /// 借用本图像构造 SDK 输入。
     ///
-    /// SDK 按宽高与格式读取缓冲区，长度不足会越界读，因此只放行本 crate 能校验长度的格式：
+    /// SDK 按宽高与格式读取buffer，长度不足会越界读，因此只放行本 crate 能校验长度的格式：
     /// 非压缩格式要求长度与宽高、位数严格对应，JPEG 只要求非空，其余格式返回
-    /// [`Error::InvalidInput`]。返回值借用 `self` 的缓冲区，调用方须在 `self` 存活期间使用。
+    /// [`Error::InvalidInput`]。返回值借用 `self` 的buffer，调用方须在 `self` 存活期间使用。
     pub(crate) fn to_raw(&self) -> Result<sys::MV3D_LP_IMAGE_DATA> {
         let pixels = u64::from(self.width) * u64::from(self.height);
         let data_matches = match self.image_type {
@@ -174,7 +174,7 @@ impl fmt::Debug for Image {
     }
 }
 
-/// 复制 SDK 缓冲区；空指针或零长度视为不存在。
+/// 复制 SDK buffer；空指针或零长度视为不存在。
 ///
 /// # Safety
 ///
@@ -192,7 +192,7 @@ mod tests {
     use super::Image;
     use crate::{Error, ImageType, sys};
 
-    // SDK 输出被深拷贝；作为输入时，非压缩格式的各缓冲区长度必须与宽高严格对应，未知格式被拒绝。
+    // SDK 输出被复制；作为输入时，非压缩格式的各buffer长度必须与宽高严格对应，未知格式被拒绝。
     #[test]
     fn output_is_copied_and_input_layout_is_checked() {
         let mut data = [1_u8, 2];

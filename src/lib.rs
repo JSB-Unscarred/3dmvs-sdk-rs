@@ -4,8 +4,8 @@
 //!
 //! - [`Sdk`] 初始化进程级 SDK，枚举、配置并打开设备，也提供图像处理接口；
 //! - [`Device`] 独占一个 native handle，负责参数、文件传输与 exception callback；
-//! - [`Device::start_grabbing`] 与 [`Device::start_grabbing_with`] 返回借用设备的采集守卫，
-//!   pull 取图只存在于 [`Grabbing`] 上，守卫释放时停止采集。
+//! - [`Device::start_grabbing`] 与 [`Device::start_grabbing_with`] 返回借用设备的取流守卫，
+//!   pull 取图只存在于 [`Grabbing`] 上，守卫释放时停止取流。
 //!
 //! 设计取舍见 [`docs::architecture`]。
 //!
@@ -26,8 +26,9 @@
 //! }
 //! ```
 
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::ffi::{CStr, CString, c_char};
+use std::net::Ipv4Addr;
+use std::slice;
 
 /// 原始 FFI 绑定（`mv3d-lp-sys`），与本 crate 同版本发布；配合 [`Device::as_raw_handle`]
 /// 调用尚未封装的 SDK 接口。
@@ -78,7 +79,16 @@ fn fixed_cstring(chars: &[c_char]) -> CString {
 /// 把 SDK 的 `c_char` 数组按字节读取。
 fn char_bytes(chars: &[c_char]) -> &[u8] {
     // SAFETY: `c_char` 与 `u8` 大小、对齐相同，只重新解释已初始化的字节。
-    unsafe { std::slice::from_raw_parts(chars.as_ptr().cast::<u8>(), chars.len()) }
+    unsafe { slice::from_raw_parts(chars.as_ptr().cast::<u8>(), chars.len()) }
+}
+
+/// 把 IPv4 地址写成 SDK 字段中的点分十进制文本。
+///
+/// 点分十进制最长 15 字节，16 字节字段必定能容纳文本与结尾 NUL。
+fn write_ipv4(field: &mut [c_char; 16], ip: Ipv4Addr) {
+    for (target, byte) in field.iter_mut().zip(ip.to_string().bytes()) {
+        *target = byte.cast_signed();
+    }
 }
 
 #[cfg(test)]

@@ -1,10 +1,10 @@
 //! 枚举得到的设备信息与 IP 配置请求。
 
-use std::ffi::CStr;
+use std::ffi::{CStr, c_char};
 use std::fmt;
 use std::net::Ipv4Addr;
 
-use crate::{IpConfigMode, fixed_cstr, sys};
+use crate::{IpConfigMode, fixed_cstr, sys, write_ipv4};
 
 /// `MV3D_LP_DEVICE_INFO` 的拥有副本。
 ///
@@ -15,6 +15,7 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
+    /// 复制 SDK 设备记录。
     pub(crate) const fn from_raw(raw: &sys::MV3D_LP_DEVICE_INFO) -> Self {
         Self { raw: *raw }
     }
@@ -134,15 +135,9 @@ impl IpConfig {
     }
 }
 
-fn parse_ipv4(chars: &[std::os::raw::c_char]) -> Option<Ipv4Addr> {
+/// 解析 SDK 字段中的点分十进制 IPv4 地址；字段为空或格式不对时为 `None`。
+fn parse_ipv4(chars: &[c_char]) -> Option<Ipv4Addr> {
     fixed_cstr(chars).to_str().ok()?.parse().ok()
-}
-
-/// 点分十进制最长 15 字节，16 字节字段必定能容纳文本与结尾 NUL。
-pub(crate) fn write_ipv4(field: &mut [std::os::raw::c_char; 16], ip: Ipv4Addr) {
-    for (target, byte) in field.iter_mut().zip(ip.to_string().bytes()) {
-        *target = byte.cast_signed();
-    }
 }
 
 #[cfg(test)]

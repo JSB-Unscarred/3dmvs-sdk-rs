@@ -7,9 +7,9 @@ use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
 use crate::callback::{exception_trampoline, into_user_data};
-use crate::error::sdk_call;
+use crate::error::{check, sdk_call};
 use crate::sdk::Session;
-use crate::{ExceptionInfo, Parameter, ParameterValue, Result, sys};
+use crate::{Error, ErrorCode, ExceptionInfo, Parameter, ParameterValue, Result, sys};
 
 /// 已打开的激光轮廓传感器。
 ///
@@ -22,7 +22,7 @@ pub struct Device {
     handle: Option<NonNull<c_void>>,
     /// 交给 SDK 的闭包；LPSDK 不能注销 callback，只在 `CloseDevice` 成功后释放。
     callbacks: Vec<Arc<dyn Send + Sync>>,
-    /// 注册过 image callback 后，Close 前不能再用 pull 取图。
+    /// 注册过 image callback 后，`CloseDevice` 前不能再用 pull 取图。
     image_callback_registered: bool,
     session: Arc<Session>,
 }
@@ -31,18 +31,29 @@ pub struct Device {
 unsafe impl Send for Device {}
 
 impl Device {
-    pub(crate) const fn new(handle: NonNull<c_void>, session: Arc<Session>) -> Self {
-        Self {
+    /// 调用 SDK 的打开接口并接管输出的 handle；只有状态成功且 handle 非空时才构造设备。
+    pub(crate) fn open(
+        session: Arc<Session>,
+        function: &'static str,
+        open: impl FnOnce(*mut sys::HANDLE) -> sys::MV3D_LP_STATUS,
+    ) -> Result<Self> {
+        let mut handle = ptr::null_mut();
+        check(function, open(&raw mut handle))?;
+        let handle = NonNull::new(handle).ok_or(Error::Sdk {
+            function,
+            code: ErrorCode::Handle,
+        })?;
+        Ok(Self {
             handle: Some(handle),
             callbacks: Vec::new(),
             image_callback_registered: false,
             session,
-        }
+        })
     }
 
     /// native handle，供尚未封装的 SDK 接口使用。
     ///
-    /// 通过它改变采集、callback 注册或 handle 生命周期会破坏本 crate 的约定。
+    /// 通过它改变取流、callback 注册或 handle 生命周期会破坏本 crate 的约定。
     pub fn as_raw_handle(&self) -> *mut c_void {
         self.handle.map_or(ptr::null_mut(), NonNull::as_ptr)
     }
@@ -62,7 +73,7 @@ impl Device {
     /// 读取参数。
     pub fn get_parameter(&self, key: &CStr) -> Result<Parameter> {
         let mut raw = sys::MV3D_LP_PARAM::default();
-        // SAFETY: key 以 NUL 结尾，raw 是清零的可写输出。
+        // SAFETY: key 以 NUL 结尾，raw 是可写输出。
         unsafe {
             sdk_call!(MV3D_LP_GetParam(
                 self.as_raw_handle(),
@@ -121,7 +132,7 @@ impl Device {
 
     /// 注册 exception callback，替换之前的注册。
     ///
-    /// SDK 在内部线程调用 `callback`；闭包保留到 Close，重复注册会累积闭包。
+    /// SDK 在内部线程调用 `callback`；闭包保留到 `CloseDevice`，重复注册会累积闭包。
     /// callback 内的 panic 会在 FFI 边界终止进程。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> Result<()>
     where
@@ -145,26 +156,27 @@ impl Device {
         self.release()
     }
 
+    /// 是否注册过 image callback；LPSDK 不能注销，注册后 `CloseDevice` 前不能再用 pull 取图。
     pub(crate) const fn image_callback_registered(&self) -> bool {
         self.image_callback_registered
     }
 
-    /// 记录已注册的 image callback；闭包保留到 Close。
+    /// 记录已注册的 image callback；闭包保留到 `CloseDevice`。
     pub(crate) fn keep_image_callback(&mut self, callback: Arc<dyn Send + Sync>) {
         self.image_callback_registered = true;
         self.callbacks.push(callback);
     }
 
-    /// 取走 handle 并 Close；`close` 之后的 `Drop` 因此不会重复释放。
+    /// 取走 handle 并 `CloseDevice`；`close` 之后的 `Drop` 因此不会重复释放。
     ///
-    /// Close 失败时 SDK 可能仍持有闭包指针和会话资源，因此泄漏闭包与一份会话引用，
+    /// `CloseDevice` 失败时 SDK 可能仍持有闭包指针和会话资源，因此泄漏闭包与一份会话引用，
     /// Finalize 不再执行。
     fn release(&mut self) -> Result<()> {
         let Some(handle) = self.handle.take() else {
             return Ok(());
         };
         let mut handle = handle.as_ptr();
-        // SAFETY: handle 由设备独占；借用设备的采集守卫都已释放。
+        // SAFETY: handle 由设备独占；借用设备的取流守卫都已释放。
         let result = unsafe { sdk_call!(MV3D_LP_CloseDevice(&raw mut handle)) };
         if result.is_err() {
             mem::forget(mem::take(&mut self.callbacks));
@@ -189,7 +201,7 @@ impl fmt::Debug for Device {
     }
 }
 
-/// 借用两个文件名构造描述符；SDK 只在阻塞的传输调用期间读取它们。
+/// 借用两个文件名构造 `MV3D_LP_FILE_ACCESS`；SDK 只在阻塞的传输调用期间读取它们。
 fn file_access(local_file: &CStr, device_file: &CStr) -> sys::MV3D_LP_FILE_ACCESS {
     sys::MV3D_LP_FILE_ACCESS {
         pUserFileName: local_file.as_ptr(),

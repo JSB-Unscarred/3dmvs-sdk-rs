@@ -6,7 +6,7 @@
 //! 存活到调用返回。Rust 1.81 起，panic 越过 `extern "C"` 函数会直接终止进程。
 
 use std::ffi::CStr;
-use std::os::raw::c_void;
+use std::ffi::c_void;
 use std::sync::Arc;
 
 use crate::{Image, fixed_cstr, sys};
@@ -83,7 +83,7 @@ pub(crate) unsafe extern "C" fn image_trampoline<F>(
     // SAFETY: 见函数的 Safety 约定。
     let (callback, image) = unsafe { (from_user_data::<F>(user), image.as_ref()) };
     if let Some(image) = image {
-        // SAFETY: SDK 保证描述符中的缓冲区在本次回调返回前有效。
+        // SAFETY: SDK 保证 buffer 在本次回调返回前有效。
         callback(unsafe { Image::from_raw(image) });
     }
 }
@@ -111,7 +111,7 @@ pub(crate) unsafe extern "C" fn exception_trampoline<F>(
 
 #[cfg(test)]
 mod tests {
-    use std::os::raw::c_void;
+    use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -147,7 +147,7 @@ mod tests {
         (owner, Some(exception_trampoline::<F>), user)
     }
 
-    // trampoline 按注册类型还原闭包，图像在回调内已被复制，异常类型与描述被转换。
+    // trampoline 按注册类型还原闭包并转换参数。
     #[test]
     fn trampolines_restore_the_closure_and_convert_arguments() {
         static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -172,7 +172,7 @@ mod tests {
             SEEN.lock().unwrap().push(seen);
         });
 
-        // SAFETY: owner 在同步调用期间存活，描述符是本函数的局部变量。
+        // SAFETY: owner 在同步调用期间存活，image、data 与 info 是本函数的局部变量。
         unsafe {
             on_image.unwrap()(&raw mut image, image_user);
             on_exception.unwrap()(&raw mut info, exception_user);

@@ -3,12 +3,10 @@
 use std::ffi::CStr;
 use std::fmt;
 use std::net::Ipv4Addr;
-use std::ptr::{self, NonNull};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use crate::device_info::write_ipv4;
-use crate::error::{check, sdk_call};
-use crate::{Device, DeviceInfo, Error, ErrorCode, IpConfig, Result, sys};
+use crate::error::sdk_call;
+use crate::{Device, DeviceInfo, Error, IpConfig, Result, sys, write_ipv4};
 
 /// 本进程的 SDK 会话登记。
 ///
@@ -22,7 +20,7 @@ static SESSION: Mutex<Option<Weak<Session>>> = Mutex::new(None);
 /// 最后一个持有者释放时调用 `MV3D_LP_Finalize`，因此设备不会比会话活得更久。
 /// 设备的 `CloseDevice` 失败时会泄漏一份引用，使 Finalize 不再执行。
 pub(crate) struct Session {
-    /// 图像处理接口的输出缓冲区在下一次处理调用前有效，复制完成前需串行。
+    /// 图像处理接口的输出buffer在下一次处理调用前有效，复制完成前需串行。
     processing: Mutex<()>,
 }
 
@@ -38,7 +36,7 @@ impl Drop for Session {
 ///
 /// 本进程只有一个会话，会话存活期间 [`Sdk::new`] 与 `clone` 得到的都是它。[`Device`] 持有会话引用
 /// 而不借用 `Sdk`，因此可以存入结构体或移动到其它线程；`Sdk` 与全部设备都释放后 SDK 自动反初始化。
-/// `Sdk` 是 `Send + Sync`。
+/// 以 `&self` 借用 `Sdk` 的方法保证调用时 SDK 已初始化。`Sdk` 是 `Send + Sync`。
 #[derive(Clone)]
 #[must_use = "the SDK is finalized once the last Sdk and device are dropped"]
 pub struct Sdk {
@@ -69,15 +67,13 @@ impl Sdk {
 
     /// SDK 版本字符串，无需先初始化。
     pub fn version() -> &'static CStr {
-        // SAFETY: 厂商约定返回指向静态存储、以 NUL 结尾的版本字符串。
-        unsafe {
-            let version = sys::MV3D_LP_GetVersion();
-            if version.is_null() {
-                c""
-            } else {
-                CStr::from_ptr(version)
-            }
+        // SAFETY: 厂商允许在 Initialize 之前调用，函数没有参数。
+        let version = unsafe { sys::MV3D_LP_GetVersion() };
+        if version.is_null() {
+            return c"";
         }
+        // SAFETY: 厂商约定返回指向静态存储、以 NUL 结尾的版本字符串。
+        unsafe { CStr::from_ptr(version) }
     }
 
     /// 当前在线设备数量。
@@ -112,10 +108,6 @@ impl Sdk {
     }
 
     /// 按序列号写入设备的 IP 配置。
-    #[allow(
-        clippy::unused_self,
-        reason = "借用 Sdk 保证调用时会话仍处于初始化状态"
-    )]
     pub fn set_ip_config(&self, serial_number: &CStr, config: IpConfig) -> Result<()> {
         let mut raw = config.to_raw();
         // SAFETY: serial_number 以 NUL 结尾，raw 是完整初始化的结构体。
@@ -126,18 +118,26 @@ impl Sdk {
     pub fn open_by_ip(&self, ip: Ipv4Addr) -> Result<Device> {
         let mut text = [0; 16];
         write_ipv4(&mut text, ip);
-        self.open("MV3D_LP_OpenDeviceByIP", |handle| {
-            // SAFETY: handle 是可写输出，text 以 NUL 结尾。
-            unsafe { sys::MV3D_LP_OpenDeviceByIP(handle, text.as_ptr()) }
-        })
+        Device::open(
+            Arc::clone(&self.session),
+            "MV3D_LP_OpenDeviceByIP",
+            |handle| {
+                // SAFETY: handle 是可写输出，text 以 NUL 结尾。
+                unsafe { sys::MV3D_LP_OpenDeviceByIP(handle, text.as_ptr()) }
+            },
+        )
     }
 
     /// 按序列号打开设备。
     pub fn open_by_serial(&self, serial_number: &CStr) -> Result<Device> {
-        self.open("MV3D_LP_OpenDeviceBySN", |handle| {
-            // SAFETY: handle 是可写输出，serial_number 以 NUL 结尾。
-            unsafe { sys::MV3D_LP_OpenDeviceBySN(handle, serial_number.as_ptr()) }
-        })
+        Device::open(
+            Arc::clone(&self.session),
+            "MV3D_LP_OpenDeviceBySN",
+            |handle| {
+                // SAFETY: handle 是可写输出，serial_number 以 NUL 结尾。
+                unsafe { sys::MV3D_LP_OpenDeviceBySN(handle, serial_number.as_ptr()) }
+            },
+        )
     }
 
     /// 图像处理接口的串行锁。
@@ -146,21 +146,6 @@ impl Sdk {
             .processing
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// 两个打开接口共用：只有状态成功且 handle 非空时才构造 [`Device`]。
-    fn open(
-        &self,
-        function: &'static str,
-        open: impl FnOnce(*mut sys::HANDLE) -> sys::MV3D_LP_STATUS,
-    ) -> Result<Device> {
-        let mut handle = ptr::null_mut();
-        check(function, open(&raw mut handle))?;
-        let handle = NonNull::new(handle).ok_or(Error::Sdk {
-            function,
-            code: ErrorCode::Handle,
-        })?;
-        Ok(Device::new(handle, Arc::clone(&self.session)))
     }
 }
 

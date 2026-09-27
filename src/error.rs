@@ -25,7 +25,7 @@ pub enum Error {
     /// 输入不满足 SDK 的内存约定，未调用 SDK。
     #[error("invalid input: {0}")]
     InvalidInput(&'static str),
-    /// 设备注册过 image callback；LPSDK 不能注销 callback，Close 前不能再用 pull 取图。
+    /// 设备注册过 image callback；LPSDK 不能注销 callback，`CloseDevice` 前不能再用 pull 取图。
     #[error("pull grabbing is unavailable after an image callback was registered on this device")]
     ImageCallbackRegistered,
 }
@@ -55,7 +55,7 @@ pub(crate) use sdk_call;
 
 macro_rules! error_codes {
     ($($(#[$meta:meta])* $variant:ident = $code:ident,)+) => {
-        /// LPSDK 头文件中的状态码；头文件未定义的值保存在 [`ErrorCode::Other`]。
+        /// `Mv3dLpDefine.h` 中的状态码；头文件未定义的值保存在 [`ErrorCode::Other`]。
         ///
         /// `Display` 输出头文件中的宏名与十六进制值，便于对照厂商文档。
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
