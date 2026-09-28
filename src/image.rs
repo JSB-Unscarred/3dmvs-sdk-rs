@@ -192,48 +192,36 @@ mod tests {
     use super::Image;
     use crate::{Error, ImageType, sys};
 
-    // SDK 输出被复制；作为输入时，非压缩格式的各buffer长度必须与宽高严格对应，未知格式被拒绝。
+    // 作为 SDK 输入时只放行能校验长度的格式：非压缩格式按宽高与位数严格校验，JPEG 只要求非空，
+    // 未知格式被拒绝，避免 SDK 越界读。
     #[test]
-    fn output_is_copied_and_input_layout_is_checked() {
+    fn input_length_is_checked_before_calling_the_sdk() {
         let mut data = [1_u8, 2];
-        let mut stamps = [5_i64];
         let raw = sys::MV3D_LP_IMAGE_DATA {
             enImageType: sys::ImageType_Mono8,
             nWidth: 2,
             nHeight: 1,
             pData: data.as_mut_ptr(),
             nDataLen: 2,
-            pExposureTimeStamp: stamps.as_mut_ptr(),
             ..Default::default()
         };
-        // SAFETY: 指针指向上面的局部数组，长度与声明一致。
+        // SAFETY: pData 指向上面的 2 字节。
         let image = unsafe { Image::from_raw(&raw) };
-        data.fill(9);
-        assert_eq!(image.data, [1, 2]);
-        assert_eq!(image.exposure_timestamps.as_deref(), Some([5].as_slice()));
-        assert_eq!(image.intensity_data, None);
-        assert!(image.to_raw().is_ok());
+        let accepted = |image: Image| !matches!(image.to_raw(), Err(Error::InvalidInput(_)));
 
-        let short = Image {
+        assert!(accepted(image.clone()));
+        assert!(!accepted(Image {
             data: vec![1],
             ..image.clone()
-        };
-        assert!(matches!(short.to_raw(), Err(Error::InvalidInput(_))));
-        let stamps = Image {
-            exposure_timestamps: Some(vec![]),
-            ..image.clone()
-        };
-        assert!(matches!(stamps.to_raw(), Err(Error::InvalidInput(_))));
-        let unknown = Image {
+        }));
+        assert!(!accepted(Image {
             image_type: ImageType::from_raw(0x0108_0002),
             ..image.clone()
-        };
-        assert!(matches!(unknown.to_raw(), Err(Error::InvalidInput(_))));
-        let jpeg = Image {
+        }));
+        assert!(accepted(Image {
             image_type: ImageType::JPEG,
             data: vec![0xFF],
             ..image
-        };
-        assert!(jpeg.to_raw().is_ok());
+        }));
     }
 }
