@@ -1,8 +1,8 @@
 //! 海康机器人（Hikrobot）3D 激光轮廓传感器 SDK（LPSDK）的安全 Rust 封装。
 //!
-//! 原始 FFI 位于 `mv3d-lp-sys`。本 crate 用所有权与借用表达 SDK 的调用约定：
+//! 原始 FFI 位于 `mv3d-lp-sys`，经 [`sys`] 再导出。本 crate 用所有权与借用表达 SDK 的调用约定：
 //!
-//! - [`Sdk`] 初始化进程级 SDK，枚举、配置并打开设备，也提供图像处理接口；
+//! - [`Sdk`] 取得本进程唯一的 SDK 会话，枚举、配置并打开设备，也提供图像处理接口；
 //! - [`Device`] 独占一个 native handle，负责参数、文件传输与 exception callback；
 //! - [`Device::start_grabbing`] 与 [`Device::start_grabbing_with`] 返回借用设备的取流守卫，
 //!   pull 取图只存在于 [`Grabbing`] 上，守卫释放时停止取流。
@@ -90,6 +90,11 @@ fn write_ipv4(field: &mut [c_char; 16], ip: Ipv4Addr) {
         *target = byte.cast_signed();
     }
 }
+
+// README 中的 Rust 示例参与 doctest，避免与 API 脱节。
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 
 #[cfg(test)]
 mod tests {

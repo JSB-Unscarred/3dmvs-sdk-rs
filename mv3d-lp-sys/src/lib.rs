@@ -1,10 +1,4 @@
-//! Raw FFI bindings for the Hikrobot 3DMVS laser profiler SDK (LPSDK 1.3.3.3, `Mv3dLp`).
-//!
-//! The declarations are hand-audited against the three public LPSDK headers for Windows x86_64
-//! MSVC. Deprecated profile-era interfaces are omitted. They link `Mv3dLp.dll` through
-//! `raw-dylib`, so building needs neither the SDK nor its import library; the DLL must be on
-//! `PATH` at run time. Applications should normally use the safe `mv3d-lp` crate instead.
-
+#![doc = include_str!("../README.md")]
 #![allow(
     non_camel_case_types,
     non_snake_case,
