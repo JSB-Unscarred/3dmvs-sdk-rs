@@ -6,9 +6,9 @@ use std::net::Ipv4Addr;
 
 use crate::{IpConfigMode, fixed_cstr, sys, write_ipv4};
 
-/// `MV3D_LP_DEVICE_INFO` 的拥有副本。
+/// 枚举得到的设备信息，`MV3D_LP_DEVICE_INFO` 的副本。
 ///
-/// 本值不持有 SDK 会话；打开设备见 [`Sdk::open_by_serial`](crate::Sdk::open_by_serial)。
+/// 打开设备见 [`Sdk::open_by_serial`](crate::Sdk::open_by_serial)。
 #[derive(Clone)]
 pub struct DeviceInfo {
     raw: sys::MV3D_LP_DEVICE_INFO,

@@ -1,13 +1,11 @@
-//! 海康机器人（Hikrobot）3D 激光轮廓传感器 SDK（LPSDK）的安全 Rust 封装。
+//! 海康机器人（Hikrobot）3D 激光轮廓传感器 SDK（LPSDK）的安全 Rust 封装（非官方）。
 //!
-//! 原始 FFI 位于 `mv3d-lp-sys`，经 [`sys`] 再导出。本 crate 用所有权与借用表达 SDK 的调用约定：
+//! - [`Sdk`]：本进程的 SDK 会话，用来枚举、配置与打开设备，也提供图像处理接口；
+//! - [`Device`]：一台打开的设备，读写参数、传输文件、注册 exception callback；
+//! - [`Device::start_grabbing`] 与 [`Device::start_grabbing_with`]：开始主动取图或 callback 取图，
+//!   返回的守卫释放时停止取流。
 //!
-//! - [`Sdk`] 取得本进程唯一的 SDK 会话，枚举、配置并打开设备，也提供图像处理接口；
-//! - [`Device`] 独占一个 native handle，负责参数、文件传输与 exception callback；
-//! - [`Device::start_grabbing`] 与 [`Device::start_grabbing_with`] 返回借用设备的取流守卫，
-//!   pull 取图只存在于 [`Grabbing`] 上，守卫释放时停止取流。
-//!
-//! 设计取舍见 [`docs::architecture`]。
+//! 所有权、清理、callback 与图像的约定见 [`docs::architecture`]。
 //!
 //! ```no_run
 //! use std::net::Ipv4Addr;
@@ -30,8 +28,7 @@ use std::ffi::{CStr, CString, c_char};
 use std::net::Ipv4Addr;
 use std::slice;
 
-/// 原始 FFI 绑定（`mv3d-lp-sys`），与本 crate 同版本发布；配合 [`Device::as_raw_handle`]
-/// 调用尚未封装的 SDK 接口。
+/// 原始 FFI（`mv3d-lp-sys`），配合 [`Device::as_raw_handle`] 调用 SDK 接口。
 pub use mv3d_lp_sys as sys;
 
 mod callback;

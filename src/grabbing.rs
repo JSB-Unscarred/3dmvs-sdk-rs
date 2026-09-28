@@ -12,9 +12,9 @@ use crate::error::sdk_call;
 use crate::{Device, Error, Image, Result, sys};
 
 impl Device {
-    /// 以 pull 模式开始取流，之后用 [`Grabbing::get_image`] 取图。
+    /// 开始主动取图，之后用 [`Grabbing::get_image`] 取图。
     ///
-    /// 注册过 image callback 的设备在 `CloseDevice` 前返回 [`Error::ImageCallbackRegistered`]。
+    /// 注册过 image callback 的设备在关闭前返回 [`Error::ImageCallbackRegistered`]。
     pub fn start_grabbing(&mut self) -> Result<Grabbing<'_>> {
         if self.image_callback_registered() {
             return Err(Error::ImageCallbackRegistered);
@@ -26,9 +26,8 @@ impl Device {
 
     /// 注册 image callback 并开始取流。
     ///
-    /// SDK 在内部线程调用 `callback`，图像在回调返回前已复制为 [`Image`]。LPSDK 不能注销
-    /// callback，闭包保留到 `CloseDevice`，此后该设备不能再用 pull 取图。callback 内的 panic 会在
-    /// FFI 边界终止进程。
+    /// `callback` 在 SDK 的线程中运行，其中的 panic 会终止进程；收到的 [`Image`] 已经复制出来。
+    /// LPSDK 不能注销 callback，闭包保留到设备关闭，此后这台设备不能再主动取图。
     pub fn start_grabbing_with<F>(&mut self, callback: F) -> Result<CallbackGrabbing<'_>>
     where
         F: Fn(Image) + Send + Sync + 'static,
@@ -50,7 +49,7 @@ impl Device {
     }
 }
 
-/// pull 模式的取流守卫。
+/// 主动取图的取流守卫，释放时停止取流。
 #[derive(Debug)]
 #[must_use = "grabbing stops when the guard is dropped"]
 pub struct Grabbing<'a> {
@@ -69,7 +68,7 @@ impl Grabbing<'_> {
                 timeout_ms(timeout)
             ))
         }?;
-        // SAFETY: 输出buffer在下一次 GetImage 前有效；守卫不是 Sync，复制期间不会有其它取图调用。
+        // SAFETY: 输出 buffer 在下一次 GetImage 前有效；守卫不是 Sync，复制期间不会有其它取图调用。
         Ok(unsafe { Image::from_raw(&raw) })
     }
 
@@ -95,7 +94,7 @@ impl Drop for Grabbing<'_> {
     }
 }
 
-/// callback 模式的取流守卫。
+/// callback 取图的取流守卫，释放时停止取流。
 #[derive(Debug)]
 #[must_use = "grabbing stops when the guard is dropped"]
 pub struct CallbackGrabbing<'a> {

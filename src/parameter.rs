@@ -6,7 +6,7 @@ use crate::{Error, Result, fixed_cstring, sys};
 
 /// [`Device::get_parameter`](crate::Device::get_parameter) 读到的参数值与约束。
 ///
-/// 变体名对应 SDK 的 `ParamType_*`，字段名与 mvs-sdk 的 `IntValue` 等节点值类型一致。
+/// 变体对应 SDK 的 `ParamType_*`。
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Parameter {

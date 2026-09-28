@@ -23,10 +23,10 @@ pub struct ImageCalibration {
     pub z_offset: i32,
 }
 
-/// 一帧图像，像素由 Rust 拥有。
+/// 一帧图像，数据由 Rust 拥有。
 ///
-/// 取流与图像处理的输出都在返回前从 SDK buffer复制。作为图像处理的输入时，
-/// 非压缩格式要求数据长度与宽高、格式严格对应。
+/// 取流与图像处理的输出都从 SDK buffer 复制而来。作为图像处理的输入时，数据长度必须与宽高、
+/// 格式对应，本 crate 无法校验长度的格式会被拒绝。
 #[derive(Clone, PartialEq)]
 pub struct Image {
     /// 图像格式。
@@ -85,9 +85,9 @@ impl Image {
 
     /// 借用本图像构造 SDK 输入。
     ///
-    /// SDK 按宽高与格式读取buffer，长度不足会越界读，因此只放行本 crate 能校验长度的格式：
+    /// SDK 按宽高与格式读取 buffer，长度不足会越界读，因此只放行本 crate 能校验长度的格式：
     /// 非压缩格式要求长度与宽高、位数严格对应，JPEG 只要求非空，其余格式返回
-    /// [`Error::InvalidInput`]。返回值借用 `self` 的buffer，调用方须在 `self` 存活期间使用。
+    /// [`Error::InvalidInput`]。返回值借用 `self` 的 buffer，调用方须在 `self` 存活期间使用。
     pub(crate) fn to_raw(&self) -> Result<sys::MV3D_LP_IMAGE_DATA> {
         let pixels = u64::from(self.width) * u64::from(self.height);
         let data_matches = match self.image_type {

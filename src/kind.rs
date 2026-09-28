@@ -4,9 +4,9 @@ use std::fmt;
 
 use crate::sys;
 
-/// 图像格式码，与 MVS 的 `GigE` Vision 像素格式码同一编码。
+/// 图像格式码，编码与 `GigE` Vision 像素格式相同。
 ///
-/// SDK 输出可能包含本 crate 未列出的格式，因此用 newtype 保存原始值。
+/// 未列出的格式可以用 [`ImageType::from_raw`] 表示。
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageType(u32);
 

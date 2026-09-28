@@ -11,11 +11,10 @@ use crate::error::{check, sdk_call};
 use crate::sdk::Session;
 use crate::{Error, ErrorCode, ExceptionInfo, Parameter, ParameterValue, Result, sys};
 
-/// 已打开的激光轮廓传感器。
+/// 一台打开的激光轮廓传感器。
 ///
-/// `Device` 独占 native handle，释放时调用 `MV3D_LP_CloseDevice`；需要观察清理错误时调用
-/// [`Device::close`]。设备持有 SDK 会话的引用，不借用 [`Sdk`](crate::Sdk)。
-/// `Device` 是 `Send` 但不是 `Sync`，同一 handle 上的调用由 owner 串行发起。
+/// 释放时关闭设备；需要检查清理错误时调用 [`Device::close`]。设备不借用 [`Sdk`](crate::Sdk)，
+/// 可以移到其它线程，但不能在线程间共享。
 #[must_use = "the device is closed when dropped"]
 pub struct Device {
     /// 只在 `release` 中被取走，存活的设备总是持有 handle。
@@ -51,9 +50,9 @@ impl Device {
         })
     }
 
-    /// native handle，供尚未封装的 SDK 接口使用。
+    /// 设备的 native handle，用于经 [`sys`](crate::sys) 直接调用 SDK。
     ///
-    /// 通过它改变取流、callback 注册或 handle 生命周期会破坏本 crate 的约定。
+    /// 不要经它开始或停止取流、注册 callback 或关闭设备，否则会与本 crate 维护的状态冲突。
     pub fn as_raw_handle(&self) -> *mut c_void {
         self.handle.map_or(ptr::null_mut(), NonNull::as_ptr)
     }
@@ -132,8 +131,7 @@ impl Device {
 
     /// 注册 exception callback，替换之前的注册。
     ///
-    /// SDK 在内部线程调用 `callback`；闭包保留到 `CloseDevice`，重复注册会累积闭包。
-    /// callback 内的 panic 会在 FFI 边界终止进程。
+    /// `callback` 在 SDK 的线程中运行，其中的 panic 会终止进程。闭包保留到设备关闭，重复注册会累积闭包。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> Result<()>
     where
         F: Fn(ExceptionInfo<'_>) + Send + Sync + 'static,
@@ -151,7 +149,7 @@ impl Device {
         Ok(())
     }
 
-    /// 关闭设备，返回 SDK 的结果。
+    /// 关闭设备并返回清理结果。
     pub fn close(mut self) -> Result<()> {
         self.release()
     }

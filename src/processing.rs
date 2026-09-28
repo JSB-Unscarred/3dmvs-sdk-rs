@@ -15,7 +15,7 @@ impl Sdk {
     pub fn depth_to_point_cloud(&self, depth: &Image) -> Result<Image> {
         let mut input = depth.to_raw()?;
         self.process(|output| {
-            // SAFETY: input 借用已校验的buffer，output 是可写输出。
+            // SAFETY: input 借用已校验的 buffer，output 是可写输出。
             unsafe { sdk_call!(MV3D_LP_MapDepthToPointCloud(&raw mut input, output)) }
         })
     }
@@ -40,7 +40,7 @@ impl Sdk {
         let mut input = image.to_raw()?;
         self.process(|output| {
             output.enImageType = target.raw().cast_signed();
-            // SAFETY: input 借用已校验的buffer，output 只预置了目标格式。
+            // SAFETY: input 借用已校验的 buffer，output 只预置了目标格式。
             unsafe { sdk_call!(MV3D_LP_ImageConvert(&raw mut input, output)) }
         })
     }
@@ -63,7 +63,7 @@ impl Sdk {
     ) -> Result<()> {
         let mut input = image.to_raw()?;
         let _processing = self.lock_processing();
-        // SAFETY: input 借用已校验的buffer，file_name 以 NUL 结尾。
+        // SAFETY: input 借用已校验的 buffer，file_name 以 NUL 结尾。
         unsafe {
             sdk_call!(MV3D_LP_SaveImage(
                 &raw mut input,
@@ -90,7 +90,7 @@ impl Sdk {
         };
         let mut input = image.to_raw()?;
         let _processing = self.lock_processing();
-        // SAFETY: input 借用已校验的buffer；hwnd 来自调用期间借用的窗口。
+        // SAFETY: input 借用已校验的 buffer；hwnd 来自调用期间借用的窗口。
         unsafe {
             sdk_call!(MV3D_LP_DisplayImage(
                 &raw mut input,
@@ -110,7 +110,7 @@ impl Sdk {
         let _processing = self.lock_processing();
         let mut output = sys::MV3D_LP_IMAGE_DATA::default();
         call(&mut output)?;
-        // SAFETY: SDK 调用成功，输出buffer在下一次处理调用（即锁释放）之前有效。
+        // SAFETY: SDK 调用成功，输出 buffer 在下一次处理调用（即锁释放）之前有效。
         Ok(unsafe { Image::from_raw(&output) })
     }
 }

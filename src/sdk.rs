@@ -15,12 +15,10 @@ use crate::{Device, DeviceInfo, Error, IpConfig, Result, sys, write_ipv4};
 /// Finalize 之后不再重新初始化。
 static SESSION: Mutex<Option<Weak<Session>>> = Mutex::new(None);
 
-/// 已初始化的 SDK 会话，由 [`Sdk`] 与每个 [`Device`] 通过 `Arc` 共享。
-///
-/// 最后一个持有者释放时调用 `MV3D_LP_Finalize`，因此设备不会比会话活得更久。
-/// 设备的 `CloseDevice` 失败时会泄漏一份引用，使 Finalize 不再执行。
+/// 已初始化的 SDK 会话，由 [`Sdk`] 与每个 [`Device`] 共享，最后一份释放时调用 `MV3D_LP_Finalize`。
+/// 设备的 `CloseDevice` 失败时会泄漏一份，使 Finalize 不再执行。
 pub(crate) struct Session {
-    /// 图像处理接口的输出buffer在下一次处理调用前有效，复制完成前需串行。
+    /// 图像处理接口的输出 buffer 在下一次处理调用前有效，复制完成前需串行。
     processing: Mutex<()>,
 }
 
@@ -32,11 +30,10 @@ impl Drop for Session {
     }
 }
 
-/// 3DMVS SDK 的进程级入口。
+/// 本进程的 3DMVS SDK 会话，也提供图像处理接口。
 ///
-/// 本进程只有一个会话，会话存活期间 [`Sdk::new`] 与 `clone` 得到的都是它。[`Device`] 持有会话引用
-/// 而不借用 `Sdk`，因此可以存入结构体或移动到其它线程；`Sdk` 与全部设备都释放后 SDK 自动反初始化。
-/// 以 `&self` 借用 `Sdk` 的方法保证调用时 SDK 已初始化。`Sdk` 是 `Send + Sync`。
+/// 会话存活期间 [`Sdk::new`] 与 `clone` 得到同一会话；`Sdk` 与所有 [`Device`] 释放后 SDK 反初始化。
+/// 设备不借用 `Sdk`，可以放进结构体或移到其它线程。
 #[derive(Clone)]
 #[must_use = "the SDK is finalized once the last Sdk and device are dropped"]
 pub struct Sdk {
@@ -109,6 +106,7 @@ impl Sdk {
 
     /// 按序列号写入设备的 IP 配置。
     pub fn set_ip_config(&self, serial_number: &CStr, config: IpConfig) -> Result<()> {
+        // 借用 `Sdk` 只为保证调用时 SDK 已初始化。
         let mut raw = config.to_raw();
         // SAFETY: serial_number 以 NUL 结尾，raw 是完整初始化的结构体。
         unsafe { sdk_call!(MV3D_LP_SetIpConfig(serial_number.as_ptr(), &raw mut raw)) }
