@@ -3,7 +3,6 @@ name = "mv3d-lp-sys"
 description = "Unofficial raw FFI bindings for the Hikrobot 3DMVS laser profiler SDK (Mv3dLp)."
 keywords = ["hikrobot", "hikvision", "3dmvs", "laser-profiler", "ffi"]
 categories = ["external-ffi-bindings", "hardware-support"]
-publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
