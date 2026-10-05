@@ -8,7 +8,8 @@ use crate::{IpConfigMode, fixed_cstr, sys, write_ipv4};
 
 /// 枚举得到的设备信息，`MV3D_LP_DEVICE_INFO` 的副本。
 ///
-/// 打开设备见 [`Sdk::open_by_serial`](crate::Sdk::open_by_serial)。
+/// 用 [`Sdk::open_by_serial`](crate::Sdk::open_by_serial) 或 [`Sdk::open_by_ip`](crate::Sdk::open_by_ip)
+/// 打开对应的设备。
 #[derive(Clone)]
 pub struct DeviceInfo {
     raw: sys::MV3D_LP_DEVICE_INFO,

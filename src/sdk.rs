@@ -32,8 +32,7 @@ impl Drop for Session {
 
 /// 本进程的 3DMVS SDK 会话，也提供图像处理接口。
 ///
-/// 会话存活期间 [`Sdk::new`] 与 `clone` 得到同一会话；`Sdk` 与所有 [`Device`] 释放后 SDK 反初始化。
-/// 设备不借用 `Sdk`，可以放进结构体或移到其它线程。
+/// [`Sdk::new`] 与 `clone` 得到同一会话；`Sdk` 与所有 [`Device`] 都释放后 SDK 反初始化。
 #[derive(Clone)]
 #[must_use = "the SDK is finalized once the last Sdk and device are dropped"]
 pub struct Sdk {
@@ -41,9 +40,9 @@ pub struct Sdk {
 }
 
 impl Sdk {
-    /// 返回本进程的 SDK 会话，首次调用时 `MV3D_LP_Initialize`。
+    /// 取得本进程的 SDK 会话，首次调用时执行 `MV3D_LP_Initialize`。
     ///
-    /// Initialize 失败返回 [`Error::Sdk`]，之后可以重试；会话 Finalize 之后返回 [`Error::Finalized`]。
+    /// 初始化失败时返回 [`Error::Sdk`]，可以重试；SDK 反初始化之后返回 [`Error::Finalized`]。
     pub fn new() -> Result<Self> {
         let mut state = SESSION.lock().unwrap_or_else(PoisonError::into_inner);
         let session = match state.as_ref().map(Weak::upgrade) {
@@ -62,7 +61,7 @@ impl Sdk {
         Ok(Self { session })
     }
 
-    /// SDK 版本字符串，无需先初始化。
+    /// SDK 版本字符串，无需初始化。
     pub fn version() -> &'static CStr {
         // SAFETY: 厂商允许在 Initialize 之前调用，函数没有参数。
         let version = unsafe { sys::MV3D_LP_GetVersion() };
@@ -83,7 +82,7 @@ impl Sdk {
 
     /// 枚举在线设备。
     ///
-    /// 数量与列表分两次查询：期间下线的设备使条数少于计数，新上线的设备留到下次枚举。
+    /// 数量与列表分两次查询，期间上线的设备要到下次枚举才出现。
     pub fn devices(&self) -> Result<Vec<DeviceInfo>> {
         let count = self.device_count()?;
         // 与厂商示例一致，没有设备时不调用 GetDeviceList，避免传入悬垂指针与 0 容量。

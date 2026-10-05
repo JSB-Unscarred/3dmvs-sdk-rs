@@ -25,8 +25,8 @@ pub struct ImageCalibration {
 
 /// 一帧图像，数据由 Rust 拥有。
 ///
-/// 取流与图像处理的输出都从 SDK buffer 复制而来。作为图像处理的输入时，数据长度必须与宽高、
-/// 格式对应，本 crate 无法校验长度的格式会被拒绝。
+/// 取流与图像处理的输出都从 SDK buffer 复制而来。作为图像处理的输入时，数据长度必须与宽高、格式对应，
+/// 规则见 [`docs::architecture`](crate::docs::architecture)。
 #[derive(Clone, PartialEq)]
 pub struct Image {
     /// 图像格式。

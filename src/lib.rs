@@ -1,11 +1,13 @@
 //! 海康机器人（Hikrobot）3D 激光轮廓传感器 SDK（LPSDK）的安全 Rust 封装（非官方）。
 //!
-//! - [`Sdk`]：本进程的 SDK 会话，用来枚举、配置与打开设备，也提供图像处理接口；
-//! - [`Device`]：一台打开的设备，读写参数、传输文件、注册 exception callback；
-//! - [`Device::start_grabbing`] 与 [`Device::start_grabbing_with`]：开始主动取图或 callback 取图，
+//! 只支持 `x86_64-pc-windows-msvc`；编译不需要 3DMVS，运行时需要安装 3DMVS（LPSDK 1.3.3.3 或更新版本）。
+//!
+//! - [`Sdk`]：本进程的 SDK 会话，枚举、配置并打开设备，也提供图像处理接口；
+//! - [`Device`]：一台打开的设备，读写参数，传输文件，注册 exception callback；
+//! - [`Device::start_grabbing`] 与 [`Device::start_grabbing_with`]：主动取图或 callback 取图，
 //!   返回的守卫释放时停止取流。
 //!
-//! 所有权、清理、callback 与图像的约定见 [`docs::architecture`]。
+//! 所有权、清理、callback 与图像的约定见 [`docs::architecture`]；SDK 接口也可以经 [`sys`] 直接调用。
 //!
 //! ```no_run
 //! use std::net::Ipv4Addr;
@@ -88,9 +90,10 @@ fn write_ipv4(field: &mut [c_char; 16], ip: Ipv4Addr) {
     }
 }
 
-// README 中的 Rust 示例参与 doctest，避免与 API 脱节。
+// 两份 README 中的 Rust 示例参与 doctest，避免与 API 脱节。
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
+#[doc = include_str!("../README.en.md")]
 struct ReadmeDoctests;
 
 #[cfg(test)]

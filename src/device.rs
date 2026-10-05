@@ -13,8 +13,8 @@ use crate::{Error, ErrorCode, ExceptionInfo, Parameter, ParameterValue, Result, 
 
 /// 一台打开的激光轮廓传感器。
 ///
-/// 释放时关闭设备；需要检查清理错误时调用 [`Device::close`]。设备不借用 [`Sdk`](crate::Sdk)，
-/// 可以移到其它线程，但不能在线程间共享。
+/// 释放时关闭设备，需要检查清理错误时改用 [`Device::close`]。设备不借用 [`Sdk`](crate::Sdk)；
+/// 它可以移到其它线程，不能在线程间共享。
 #[must_use = "the device is closed when dropped"]
 pub struct Device {
     /// 只在 `release` 中被取走，存活的设备总是持有 handle。
@@ -52,7 +52,7 @@ impl Device {
 
     /// 设备的 native handle，用于经 [`sys`](crate::sys) 直接调用 SDK。
     ///
-    /// 不要经它开始或停止取流、注册 callback 或关闭设备，否则会与本 crate 维护的状态冲突。
+    /// 不要用它开始或停止取流、注册 callback 或关闭设备，这些操作会与本 crate 维护的状态冲突。
     pub fn as_raw_handle(&self) -> *mut c_void {
         self.handle.map_or(ptr::null_mut(), NonNull::as_ptr)
     }
@@ -102,10 +102,9 @@ impl Device {
         unsafe { sdk_call!(MV3D_LP_Execute(self.as_raw_handle(), key.as_ptr())) }
     }
 
-    /// 把设备文件下载到主机，传输结束后返回。
+    /// 把设备文件下载到主机，阻塞到传输结束。
     ///
-    /// 调用阻塞整个传输；`Device` 不是 `Sync`，传输期间无法查询进度，因此不封装
-    /// `MV3D_LP_GetFileAccessProgress`。
+    /// `Device` 不是 `Sync`，传输期间无法查询进度，`MV3D_LP_GetFileAccessProgress` 因此不封装。
     pub fn download_file(&self, device_file: &CStr, local_file: &CStr) -> Result<()> {
         let mut access = file_access(local_file, device_file);
         // SAFETY: 调用阻塞到传输结束，两个以 NUL 结尾的文件名在此期间一直有效。
@@ -117,7 +116,7 @@ impl Device {
         }
     }
 
-    /// 把主机文件上传到设备，传输结束后返回；阻塞语义同 [`Device::download_file`]。
+    /// 把主机文件上传到设备，阻塞到传输结束，同 [`Device::download_file`]。
     pub fn upload_file(&self, local_file: &CStr, device_file: &CStr) -> Result<()> {
         let mut access = file_access(local_file, device_file);
         // SAFETY: 调用阻塞到传输结束，两个以 NUL 结尾的文件名在此期间一直有效。
@@ -131,7 +130,7 @@ impl Device {
 
     /// 注册 exception callback，替换之前的注册。
     ///
-    /// `callback` 在 SDK 的线程中运行，其中的 panic 会终止进程。闭包保留到设备关闭，重复注册会累积闭包。
+    /// `callback` 在 SDK 的线程中运行，其中的 panic 会终止进程。每次注册的闭包都保留到设备关闭。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> Result<()>
     where
         F: Fn(ExceptionInfo<'_>) + Send + Sync + 'static,
