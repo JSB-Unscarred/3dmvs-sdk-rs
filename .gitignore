@@ -1,4 +1,6 @@
 /target/
+# LPSDK 在工作目录生成的日志
+Mv3dLpLog/
 
 /.claude/
 /.idea/

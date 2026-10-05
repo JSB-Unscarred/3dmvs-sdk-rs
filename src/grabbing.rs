@@ -28,6 +28,9 @@ impl Device {
     ///
     /// `callback` 在 SDK 的线程中运行，其中的 panic 会终止进程；收到的 [`Image`] 已经复制出来。
     /// LPSDK 不能注销 callback，闭包保留到设备关闭，此后这台设备不能再主动取图。
+    ///
+    /// 注册成功而 `MV3D_LP_StartMeasure` 失败时返回错误，但 callback 已经注册：设备同样不能再主动取图，
+    /// 可以再次调用本方法重试。
     pub fn start_grabbing_with<F>(&mut self, callback: F) -> Result<CallbackGrabbing<'_>>
     where
         F: Fn(Image) + Send + Sync + 'static,

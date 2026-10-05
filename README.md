@@ -43,7 +43,7 @@ callback 取图（`grab_callback`）的完整示例。
 - `start_grabbing` 与 `start_grabbing_with` 返回的守卫可变借用设备，守卫释放时停止取流。取流期间仍可
   读写参数与软触发。
 - LPSDK 不能注销 image callback：一台设备注册过 callback 后，关闭前不能再主动取图，`start_grabbing`
-  会返回 `Error::ImageCallbackRegistered`。
+  会返回 `Error::ImageCallbackRegistered`。`start_grabbing_with` 注册成功但开始取流失败时也是如此。
 - callback 在 SDK 的线程中运行，其中的 panic 会终止进程。不要在 callback 里关闭设备或停止取流，
   应通过 channel 交给持有设备的线程处理。
 - 取流与图像处理得到的 `Image` 都是复制出来的数据，可以随意保留。作为处理输入时，数据长度必须与宽高、
@@ -51,6 +51,7 @@ callback 取图（`grab_callback`）的完整示例。
 - `download_file` 与 `upload_file` 会阻塞到传输结束。
 - `Drop` 会忽略清理错误；需要检查时调用 `Device::close`、`Grabbing::stop` 或 `CallbackGrabbing::stop`。
 - 参数名等字符串参数使用 `&CStr`，例如 `c"ExposureTime"`。
+- LPSDK 会在进程的工作目录下创建 `Mv3dLpLog` 日志目录。
 
 所有权与清理策略的细节见 [`docs::architecture`](https://docs.rs/mv3d-lp/latest/mv3d_lp/docs/architecture/index.html)。
 

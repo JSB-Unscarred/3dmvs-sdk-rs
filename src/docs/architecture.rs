@@ -36,7 +36,8 @@
 //!
 //! LPSDK 不能注销 image callback，注册后这台设备在关闭前只能用 callback 取图。这一点无法用借用表达，
 //! 所以在这种设备上调用 `start_grabbing` 会返回
-//! [`Error::ImageCallbackRegistered`](crate::Error::ImageCallbackRegistered)。
+//! [`Error::ImageCallbackRegistered`](crate::Error::ImageCallbackRegistered)。`start_grabbing_with` 在注册成功、
+//! `MV3D_LP_StartMeasure` 失败时也是如此：调用返回错误，但 callback 已经注册，只能再次以 callback 方式重试。
 //!
 //! 参数读写、软触发与文件传输只需要 `&Device`，取流期间经守卫的 `Deref` 仍可调用。文件传输会阻塞到
 //! 结束，由于 `Device` 不能在线程间共享，传输期间无法查询进度。
