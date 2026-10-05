@@ -13,11 +13,11 @@ use std::ffi::CString;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use mv3d_lp::Sdk;
+use mv3d_lp::{CallbackGrabbing, Sdk};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-// pull 与 callback 两条取流链，以及显式清理；LPSDK 不能注销 image callback，所以先 pull 后 callback。
+// pull（借用设备）与 callback（按值持有设备）两条取流链，以及显式清理；LPSDK 不能注销 image callback，所以先 pull 后 callback。
 #[test]
 #[ignore = "requires a dedicated device and MV3D_LP_TEST_SERIAL"]
 fn pull_and_callback_grabbing() -> Result<(), Box<dyn Error>> {
@@ -29,14 +29,17 @@ fn pull_and_callback_grabbing() -> Result<(), Box<dyn Error>> {
     let grabbing = device.start_grabbing()?;
     let image = grabbing.get_image(Some(TIMEOUT))?;
     assert!(image.valid && !image.data.is_empty());
-    grabbing.stop()?;
+    grabbing.stop().1?;
 
+    // callback 守卫按值持有设备，stop 后交还。
     let (sender, receiver) = mpsc::sync_channel(1);
-    let grabbing = device.start_grabbing_with(move |image| {
+    let grabbing = CallbackGrabbing::start(device, move |image| {
         let _ = sender.try_send(image);
-    })?;
+    })
+    .map_err(|(_, error)| error)?;
     assert!(!receiver.recv_timeout(TIMEOUT)?.data.is_empty());
-    grabbing.stop()?;
+    let (device, result) = grabbing.stop();
+    result?;
 
     device.close()?;
     Ok(())

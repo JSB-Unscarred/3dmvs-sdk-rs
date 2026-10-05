@@ -4,8 +4,8 @@
 //!
 //! - [`Sdk`]：本进程的 SDK 会话，枚举、配置并打开设备，也提供图像处理接口；
 //! - [`Device`]：一台打开的设备，读写参数，传输文件，注册 exception callback；
-//! - [`Device::start_grabbing`] 与 [`Device::start_grabbing_with`]：主动取图或 callback 取图，
-//!   返回的守卫释放时停止取流。
+//! - [`Grabbing`] 与 [`CallbackGrabbing`]：主动取图或 callback 取图的守卫，借用或按值持有设备，
+//!   释放时停止取流。
 //!
 //! 所有权、清理、callback 与图像的约定见 [`docs::architecture`]；SDK 接口也可以经 [`sys`] 直接调用。
 //!
@@ -49,7 +49,7 @@ pub use callback::{ExceptionInfo, ExceptionKind};
 pub use device::Device;
 pub use device_info::{DeviceInfo, IpConfig};
 pub use error::{Error, ErrorCode, Result};
-pub use grabbing::{CallbackGrabbing, Grabbing};
+pub use grabbing::{CallbackGrabbing, Grabbing, HoldsDevice};
 pub use image::{Image, ImageCalibration};
 pub use kind::{ImageFileFormat, ImageType, IpConfigMode};
 pub use parameter::{Parameter, ParameterValue};

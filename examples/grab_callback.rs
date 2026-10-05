@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             image.data.len()
         );
     }
-    grabbing.stop()?;
+    grabbing.stop().1?;
 
     device.close()?;
     Ok(())

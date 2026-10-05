@@ -46,9 +46,10 @@ saves a point cloud (`grab_pull`) and callback grabbing (`grab_callback`).
 - **Session**: a process has a single SDK session; `Sdk::new` and `clone` both return it. The SDK is finalized
   once the `Sdk` and every `Device` are dropped, after which `Sdk::new` returns `Error::Finalized`. The image
   processing interfaces are methods of `Sdk`, so a worker thread can use its own clone.
-- **Grabbing**: the guards returned by `start_grabbing` and `start_grabbing_with` borrow the device mutably
-  and stop grabbing when dropped. Parameters can still be read and written, and soft triggers sent, while
-  grabbing.
+- **Grabbing**: `Device::start_grabbing` and `start_grabbing_with` return guards that borrow the device. To store a
+  guard in a struct, use `Grabbing::start(device)` or `CallbackGrabbing::start(device, callback)`, which own the device
+  and hand it back on a failed start or on `stop`. Guards stop grabbing when dropped. Parameters can still be read and
+  written, and soft triggers sent, while grabbing.
 - **Image callbacks cannot be unregistered**: once a device has registered an image callback, it can only grab
   through callbacks until it is closed, and `start_grabbing` returns `Error::ImageCallbackRegistered`. The same
   holds when `start_grabbing_with` registers the callback but fails to start grabbing.
@@ -82,11 +83,11 @@ Based on `Mv3dLpApi.h` and `Mv3dLpImgProc.h` of LPSDK 1.3.3.3. A failed SDK call
 | `MV3D_LP_CloseDevice` | `Device::close(self) -> Result<()>`, `Drop` |  |
 | `MV3D_LP_SetIpConfig` | `Sdk::set_ip_config(&self, &CStr, IpConfig) -> Result<()>` | The device is selected by serial number |
 | `MV3D_LP_RegisterExceptionCallBack` | `Device::register_exception_callback(&mut self, F) -> Result<()>` | `F: Fn(ExceptionInfo<'_>) + Send + Sync + 'static` |
-| `MV3D_LP_StartMeasure` | `Device::start_grabbing(&mut self) -> Result<Grabbing<'_>>`, `start_grabbing_with` |  |
-| `MV3D_LP_StopMeasure` | `Grabbing::stop(self)`, `CallbackGrabbing::stop(self)`, `Drop` of the guards |  |
+| `MV3D_LP_StartMeasure` | `Grabbing::start(D) -> Result<Grabbing<D>, (D, Error)>`, `Device::start_grabbing(&mut self) -> Result<Grabbing<&mut Device>>`, `CallbackGrabbing::start` | `D: HoldsDevice` (`Device` or `&mut Device`); hands the device back on failure |
+| `MV3D_LP_StopMeasure` | `Grabbing::stop(self) -> (D, Result<()>)`, `CallbackGrabbing::stop(self) -> (D, Result<()>)`, `Drop` of the guards | Hands the device back |
 | `MV3D_LP_SoftTrigger` | `Device::soft_trigger(&self) -> Result<()>` |  |
 | `MV3D_LP_GetImage` | `Grabbing::get_image(&self, Option<Duration>) -> Result<Image>` | `None` waits forever |
-| `MV3D_LP_RegisterImageDataCallBack` | `Device::start_grabbing_with(&mut self, F) -> Result<CallbackGrabbing<'_>>` | `F: Fn(Image) + Send + Sync + 'static` |
+| `MV3D_LP_RegisterImageDataCallBack` | `CallbackGrabbing::start(D, F) -> Result<CallbackGrabbing<D>, (D, Error)>`, `Device::start_grabbing_with(&mut self, F) -> Result<CallbackGrabbing<&mut Device>>` | `F: Fn(Image) + Send + Sync + 'static` |
 | `MV3D_LP_ClearDataBuffer` | `Device::clear_buffer(&self) -> Result<()>` |  |
 | `MV3D_LP_GetParam` | `Device::get_parameter(&self, &CStr) -> Result<Parameter>` |  |
 | `MV3D_LP_SetParam` | `Device::set_parameter(&self, &CStr, ParameterValue<'_>) -> Result<()>` | Strings are limited to 255 bytes |

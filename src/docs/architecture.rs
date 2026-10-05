@@ -27,8 +27,17 @@
 //!
 //! ## 取流
 //!
-//! [`Device::start_grabbing`](crate::Device::start_grabbing) 与
-//! [`Device::start_grabbing_with`](crate::Device::start_grabbing_with) 返回的守卫可变借用设备，因此：
+//! 取流守卫 [`Grabbing`](crate::Grabbing) 与 [`CallbackGrabbing`](crate::CallbackGrabbing) 独占设备，
+//! 持有方式由 [`HoldsDevice`](crate::HoldsDevice) 决定：
+//!
+//! - `&mut Device`：借用设备，由 [`Device::start_grabbing`](crate::Device::start_grabbing) 与
+//!   [`Device::start_grabbing_with`](crate::Device::start_grabbing_with) 创建，适合在一个作用域内取流；
+//! - `Device`：按值持有，由 [`Grabbing::start`](crate::Grabbing::start) 与
+//!   [`CallbackGrabbing::start`](crate::CallbackGrabbing::start) 创建，守卫可以存进结构体；开始失败或 `stop`
+//!   时交还设备。
+//!
+//! `HoldsDevice` 是 sealed trait：守卫依赖每次借出的都是开始取流的同一台设备，任意 `BorrowMut` 实现
+//! 无法保证这一点。两种方式下：
 //!
 //! - 取流期间不能再次开始取流、注册 callback 或关闭设备；
 //! - 只有 [`Grabbing`](crate::Grabbing) 能主动取图；
@@ -43,7 +52,7 @@
 //! 这一点无法用借用表达，改为运行时检查，此后 `start_grabbing` 返回
 //! [`Error::ImageCallbackRegistered`](crate::Error::ImageCallbackRegistered)。
 //!
-//! `start_grabbing_with` 注册成功而 `MV3D_LP_StartMeasure` 失败时也是如此：调用返回错误，但 callback
+//! `start_grabbing_with` 注册成功而 `MV3D_LP_StartMeasure` 失败时也是如此：调用返回错误并交还设备，但 callback
 //! 已经注册，只能再次以 callback 方式重试。
 //!
 //! ## 清理失败

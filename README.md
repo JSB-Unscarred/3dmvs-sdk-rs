@@ -45,8 +45,9 @@ callback 取图（`grab_callback`）。
 - **会话**：一个进程只有一个 SDK 会话，`Sdk::new` 与 `clone` 得到的都是它。`Sdk` 与所有 `Device`
   都释放后 SDK 反初始化，此后 `Sdk::new` 返回 `Error::Finalized`。图像处理接口在 `Sdk` 上，工作线程可以
   `clone` 一份使用。
-- **取流**：`start_grabbing` 与 `start_grabbing_with` 返回的守卫可变借用设备，释放时停止取流；
-  取流期间仍可读写参数、发送软触发。
+- **取流**：`Device::start_grabbing` 与 `start_grabbing_with` 返回借用设备的守卫；需要把守卫存进结构体时，
+  用 `Grabbing::start(device)` 或 `CallbackGrabbing::start(device, callback)` 按值持有设备，开始失败或 `stop` 时交还设备。
+  守卫释放时停止取流，取流期间仍可读写参数、发送软触发。
 - **Image callback 不能注销**：设备注册过 image callback 后，关闭前只能用 callback 取图，`start_grabbing`
   返回 `Error::ImageCallbackRegistered`。`start_grabbing_with` 注册成功但开始取流失败时也是如此。
 - **Callback**：在 SDK 的线程中运行，其中的 panic 会终止进程。不要在 callback 里关闭设备或停止取流，
@@ -76,11 +77,11 @@ callback 取图（`grab_callback`）。
 | `MV3D_LP_CloseDevice` | `Device::close(self) -> Result<()>`、`Drop` |  |
 | `MV3D_LP_SetIpConfig` | `Sdk::set_ip_config(&self, &CStr, IpConfig) -> Result<()>` | 按序列号指定设备 |
 | `MV3D_LP_RegisterExceptionCallBack` | `Device::register_exception_callback(&mut self, F) -> Result<()>` | `F: Fn(ExceptionInfo<'_>) + Send + Sync + 'static` |
-| `MV3D_LP_StartMeasure` | `Device::start_grabbing(&mut self) -> Result<Grabbing<'_>>`、`start_grabbing_with` |  |
-| `MV3D_LP_StopMeasure` | `Grabbing::stop(self)`、`CallbackGrabbing::stop(self)`、守卫的 `Drop` |  |
+| `MV3D_LP_StartMeasure` | `Grabbing::start(D) -> Result<Grabbing<D>, (D, Error)>`、`Device::start_grabbing(&mut self) -> Result<Grabbing<&mut Device>>`、`CallbackGrabbing::start` | `D: HoldsDevice`（`Device` 或 `&mut Device`）；失败时交还设备 |
+| `MV3D_LP_StopMeasure` | `Grabbing::stop(self) -> (D, Result<()>)`、`CallbackGrabbing::stop(self) -> (D, Result<()>)`、守卫的 `Drop` | 交还设备 |
 | `MV3D_LP_SoftTrigger` | `Device::soft_trigger(&self) -> Result<()>` |  |
 | `MV3D_LP_GetImage` | `Grabbing::get_image(&self, Option<Duration>) -> Result<Image>` | `None` 表示无限等待 |
-| `MV3D_LP_RegisterImageDataCallBack` | `Device::start_grabbing_with(&mut self, F) -> Result<CallbackGrabbing<'_>>` | `F: Fn(Image) + Send + Sync + 'static` |
+| `MV3D_LP_RegisterImageDataCallBack` | `CallbackGrabbing::start(D, F) -> Result<CallbackGrabbing<D>, (D, Error)>`、`Device::start_grabbing_with(&mut self, F) -> Result<CallbackGrabbing<&mut Device>>` | `F: Fn(Image) + Send + Sync + 'static` |
 | `MV3D_LP_ClearDataBuffer` | `Device::clear_buffer(&self) -> Result<()>` |  |
 | `MV3D_LP_GetParam` | `Device::get_parameter(&self, &CStr) -> Result<Parameter>` |  |
 | `MV3D_LP_SetParam` | `Device::set_parameter(&self, &CStr, ParameterValue<'_>) -> Result<()>` | 字符串最多 255 字节 |

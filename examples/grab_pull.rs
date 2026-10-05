@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         last = Some(image);
     }
-    grabbing.stop()?;
+    grabbing.stop().1?;
 
     if let Some(image) = last.filter(|image| image.image_type == ImageType::DEPTH) {
         let cloud = sdk.depth_to_point_cloud(&image)?;

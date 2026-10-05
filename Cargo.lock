@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "mv3d-lp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mv3d-lp-sys",
  "raw-window-handle",
@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "mv3d-lp-sys"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "proc-macro2"

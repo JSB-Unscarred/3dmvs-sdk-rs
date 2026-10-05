@@ -2,7 +2,7 @@
 members = ["mv3d-lp-sys"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.87"
 license = "MIT"
@@ -40,6 +40,6 @@ targets = []
 workspace = true
 
 [dependencies]
-mv3d-lp-sys = { path = "mv3d-lp-sys", version = "0.1.0" }
+mv3d-lp-sys = { path = "mv3d-lp-sys", version = "0.1.1" }
 raw-window-handle = "0.6"
 thiserror = "2"
